@@ -1,0 +1,7 @@
+.vscode/
+data/
+notebooks/
+results/
+src/__pycache__
+src/.vscode
+src/old
