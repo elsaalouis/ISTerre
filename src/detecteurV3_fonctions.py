@@ -113,7 +113,7 @@ def env(trace):
 
 
 
-def DetecteurV3(trace, freq_min, freq_max, nsta, nlta, thr_on, thr_off, nwin, nover, nfft, gather): 
+def DetecteurV3(trace, freq_min, freq_max, nsta, nlta, thr_on, thr_off, nwin, nover, nfft, gather, min_duration_sec=5):
  
     
     '''Compute spectrogram'''
@@ -171,7 +171,7 @@ def DetecteurV3(trace, freq_min, freq_max, nsta, nlta, thr_on, thr_off, nwin, no
     iii = 1
     for key, value in Event_detected.items():
 
-        if (value[1]-value[0])*time_window_NRJ_in_sec > 5:
+        if (value[1]-value[0])*time_window_NRJ_in_sec > min_duration_sec:
             Event_detected_sorted['Event_'+str(iii)] = value
             iii = iii + 1
             

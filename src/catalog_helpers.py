@@ -115,13 +115,19 @@ def get_stations_from_picks(event):
 def get_pick_times(event):
     """
     Return a dict mapping station_code -> {'P': UTCDateTime or None, 'S': UTCDateTime or None}
+    Accepts any phase whose hint starts with 'P' or 'S' (covers Pg, Sg, Pn, Sn, …)
     """
     pick_dict = defaultdict(lambda: {'P': None, 'S': None})
     for pick in event.picks:
         sta   = pick.waveform_id.station_code
-        phase = pick.phase_hint
-        if sta and phase in ('P', 'S'):
-            pick_dict[sta][phase] = pick.time
+        phase = (pick.phase_hint or '').strip().upper()
+        if not sta or not phase:
+            continue
+        generic = phase[0]   # 'P' or 'S' (ignores Pg → P, Sg → S, Pn → P, etc.)
+        if generic in ('P', 'S'):
+            # keep the earliest pick if there are duplicates
+            if pick_dict[sta][generic] is None:
+                pick_dict[sta][generic] = pick.time
     return dict(pick_dict)
 
 

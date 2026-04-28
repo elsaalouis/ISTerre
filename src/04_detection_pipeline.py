@@ -286,7 +286,7 @@ for day_utc in days:
                 _, _, _, sum_cft, events_dt, thresholds_dt = DetecteurV3(
                     tr_win, FREQ_MIN, FREQ_MAX,
                     NSTA, NLTA, THR_ON, THR_OFF,
-                    nwin, nover, nfft, 'True'
+                    nwin, nover, nfft, 'True', min_duration_sec=5
                 )
 
                 events     = {}

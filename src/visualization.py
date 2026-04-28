@@ -8,7 +8,7 @@ Date   : April 2026
 All figure-generating functions used across the pipeline scripts:
   - plot_event_waveforms()    : waveform + PSD panels per station  (script 01)
   - plot_station_coverage()   : histogram + bar chart + box plot    (script 01)
-  - plot_sta_lta()            : waveform + STA/LTA ratio panels     (script 02)
+  - plot_windowing()          : waveform + STA/LTA ratio panels     (script 02)
 """
 
 import os
@@ -16,6 +16,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from obspy import UTCDateTime
 from scipy.signal import welch
 
 
@@ -274,142 +275,227 @@ def plot_station_coverage(station_counts, n_stations_per_event, counts_by_type,
 
 
 # =============================================================================
-# WAVEFORM + STA/LTA RATIO (script 02)
+# WAVEFORM + STA/LTA CHARACTERISTIC FUNCTION — ALL STATIONS (script 02)
 # =============================================================================
 
-def plot_sta_lta(st_proc, event, t_start, detections, cfts,
-                 thres_on, thres_off, run_dir,
-                 sta_s=None, lta_s=None, freqmin=None, freqmax=None):
+def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir,
+                   freq_min=1.0, freq_max=20.0, nsta=1, nlta=15, pre_event=150):
     """
-    Produce one figure per event: waveform with detection shading (left) + STA/LTA characteristic function with threshold lines (right)
+    One figure per catalog event —> all stations stacked in rows
+
+    Layout
+    ------
+    One row per station:
+      Left  : velocity waveform (response-removed, unfiltered):
+                          - gray dashed vertical line  : catalog origin time
+                          - red   vertical line + 'P'  : catalog P pick
+                          - blue  vertical line + 'S'  : catalog S pick
+                          - green solid/dashed border  : detected window onset / offset
+                          - green (or orange) shading  : detected event window
+      Right : DetecteurV3 sum_cft (bidirectional STA/LTA characteristic function) with the same detected window shading and threshold lines
+
+    Detection window colour code
+    ----------------------------
+      Green      : the catalog origin time falls INSIDE the detected window -> the detector agrees with the catalog
+      Orange     : the catalog origin time falls OUTSIDE the detected window
+      No shading : sum_cft never reached THR_ON on this station, the event was too weak or the noise level too high
 
     Parameters
     ----------
-    st_proc    : ObsPy Stream — bandpass-filtered trace for each station
-    event      : ObsPy Event object
-    t_start    : UTCDateTime — start of the time window (time axis reference)
-    detections : dict station_code -> list of (t_on, t_off) UTCDateTime tuples
-    cfts       : dict station_code -> numpy array (STA/LTA ratio at each sample)
-    thres_on   : float — STA/LTA ratio used to declare trigger ON
-    thres_off  : float — STA/LTA ratio used to declare trigger OFF
-    run_dir    : str — output directory
-    sta_s, lta_s : float or None — STA and LTA window lengths in seconds, shown in the figure title when provided
-    freqmin, freqmax : float or None — bandpass frequencies, used only for the output filename
+    station_data : list of dicts, one per station:
+        {
+          'tr_vel'     : obspy.Trace  — response-removed velocity [m/s], unfiltered
+          'detections' : dict {"Det_k": [UTCDateTime t_on, UTCDateTime t_off]}
+          'picks'      : dict {'P': UTCDateTime or None, 'S': UTCDateTime or None}
+          't_nrj'      : list of datetime.datetime  — time axis from DetecteurV3
+          'sum_cft'    : 1-D numpy array — bidirectional STA/LTA ratio
+        }
+    t_orig       : UTCDateTime — catalog origin time
+    thr_on/off   : float — DetecteurV3 thresholds (drawn as horizontal lines)
+    etype        : str   — event type label (title + output filename)
+    run_dir      : str   — output directory
+    freq_min/max : float — detection frequency band (shown in figure title)
+    nsta / nlta  : int   — DetecteurV3 STA/LTA window sizes (shown in title)
+    pre_event    : float — seconds of pre-noise loaded before origin (grey line)
     """
-    from catalog_helpers import get_pick_times
-
-    origin   = event.preferred_origin() or event.origins[0]
-    t_origin = origin.time
-    picks    = get_pick_times(event)
-    etype    = str(event.event_type) if event.event_type else "unknown"
-    mag      = event.preferred_magnitude()
-    mag_str  = f"M{mag.mag:.1f}" if mag else "M?"
-    n        = len(st_proc)
-
+    n = len(station_data)
     if n == 0:
-        print("    [SKIP] No traces to plot.")
         return
 
     fig, axes = plt.subplots(
-        n, 2, figsize=(18, max(4, n * 2.5)),
-        gridspec_kw={'width_ratios': [3, 2]}, sharey=False
+        n, 2,
+        figsize=(18, max(4, n * 2.5)),
+        gridspec_kw={'width_ratios': [3, 1]},
+        sharey=False,
     )
     if n == 1:
-        axes = [axes]
-
-    # Build optional STA/LTA label for the title
-    sta_lta_str = ""
-    if sta_s is not None and lta_s is not None:
-        sta_lta_str = f"\nSTA={sta_s}s  LTA={lta_s}s  ON={thres_on}  OFF={thres_off}"
+        axes = [axes]   # ensure list-of-rows even for a single station
 
     fig.suptitle(
-        f"{etype.upper()}   {mag_str}   |   {t_origin}\n"
-        f"lat={origin.latitude:.3f}°  lon={origin.longitude:.3f}°  "
-        f"depth={origin.depth/1000:.1f} km  |  {n} stations"
-        + sta_lta_str,
-        fontsize=14, fontweight='bold', y=1.02
+        f"{etype.upper()}   |   {str(t_orig)[:19]}\n"
+        f"DetecteurV3  {freq_min}–{freq_max} Hz   "
+        f"nsta={nsta}  nlta={nlta}   "
+        f"thr_on={thr_on}  thr_off={thr_off}",
+        fontsize=14, fontweight='bold', y=1.01,
     )
 
-    for row, (ax_row, tr) in enumerate(zip(axes, st_proc)):
-        ax_wave, ax_cft = ax_row[0], ax_row[1]
-        data  = tr.data.astype(float)
-        fs    = tr.stats.sampling_rate
-        times = tr.times(reftime=t_start)
-        amp   = np.max(np.abs(data)) or 1.0
-        sta   = tr.stats.station
+    for row_idx, (ax_row, sd) in enumerate(zip(axes, station_data)):
+        ax_wave = ax_row[0]
+        ax_cft  = ax_row[1]
 
-        # -- Waveform ---------------------------------------------------------
-        ax_wave.plot(times, data / amp, 'k-', linewidth=0.7)
-        ax_wave.set_ylim(-1.5, 1.5)
-        ax_wave.set_yticks([-1, 0, 1])
-        ax_wave.set_yticklabels(['-1', '0', '1'], fontsize=9, color='grey')
-        ax_wave.axhline(0, color='lightgrey', linewidth=0.5)
-        ax_wave.set_ylabel(f"{tr.stats.network}.{sta}",
-                           fontsize=12, fontweight='bold',
-                           rotation=0, labelpad=60, va='center')
-        ax_wave.axvline(t_origin - t_start, color='grey', linestyle='--', linewidth=1.2)
+        tr_vel     = sd['tr_vel']
+        detections = sd['detections']
+        picks      = sd.get('picks', {})
+        t_nrj      = sd.get('t_nrj', [])
+        sum_cft    = sd.get('sum_cft', np.array([]))
 
-        if sta in picks:
-            if picks[sta]['P']:
-                t_P = picks[sta]['P'] - t_start
-                ax_wave.axvline(t_P, color='red', linewidth=1.5)
-                ax_wave.text(t_P + 0.5, 1.2, 'P', color='red',
-                             fontsize=12, fontweight='bold')
-            if picks[sta]['S']:
-                t_S = picks[sta]['S'] - t_start
-                ax_wave.axvline(t_S, color='blue', linewidth=1.5)
-                ax_wave.text(t_S + 0.5, 1.2, 'S', color='blue',
-                             fontsize=12, fontweight='bold')
+        t_start = tr_vel.stats.starttime
+        net     = tr_vel.stats.network
+        sta     = tr_vel.stats.station
 
-        for t_on, t_off in detections.get(sta, []):
-            ax_wave.axvspan(t_on - t_start, t_off - t_start,
-                            alpha=0.15, color='green', zorder=0)
-            ax_wave.axvline(t_on  - t_start, color='green',     linewidth=1.5, alpha=0.8)
-            ax_wave.axvline(t_off - t_start, color='darkgreen', linewidth=1.5, alpha=0.8)
+        # Both panels share the same x-axis: seconds from trace start
+        t_wav   = tr_vel.times()                             # waveform samples
+        t_cft   = np.array([UTCDateTime(str(t)) - t_start   # sum_cft steps
+                             for t in t_nrj])
+        t_orig_s = t_orig - t_start                          # origin position on x-axis
 
-        # -- STA/LTA ratio ----------------------------------------------------
-        cft       = cfts.get(sta, np.array([]))
-        cft_times = np.arange(len(cft)) / fs
+        data    = tr_vel.data.astype(float)
+        data_um = data * 1e6          # convert m/s → µm/s for a readable y-axis
 
-        if len(cft) > 0:
-            ax_cft.plot(cft_times, cft, color='steelblue', linewidth=0.8)
-        ax_cft.axhline(thres_on,  color='red',    linestyle='--',
-                       linewidth=1.5, label=f'ON  = {thres_on}')
-        ax_cft.axhline(thres_off, color='orange', linestyle='--',
-                       linewidth=1.5, label=f'OFF = {thres_off}')
+        # ── Waveform panel ───────────────────────────────────────────────────
+        ax_wave.plot(t_wav, data_um, 'k-', linewidth=0.5)
+        ax_wave.axhline(0, color='lightgrey', linewidth=0.3, zorder=0)
+        # auto y-limits with 10% headroom so picks/labels don't clip
+        peak_um = np.max(np.abs(data_um)) or 1.0
+        ax_wave.set_ylim(-peak_um * 1.15, peak_um * 1.15)
+        ax_wave.tick_params(axis='y', labelsize=7)
 
-        for t_on, t_off in detections.get(sta, []):
-            ax_cft.axvspan(t_on - t_start, t_off - t_start,
-                           alpha=0.15, color='green', zorder=0)
+        # Catalog origin time
+        ax_wave.axvline(t_orig_s, color='dimgrey', linewidth=1.5,
+                        linestyle='--', zorder=3)
 
-        ax_cft.set_xlim(times[0], times[-1])
+        # Detection windows: green border (onset solid, offset dashed) + shading
+        for det_key, (t_on, t_off) in detections.items():
+            t_on_s  = t_on  - t_start
+            t_off_s = t_off - t_start
+            inside  = t_on <= t_orig <= t_off
+            col     = '#2ca02c' if inside else '#ff7f0e'   # green / orange
+            ax_wave.axvspan(t_on_s, t_off_s, alpha=0.20, color=col, zorder=1)
+            ax_wave.axvline(t_on_s,  color=col, linewidth=1.6, alpha=0.9, zorder=3)
+            ax_wave.axvline(t_off_s, color=col, linewidth=1.2, alpha=0.7,
+                            linestyle='--', zorder=3)
+
+        # P and S catalog picks
+        t_p = picks.get('P')
+        t_s = picks.get('S')
+        label_y = peak_um * 0.92    # place letter labels near the top of the axis
+        if t_p is not None:
+            t_p_s = t_p - t_start
+            ax_wave.axvline(t_p_s, color='red', linewidth=1.5, zorder=4)
+            ax_wave.text(t_p_s + 0.5, label_y, 'P',
+                         color='red', fontsize=8, fontweight='bold', va='top')
+        if t_s is not None:
+            t_s_s = t_s - t_start
+            ax_wave.axvline(t_s_s, color='blue', linewidth=1.5, zorder=4)
+            ax_wave.text(t_s_s + 0.5, label_y, 'S',
+                         color='blue', fontsize=8, fontweight='bold', va='top')
+
+        # No-detection label
+        if not detections:
+            ax_wave.text(
+                0.99, 0.96, "NO DETECTION",
+                transform=ax_wave.transAxes,
+                ha='right', va='top', fontsize=7.5, color='grey',
+                bbox=dict(boxstyle='round,pad=0.25', facecolor='white',
+                          alpha=0.85, edgecolor='lightgrey'),
+            )
+
+        ax_wave.set_xlim(t_wav[0], t_wav[-1])
+        ax_wave.set_ylabel(
+            f"{net}.{sta}\nVelocity (µm/s)",
+            fontsize=10, fontweight='bold',
+            rotation=0, labelpad=65, va='center',
+        )
+
+        # ── STA/LTA characteristic function panel ────────────────────────────
+        if len(t_cft) > 0 and len(sum_cft) > 0:
+            n_pts = min(len(t_cft), len(sum_cft))
+            ax_cft.plot(t_cft[:n_pts], sum_cft[:n_pts],
+                        color='steelblue', linewidth=0.8)
+
+        # Threshold lines
+        ax_cft.axhline(thr_on,  color='red',       linewidth=1.3,
+                       linestyle='--', zorder=3)
+        ax_cft.axhline(thr_off, color='darkorange', linewidth=1.1,
+                       linestyle=':', zorder=3)
+
+        # Same detection shading as waveform panel
+        for det_key, (t_on, t_off) in detections.items():
+            t_on_s  = t_on  - t_start
+            t_off_s = t_off - t_start
+            inside  = t_on <= t_orig <= t_off
+            col     = '#2ca02c' if inside else '#ff7f0e'
+            ax_cft.axvspan(t_on_s, t_off_s, alpha=0.20, color=col, zorder=1)
+            ax_cft.axvline(t_on_s,  color=col, linewidth=1.4, alpha=0.8, zorder=3)
+            ax_cft.axvline(t_off_s, color=col, linewidth=1.0, alpha=0.6,
+                           linestyle='--', zorder=3)
+
+        ax_cft.axvline(t_orig_s, color='dimgrey', linewidth=1.2,
+                       linestyle='--', zorder=3)
+        ax_cft.set_xlim(t_wav[0], t_wav[-1])
         ax_cft.set_ylim(bottom=0)
-        ax_cft.set_facecolor('#f5f8fc')
-        ax_cft.tick_params(axis='both', labelsize=10)
-        ax_cft.set_ylabel("STA/LTA ratio", fontsize=10)
+        ax_cft.set_ylabel("sum_cft", fontsize=8)
+        ax_cft.tick_params(axis='both', labelsize=8)
 
-        if row == 0:
+        # Threshold legend only on the first row right panel
+        if row_idx == 0:
             ax_cft.set_title("STA/LTA\nCharacteristic Function",
-                              fontsize=12, fontweight='bold')
-            ax_cft.legend(loc='upper right', fontsize=10, framealpha=0.85)
+                              fontsize=10, fontweight='bold')
+            ax_cft.legend(
+                handles=[
+                    Line2D([0], [0], color='red',       linestyle='--',
+                           linewidth=1.3, label=f'THR_ON = {thr_on}'),
+                    Line2D([0], [0], color='darkorange', linestyle=':',
+                           linewidth=1.1, label=f'THR_OFF = {thr_off}'),
+                ],
+                loc='upper right', fontsize=8, framealpha=0.85,
+            )
 
-    axes[-1][0].set_xlabel("Time (s) relative to window start", fontsize=14, fontweight='bold')
-    axes[-1][1].set_xlabel("Time (s) relative to window start", fontsize=12, fontweight='bold')
+    axes[-1][0].set_xlabel("Time (s) relative to window start",
+                            fontsize=12, fontweight='bold')
+    axes[-1][1].set_xlabel("Time (s) relative to window start",
+                            fontsize=10, fontweight='bold')
 
+    # ── Main legend — waveform panel of first row ────────────────────────────
     legend_elements = [
-        Line2D([0], [0], color='grey',     linestyle='--', linewidth=1.5, label='Origin time'),
-        Line2D([0], [0], color='red',       linewidth=1.5, label='P pick'),
-        Line2D([0], [0], color='blue',      linewidth=1.5, label='S pick'),
-        Line2D([0], [0], color='green',     linewidth=1.5, label='Trigger ON'),
-        Line2D([0], [0], color='darkgreen', linewidth=1.5, label='Trigger OFF'),
-        Patch(facecolor='green', alpha=0.15, label='Detected event window'),
+        Line2D([0], [0], color='dimgrey', linestyle='--', linewidth=1.5,
+               label='Origin time'),
+        Line2D([0], [0], color='red',  linewidth=1.5, label='P pick'),
+        Line2D([0], [0], color='blue', linewidth=1.5, label='S pick'),
+        Line2D([0], [0], color='#2ca02c', linewidth=1.6,
+               label='Trigger ON  (det. onset)'),
+        Line2D([0], [0], color='#2ca02c', linewidth=1.2, linestyle='--',
+               label='Trigger OFF  (det. offset)'),
+        Patch(facecolor='#2ca02c', alpha=0.25,
+              label='Detected window — origin INSIDE\n'
+                    '(detector agrees with catalog pick)'),
+        Patch(facecolor='#ff7f0e', alpha=0.25,
+              label='Detected window — origin OUTSIDE\n'
+                    '(emergent onset)'),
     ]
-    axes[0][0].legend(handles=legend_elements, loc='upper right',
-                      fontsize=10, framealpha=0.85, edgecolor='grey')
+    axes[0][0].legend(
+        handles=legend_elements,
+        loc='upper left', fontsize=8,
+        framealpha=0.92, edgecolor='grey',
+        ncol=2,
+    )
 
     plt.tight_layout()
-    safe_time = str(t_origin)[:19].replace(":", "-").replace("T", "_")
-    out_path  = os.path.join(run_dir, f"stalta_{etype.replace(' ','_')}_{safe_time}.png")
+
+    safe_time = str(t_orig)[:19].replace(":", "-").replace("T", "_")
+    safe_type = etype.replace(" ", "_")
+    fname     = f"window_{safe_type}_{safe_time}.png"
+    out_path  = os.path.join(run_dir, fname)
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"    [SAVED] {os.path.basename(out_path)}")
+    print(f"    [SAVED] {fname}")

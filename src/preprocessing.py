@@ -195,7 +195,7 @@ def remove_response_or_fallback(st_raw, inventory, station_times_df):
     st_vel : ObsPy Stream — ground velocity in m/s (or cleaned raw counts)
     """
     if inventory is not None:
-        from seismic_params import preprocess_signal_sp
+        from seismic_params import preprocess_signal_sp  # does instrument response removal
         st_vel, _ = preprocess_signal_sp(st_raw, inventory, station_times_df)
         print(f"    {len(st_vel)} traces preprocessed (instrument response removed → m/s)")
     else:

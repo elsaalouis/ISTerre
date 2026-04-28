@@ -101,6 +101,8 @@ def compute_snr(tr_filt, t_on, t_off):
         SNR_picking_3_3   — 3 s after onset vs 3 s before onset
         SNR_picking_1_3   — 1 s after onset vs 3 s before onset
         SNR_full_mean     — mean of full detection window vs equal-length noise window
+        SNR_full_median   — median of full detection window vs equal-length noise window
+                            (Groult et al. 2026 use both mean AND median > 3 as quality gate)
     """
     def _mean_env(tr_slice):
         """Mean absolute amplitude of a trace slice; returns 1.0 if empty."""
@@ -142,7 +144,7 @@ def compute_snr(tr_filt, t_on, t_off):
         except Exception:
             snr_dict[key] = np.nan
 
-    # -- SNR full mean: event window vs equal-length noise window --------------
+    # -- SNR full mean / median: event window vs equal-length noise window ----
     try:
         s = tr_filt.slice(t_on, t_off)
         if t_on - duration >= t_start:
@@ -151,9 +153,15 @@ def compute_snr(tr_filt, t_on, t_off):
             n = tr_filt.slice(t_off, t_off + duration)
         else:
             n = s
-        snr_dict['SNR_full_mean'] = _mean_env(s) / _mean_env(n)
+        env_s    = np.abs(s.data)
+        env_n    = np.abs(n.data)
+        mean_n   = float(np.mean(env_n))   or 1.0
+        median_n = float(np.median(env_n)) or 1.0
+        snr_dict['SNR_full_mean']   = float(np.mean(env_s))   / mean_n
+        snr_dict['SNR_full_median'] = float(np.median(env_s)) / median_n
     except Exception:
-        snr_dict['SNR_full_mean'] = np.nan
+        snr_dict['SNR_full_mean']   = np.nan
+        snr_dict['SNR_full_median'] = np.nan
 
     return snr_dict
 
