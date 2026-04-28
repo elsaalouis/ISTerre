@@ -305,6 +305,7 @@ def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir,
     station_data : list of dicts, one per station:
         {
           'tr_vel'     : obspy.Trace  — response-removed velocity [m/s], unfiltered
+          'tr_filt'    : obspyTrace — bandpass-filtered trace (1–20 Hz)
           'detections' : dict {"Det_k": [UTCDateTime t_on, UTCDateTime t_off]}
           'picks'      : dict {'P': UTCDateTime or None, 'S': UTCDateTime or None}
           't_nrj'      : list of datetime.datetime  — time axis from DetecteurV3
@@ -344,23 +345,24 @@ def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir,
         ax_cft  = ax_row[1]
 
         tr_vel     = sd['tr_vel']
+        tr_filt    = sd.get('tr_filt', tr_vel)   # bandpass-filtered trace (1–20 Hz); fall back to tr_vel if absent
         detections = sd['detections']
         picks      = sd.get('picks', {})
         t_nrj      = sd.get('t_nrj', [])
         sum_cft    = sd.get('sum_cft', np.array([]))
 
-        t_start = tr_vel.stats.starttime
+        t_start = tr_vel.stats.starttime   # timing reference from tr_vel (identical for tr_filt)
         net     = tr_vel.stats.network
         sta     = tr_vel.stats.station
 
         # Both panels share the same x-axis: seconds from trace start
-        t_wav   = tr_vel.times()                             # waveform samples
+        t_wav   = tr_filt.times()                            # waveform samples (filtered trace)
         t_cft   = np.array([UTCDateTime(str(t)) - t_start   # sum_cft steps
                              for t in t_nrj])
         t_orig_s = t_orig - t_start                          # origin position on x-axis
 
-        data    = tr_vel.data.astype(float)
-        data_um = data * 1e6          # convert m/s → µm/s for a readable y-axis
+        data    = tr_filt.data.astype(float)   # plot the filtered waveform (1–20 Hz), not the broadband
+        data_um = data * 1e6                   # convert m/s → µm/s for a readable y-axis
 
         # ── Waveform panel ───────────────────────────────────────────────────
         ax_wave.plot(t_wav, data_um, 'k-', linewidth=0.5)
@@ -412,7 +414,7 @@ def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir,
 
         ax_wave.set_xlim(t_wav[0], t_wav[-1])
         ax_wave.set_ylabel(
-            f"{net}.{sta}\nVelocity (µm/s)",
+            f"{net}.{sta}\nVelocity (µm/s)\n1–20 Hz",
             fontsize=10, fontweight='bold',
             rotation=0, labelpad=65, va='center',
         )

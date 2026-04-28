@@ -83,6 +83,15 @@ def summarise_detections(tr, on_off, t_start, thres_on):
 # SNR COMPUTATION (script 04)
 # =============================================================================
 
+def signal2noise_median(y_noise, y_signal):
+    mad_pre_event = np.median(np.abs(y_noise - np.mean(y_noise)))
+    percentile    = np.percentile(np.abs(y_signal - np.mean(y_signal)), 99.5)
+    if mad_pre_event > 0:
+        return percentile / mad_pre_event
+    else:
+        return 0
+
+
 def compute_snr(tr_filt, t_on, t_off):
     """
     Compute five SNR measures for a detected event, following Groult et al.
@@ -103,6 +112,8 @@ def compute_snr(tr_filt, t_on, t_off):
         SNR_full_mean     — mean of full detection window vs equal-length noise window
         SNR_full_median   — median of full detection window vs equal-length noise window
                             (Groult et al. 2026 use both mean AND median > 3 as quality gate)
+        SNR_s2n_median    — tutor's robust metric: 99.5th percentile of |signal| / MAD of noise
+                            (same noise/signal windows as SNR_full_mean/median)
     """
     def _mean_env(tr_slice):
         """Mean absolute amplitude of a trace slice; returns 1.0 if empty."""
@@ -159,9 +170,12 @@ def compute_snr(tr_filt, t_on, t_off):
         median_n = float(np.median(env_n)) or 1.0
         snr_dict['SNR_full_mean']   = float(np.mean(env_s))   / mean_n
         snr_dict['SNR_full_median'] = float(np.median(env_s)) / median_n
+        # Tutor's robust metric — uses raw (non-envelope) data, same noise/signal windows
+        snr_dict['SNR_s2n_median']  = signal2noise_median(n.data, s.data)
     except Exception:
         snr_dict['SNR_full_mean']   = np.nan
         snr_dict['SNR_full_median'] = np.nan
+        snr_dict['SNR_s2n_median']  = np.nan
 
     return snr_dict
 

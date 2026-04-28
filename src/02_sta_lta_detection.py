@@ -408,7 +408,7 @@ else:
         'trigger_on_cft', 'trigger_off_cft',
         'origin_inside_det', 'origin_lag_s', 'quality_ok',
         'SNR', 'SNR_picking_5_5', 'SNR_picking_3_3',
-        'SNR_picking_1_3', 'SNR_full_mean', 'SNR_full_median',
+        'SNR_picking_1_3', 'SNR_full_mean', 'SNR_full_median', 'SNR_s2n_median',
     ]
     ordered_cols = meta_cols + FEATURE_NAMES
     df = df[[c for c in ordered_cols if c in df.columns]]
