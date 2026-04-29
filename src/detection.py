@@ -83,11 +83,12 @@ def summarise_detections(tr, on_off, t_start, thres_on):
 # SNR COMPUTATION (script 04)
 # =============================================================================
 
+# did anything extreme happen in the signal window compared to the ambient noise level?
 def signal2noise_median(y_noise, y_signal):
-    mad_pre_event = np.median(np.abs(y_noise - np.mean(y_noise)))
-    percentile    = np.percentile(np.abs(y_signal - np.mean(y_signal)), 99.5)
+    mad_pre_event = np.median(np.abs(y_noise - np.mean(y_noise))) # MAD: median absolute deviation
+    percentile    = np.percentile(np.abs(y_signal - np.mean(y_signal)), 99.5) # amplitude that 99.5% of samples are below
     if mad_pre_event > 0:
-        return percentile / mad_pre_event
+        return percentile / mad_pre_event # near-maximum amplitude during the event / typical fluctuation amplitude in the noise
     else:
         return 0
 

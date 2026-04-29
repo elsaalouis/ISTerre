@@ -13,6 +13,10 @@ For each seismic event already known in the ISTerre FDSN catalog:
   3. Run Groult's spectrogram-based bidirectional STA/LTA (DetecteurV3) on the full trace to detect the precise start and end of the event
   4. Flag: is the catalog origin time inside or outside the detection window?
      -> if outside: the catalog time is a poor proxy for the signal onset (expected for rockfalls whose P-wave is buried in the onset)
+     Flag: is the station's P-wave pick time inside the detection window?
+     -> more physically justified ground truth (teacher feedback, April 2026):
+        origin time is before wave arrival for earthquakes, and unreliable for rockfalls;
+        the P pick at each station is the actual observed arrival and should fall inside a correct detection
   5. Extract 99 seismic features (Maggi/Hibert) from the detected window
   6. Compute Groult's full set of 6 SNR metrics (Groult et al. 2026 use both mean AND median > 3 as quality gate)
   7. Save results to CSV and produce one diagnostic plot per station
@@ -32,7 +36,7 @@ Output
   catalog_windows_<stamp>.csv
       one row per (event x station x detection):
       event metadata  |  station  |  det_starttime / det_endtime / det_duration_s
-      origin_inside_det  |  origin_lag_s  |  quality_ok
+      origin_inside_det  |  origin_lag_s  |  pick_inside_det  |  pick_lag_s  |  quality_ok
       6 SNR cols  |  99 feature cols
 
   window_<etype>_<time>_<net>.<sta>.png
@@ -320,9 +324,18 @@ for i, ev in enumerate(batch):
         # ---- Features + SNR + flags for each detection ----------------------
         for det_key, (t_on, t_off) in detections.items():
 
-            # Key diagnostic: is the catalog origin inside the detected window?
+            # Key diagnostic 1: is the catalog origin inside the detected window?
             origin_inside = bool(t_on <= t_orig <= t_off)
-            origin_lag_s  = round(float(t_orig - t_on), 2)   # positive = orig. after det. start
+            origin_lag_s  = round(float(t_orig - t_on), 2)   # positive = origin after detection start
+
+            # Key diagnostic 2: is this station's P-wave pick inside the detected window?
+            p_pick = picks_by_sta.get(sta, {}).get('P', None)
+            if p_pick is not None:
+                pick_inside_det = bool(t_on <= p_pick <= t_off)
+                pick_lag_s      = round(float(p_pick - t_on), 2)  # positive = pick after detection start
+            else:
+                pick_inside_det = None   # no P pick available for this station
+                pick_lag_s      = None
 
             try:
                 # Padded window for feature extraction: PAD_SEC before t_on and after t_off.
@@ -370,6 +383,8 @@ for i, ev in enumerate(batch):
                 # Quality flags
                 'origin_inside_det': origin_inside,
                 'origin_lag_s'     : origin_lag_s,
+                'pick_inside_det'  : pick_inside_det,
+                'pick_lag_s'       : pick_lag_s,
                 'quality_ok'       : quality_ok,
                 # 6 SNR metrics (Groult full set)
                 **snr,
@@ -406,7 +421,8 @@ else:
         'catalog_depth_km', 'network', 'station', 'channel',
         'det_starttime', 'det_endtime', 'det_duration_s',
         'trigger_on_cft', 'trigger_off_cft',
-        'origin_inside_det', 'origin_lag_s', 'quality_ok',
+        'origin_inside_det', 'origin_lag_s',
+        'pick_inside_det', 'pick_lag_s', 'quality_ok',
         'SNR', 'SNR_picking_5_5', 'SNR_picking_3_3',
         'SNR_picking_1_3', 'SNR_full_mean', 'SNR_full_median', 'SNR_s2n_median',
     ]
@@ -421,23 +437,32 @@ else:
 
     # --- Summary by event type
     print(f"\n  {'Event type':<22} {'n_rows':>7}  "
-          f"{'origin_inside':>14}  {'quality_ok':>10}")
-    print("  " + "-" * 58)
+          f"{'origin_inside':>14}  {'pick_inside':>12}  {'quality_ok':>10}")
+    print("  " + "-" * 72)
     for etype_name, grp in df.groupby('event_type'):
-        inside_pct = grp['origin_inside_det'].mean() * 100
+        origin_pct = grp['origin_inside_det'].mean() * 100
+        # pick_inside_det may contain None → use dropna for the mean
+        pick_col   = grp['pick_inside_det'].dropna()
+        pick_pct   = pick_col.mean() * 100 if len(pick_col) > 0 else float('nan')
         qual_pct   = grp['quality_ok'].mean() * 100
         print(f"  {etype_name:<22} {len(grp):>7}  "
-              f"{inside_pct:>13.1f}%  {qual_pct:>9.1f}%")
+              f"{origin_pct:>13.1f}%  {pick_pct:>11.1f}%  {qual_pct:>9.1f}%")
 
-    # --- Origin lag stats by type (key diagnostic: is the catalog time right?)
+    # --- Lag stats by type — both origin and pick
     print(f"\n  Origin lag from detection start "
-          f"(+ means origin is AFTER the detected onset):")
+          f"(+ means time is AFTER the detected onset):")
     for etype_name, grp in df.groupby('event_type'):
         lag = grp['origin_lag_s']
-        print(f"    {etype_name:<22}  "
+        print(f"    origin / {etype_name:<22}  "
               f"median = {lag.median():+.1f}s  "
               f"mean = {lag.mean():+.1f}s  "
               f"range = [{lag.min():+.1f}s ... {lag.max():+.1f}s]")
+        pick_lag = grp['pick_lag_s'].dropna()
+        if len(pick_lag) > 0:
+            print(f"    pick   / {etype_name:<22}  "
+                  f"median = {pick_lag.median():+.1f}s  "
+                  f"mean = {pick_lag.mean():+.1f}s  "
+                  f"range = [{pick_lag.min():+.1f}s ... {pick_lag.max():+.1f}s]")
 
 
 

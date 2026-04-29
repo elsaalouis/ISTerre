@@ -14,6 +14,10 @@ Ground truth: origin_inside_det
   True  -> catalog origin time falls inside the detected window (good detection)
   False -> origin time is outside the window (missed onset)
 
+Ground truth: pick_inside_det
+  True  -> P-wave pick time falls inside the detected window
+  False -> P-wave pick time is outside the window 
+
 Analyses
 --------
   3.1  Basic distribution statistics per metric (mean, median, std, IQR)
@@ -60,6 +64,9 @@ SEARCH_DIR = "/data/failles/louisels/project/results/outputs_02"
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
 OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_03"
+
+# -- Key diagnostic -----------------------------------------------------------
+GROUND_TRUTH = 'pick_inside_det'  # origin_inside_det or pick_inside_det
 
 # -- SNR metrics to compare ---------------------------------------------------
 SNR_METRICS = [
@@ -136,7 +143,7 @@ from run_setup import (
 RUN_DIR, _RUN_STAMP = create_run_dir(OUTPUT_DIR)
 _log_file, _log_filename = setup_logging(
     RUN_DIR, "03_snr_comparison.py",
-    extra_info=f"Ground truth: origin_inside_det | Metrics: {SNR_METRICS}"
+    extra_info=f"Ground truth: {GROUND_TRUTH} | Metrics: {SNR_METRICS}"
 )
 set_matplotlib_defaults()
 
@@ -174,13 +181,13 @@ print(f"  {len(df)} rows kept  ({len(df_all) - len(df)} dropped — all SNR valu
 if 'origin_inside_det' not in df.columns:
     print("[ERROR] 'origin_inside_det' column not found. Exiting.")
     sys.exit(1)
-df['label'] = df['origin_inside_det'].astype(bool)
+df['label'] = df[GROUND_TRUTH].astype(bool)
 
 n_pos = df['label'].sum()          # number of good detections
 n_neg = (~df['label']).sum()       # number of bad detections
-print(f"\n  Ground truth (origin_inside_det):")
-print(f"    True  — origin inside window  : {n_pos}  ({100*n_pos/len(df):.1f}%)")
-print(f"    False — origin outside window : {n_neg}  ({100*n_neg/len(df):.1f}%)")
+print(f"\n  Ground truth ({GROUND_TRUTH}):")
+print(f"    True  — inside window  : {n_pos}  ({100*n_pos/len(df):.1f}%)")
+print(f"    False — outside window : {n_neg}  ({100*n_neg/len(df):.1f}%)")
 print(f"\n  Rows by event type:")
 for et, cnt in df['event_type'].value_counts().items():
     print(f"    {et:<22s} : {cnt}")
