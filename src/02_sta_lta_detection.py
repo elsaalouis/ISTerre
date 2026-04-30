@@ -92,6 +92,17 @@ PAD_SEC = 5        # seconds added before t_on and after t_off when cutting the 
 SNR_MEAN_MIN   = 3.0
 SNR_MEDIAN_MIN = 3.0
 
+# -- Kurtosis onset refiner (Fuchs et al. 2018) — applied to rockslides only --
+# Uses a narrower bandpass (1–5 Hz) to suppress microseism and enhance emergent
+# rockslide onsets, following Fuchs et al. recommendation.
+KURTOSIS_REFINE       = True    # set False to skip refinement entirely
+KURTOSIS_FREQ_MIN     = 1.0    # Hz — narrow band for the kurtosis picker
+KURTOSIS_FREQ_MAX     = 5.0    # Hz — Fuchs et al. use 1–5 Hz
+KURTOSIS_DT_S         = 5.0    # s  — kurtosis sliding window length (Fuchs: 5 s)
+KURTOSIS_SEARCH_BEFORE= 10.0   # s  — search from this many s before Groult t_on (Fuchs: 10 s)
+KURTOSIS_SEARCH_AFTER = 1.0    # s  — search to this many s after Groult t_on (Fuchs: 1 s)
+KURTOSIS_ETYPES       = ('rockslide', 'rockfall', 'landslide')  # event types to refine
+
 # -- Feature extraction -------------------------------------------------------
 FEATURE_FLAG = 0   # 0 = 99 features, vertical component only
 N_FEATURES   = 99
@@ -149,7 +160,7 @@ from run_setup import (
     set_matplotlib_defaults,
 )
 from features import FEATURE_NAMES, extract_features
-from detection import compute_snr
+from detection import compute_snr, refine_onset_kurtosis
 from visualization import plot_windowing
 
 
@@ -242,7 +253,17 @@ for i, ev in enumerate(batch):
     st_filt = st_vel.copy()
     for tr in st_filt:
         nyq = tr.stats.sampling_rate / 2
-        tr.filter('bandpass', freqmin  = FREQ_MIN, freqmax  = min(FREQ_MAX, 0.9 * nyq), corners  = 2, zerophase= True)
+        tr.filter('bandpass', freqmin=FREQ_MIN, freqmax=min(FREQ_MAX, 0.9 * nyq),
+                  corners=2, zerophase=True)
+
+    # Narrow bandpass (1–5 Hz) for kurtosis onset picker — Fuchs et al. recommendation
+    # Suppresses microseism and enhances emergent rockslide onsets
+    st_kurtosis = st_vel.copy()
+    for tr in st_kurtosis:
+        nyq = tr.stats.sampling_rate / 2
+        tr.filter('bandpass', freqmin=KURTOSIS_FREQ_MIN,
+                  freqmax=min(KURTOSIS_FREQ_MAX, 0.9 * nyq),
+                  corners=2, zerophase=True)
 
     # ---- Per-station detection loop -----------------------------------------
     station_data = []   # accumulate per-station results for the multi-station figure
@@ -328,6 +349,26 @@ for i, ev in enumerate(batch):
             origin_inside = bool(t_on <= t_orig <= t_off)
             origin_lag_s  = round(float(t_orig - t_on), 2)   # positive = origin after detection start
 
+            # Kurtosis onset refiner (Fuchs et al. 2018) — rockslides only
+            # Runs on the 1–5 Hz filtered trace; refines the emergent onset
+            # that DetecteurV3 tends to pick too late.
+            t_on_groult   = t_on    # keep Groult's t_on for comparison
+            onset_refine_s = 0.0   # shift applied (negative = moved earlier)
+
+            if KURTOSIS_REFINE and etype.lower() in KURTOSIS_ETYPES:
+                kurt_sel = st_kurtosis.select(network=net, station=sta)
+                if len(kurt_sel) > 0:
+                    t_refined, kurt_info = refine_onset_kurtosis(
+                        kurt_sel[0], t_on,
+                        dt_s          = KURTOSIS_DT_S,
+                        search_before = KURTOSIS_SEARCH_BEFORE,
+                        search_after  = KURTOSIS_SEARCH_AFTER,
+                    )
+                    onset_refine_s = round(float(t_refined - t_on), 2)
+                    t_on = t_refined   # use refined onset for SNR and features below
+                    print(f"      [kurtosis] refined onset: {onset_refine_s:+.2f}s "
+                          f"({str(t_on_groult)[11:19]} → {str(t_on)[11:19]})")
+
             # Key diagnostic 2: is this station's P-wave pick inside the detected window?
             p_pick = picks_by_sta.get(sta, {}).get('P', None)
             if p_pick is not None:
@@ -375,7 +416,9 @@ for i, ev in enumerate(batch):
                 'station'          : sta,
                 'channel'          : chan,
                 # Detection window
-                'det_starttime'    : str(t_on),
+                'det_starttime'    : str(t_on),          # refined t_on for rockslides
+                'det_starttime_groult': str(t_on_groult),# original DetecteurV3 t_on
+                'onset_refine_s'   : onset_refine_s,     # shift applied (neg = earlier onset)
                 'det_endtime'      : str(t_off),
                 'det_duration_s'   : round(t_off - t_on, 2),
                 'trigger_on_cft'   : round(thresholds[det_key][0], 4),
@@ -419,7 +462,8 @@ else:
     meta_cols = [
         'event_time', 'event_type', 'catalog_lat', 'catalog_lon',
         'catalog_depth_km', 'network', 'station', 'channel',
-        'det_starttime', 'det_endtime', 'det_duration_s',
+        'det_starttime', 'det_starttime_groult', 'onset_refine_s',
+        'det_endtime', 'det_duration_s',
         'trigger_on_cft', 'trigger_off_cft',
         'origin_inside_det', 'origin_lag_s',
         'pick_inside_det', 'pick_lag_s', 'quality_ok',
