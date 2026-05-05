@@ -27,7 +27,7 @@ Use to decide if THR_ON / THR_OFF need to be raised (too many detections) or low
 
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
-OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_04"
+OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_02c"
 
 NETWORK  = "8C"
 STATION  = "CI18"

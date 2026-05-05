@@ -50,7 +50,7 @@ Output
 # -- Paths --------------------------------------------------------------------
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
-OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_04"
+OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_02b"
 
 # -- Time window to process ---------------------------------------------------
 T_START = "2022-06-01"
@@ -132,7 +132,7 @@ from catalog_helpers import build_station_list_from_inventory
 # ----------- Run setup ----------------
 RUN_DIR, _RUN_STAMP = create_run_dir(OUTPUT_DIR)
 _log_file, _log_filename = setup_logging(
-    RUN_DIR, "04_detection_pipeline.py",
+    RUN_DIR, "02b_spectrogram_sta_lta_detection.py",
     extra_info=(f"Period: {T_START} → {T_END}  |  "
                 f"Detect band: {FREQ_MIN}–{FREQ_MAX} Hz  |  "
                 f"STA/LTA: nsta={NSTA}  nlta={NLTA}  thr_on={THR_ON}  thr_off={THR_OFF}")

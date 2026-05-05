@@ -1,5 +1,5 @@
 """
-STA/LTA EVENT DETECTION
+CLASSICAL STA/LTA EVENT DETECTION
 =======================
 ISTerre internship — Environmental seismology in glaciology
 Author : Elsa Louis
@@ -21,7 +21,7 @@ to each station's vertical-component waveform to automatically detect the start 
 # -- Paths --------------------------------------------------------------------
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
-OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_02"
+OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_02a"
 
 # -- Catalog query window -----------------------------------------------------
 T_START = "2022-06-01"
@@ -104,7 +104,7 @@ from visualization import plot_sta_lta
 # ----------- Run setup ----------------
 RUN_DIR, _RUN_STAMP = create_run_dir(OUTPUT_DIR)
 _log_file, _log_filename = setup_logging(
-    RUN_DIR, "02_sta_lta_detection.py",
+    RUN_DIR, "02a_classical_sta_lta_detection.py",
     extra_info=f"STA={STA_S}s  LTA={LTA_S}s  ON={THRES_ON}  OFF={THRES_OFF}"
 )
 
