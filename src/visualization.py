@@ -9,6 +9,7 @@ All figure-generating functions used across the pipeline scripts:
   - plot_event_waveforms()    : waveform + PSD panels per station  (script 01)
   - plot_station_coverage()   : histogram + bar chart + box plot    (script 01)
   - plot_windowing()          : waveform + STA/LTA ratio panels     (script 02)
+  - plot_station_map()        : geographic station map, colored by SNR (script 05a)
 """
 
 import os
@@ -24,9 +25,7 @@ from scipy.signal import welch
 # WAVEFORM + PSD (script 01)
 # =============================================================================
 
-def plot_event_waveforms(st_proc, event, t_start, run_dir,
-                         normalize='individual',
-                         freqmin=None, freqmax=None, st_psd=None):
+def plot_event_waveforms(st_proc, event, t_start, run_dir, normalize='individual', freqmin=None, freqmax=None, st_psd=None):
     """
     Produce one figure per event: waveform (left) + PSD (right) per station
 
@@ -41,7 +40,7 @@ def plot_event_waveforms(st_proc, event, t_start, run_dir,
     event     : ObsPy Event object
     t_start   : UTCDateTime — start of the time window (time axis reference)
     run_dir   : str — output directory where the figure is saved
-    normalize : 'individual' (each trace scaled to its own max) or
+    normalize : 'individual' (each trace scaled to its own max) 
                 'common' (all traces divided by the global max — amplitudes comparable)
     freqmin, freqmax : float or None — bandpass limits; drawn as reference lines on the PSD
     st_psd    : ObsPy Stream or None — unfiltered stream (demean+detrend+taper only) used for the PSD to show the true full spectrum
@@ -178,8 +177,7 @@ def plot_event_waveforms(st_proc, event, t_start, run_dir,
 # STATION COVERAGE SUMMARY (script 01)
 # =============================================================================
 
-def plot_station_coverage(station_counts, n_stations_per_event, counts_by_type,
-                          t_start_str, t_end_str, run_dir, n_events):
+def plot_station_coverage(station_counts, n_stations_per_event, counts_by_type, t_start_str, t_end_str, run_dir, n_events):
     """
     Save two station coverage figures to run_dir
 
@@ -278,8 +276,7 @@ def plot_station_coverage(station_counts, n_stations_per_event, counts_by_type,
 # WAVEFORM + STA/LTA CHARACTERISTIC FUNCTION — ALL STATIONS (script 02)
 # =============================================================================
 
-def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir,
-                   freq_min=1.0, freq_max=20.0, nsta=1, nlta=15, pre_event=150):
+def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir, freq_min=1.0, freq_max=20.0, nsta=1, nlta=15):
     """
     One figure per catalog event —> all stations stacked in rows
 
@@ -501,3 +498,117 @@ def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir,
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"    [SAVED] {fname}")
+
+
+
+# =============================================================================
+# GEOGRAPHIC STATION MAP (script 05a)
+# =============================================================================
+
+def plot_station_map(ax, snr_series, sta_coords, title, vmin, vmax, map_extent, mont_blanc_lon, mont_blanc_lat,
+                     cmap='YlOrRd', basemap_zoom=9):
+    """
+    Plot one geographic station map panel on an existing Axes
+     -> one dot per station, colored by its mean SNR value
+
+    A satellite basemap (Esri WorldImagery) with a city-label overlay (CartoDB VoyagerOnlyLabels) is added automatically via contextily 
+     -> when library available and network reachable (if not: white grid background)
+
+    Parameters
+    ----------
+    ax              : matplotlib.axes.Axes
+    snr_series      : pd.Series — index = station code, values = mean SNR for the metric and subset
+    sta_coords      : dict  {station_code: (latitude, longitude)}
+    title           : str   — subplot title
+    vmin, vmax      : float — shared color scale bounds
+    map_extent      : tuple (lon_min, lon_max, lat_min, lat_max)
+    mont_blanc_lon  : float — longitude of the Mont Blanc summit reference point
+    mont_blanc_lat  : float — latitude  of the Mont Blanc summit reference point
+    cmap            : str   — matplotlib colormap name (default 'YlOrRd', same as the SNR heatmap figures)
+    basemap_zoom    : int   — tile zoom level for contextily: 8 = fast, 9 = city names visible, 10 = detailed
+
+    Returns
+    -------
+    n_plotted : int — number of stations successfully drawn on the map
+    """
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
+    from matplotlib.patches import Rectangle
+    import matplotlib.patheffects as pe
+
+    lon_min, lon_max, lat_min, lat_max = map_extent
+    norm     = mcolors.Normalize(vmin=vmin, vmax=vmax)
+    cmap_obj = cm.get_cmap(cmap)
+
+    # ---- Map frame ----------------------------------------------------------
+    ax.set_xlim(lon_min, lon_max)
+    ax.set_ylim(lat_min, lat_max)
+    ax.set_xlabel('Longitude (°E)', fontsize=8)
+    ax.set_ylabel('Latitude (°N)',  fontsize=8)
+    ax.tick_params(labelsize=7)
+    ax.set_title(title, fontsize=9, fontweight='bold')
+
+    # ---- Satellite basemap (contextily) -------------------------------------
+    _has_basemap = False
+    try:
+        import contextily as ctx
+        # Layer 1: Esri WorldImagery, satellite photograph of the Alps
+        ctx.add_basemap(ax, crs='EPSG:4326',                    # EPSG:4326 (lat/lon) so no coordinate reprojection needed
+                        source=ctx.providers.Esri.WorldImagery, 
+                        zoom=basemap_zoom, attribution_size=5)
+        # Layer 2: CartoDB VoyagerOnlyLabels, city names / roads on top
+        ctx.add_basemap(ax, crs='EPSG:4326', 
+                        source=ctx.providers.CartoDB.VoyagerOnlyLabels, 
+                        zoom=basemap_zoom, attribution_size=5, alpha=0.85)
+        ax.set_xlim(lon_min, lon_max)
+        ax.set_ylim(lat_min, lat_max)
+        _has_basemap = True
+    except ImportError:         # falls back to a white grid if contextily not installed or network unavailable
+        ax.grid(True, lw=0.3, alpha=0.5, ls='--')
+        ax.set_facecolor('#f0f0f0')
+    except Exception as exc:
+        ax.grid(True, lw=0.3, alpha=0.5, ls='--')
+        ax.text(0.01, 0.01, f'Basemap unavailable ({exc})',
+                transform=ax.transAxes, fontsize=5, color='grey', va='bottom')
+
+    # Annotation colours that stay readable on both satellite and white backgrounds
+    _stroke      = [pe.withStroke(linewidth=2.5, foreground='black')]
+    label_color  = 'white' if _has_basemap else '#222222'
+    marker_color = 'white' if _has_basemap else 'black'
+    rect_color   = 'white' if _has_basemap else 'black'
+
+    # ---- Mont Blanc summit — fixed geographic reference ---------------------
+    ax.plot(mont_blanc_lon, mont_blanc_lat,
+            marker='*', color=marker_color, markersize=13,
+            markeredgecolor='black', markeredgewidth=0.5,
+            zorder=10)
+    ax.annotate('Mont Blanc',
+                (mont_blanc_lon, mont_blanc_lat),
+                textcoords='offset points', xytext=(5, 5),
+                fontsize=7, color=marker_color, fontweight='bold',
+                path_effects=_stroke if _has_basemap else [])
+
+    # ---- Mont Blanc massif bounding box (dashed rectangle) ------------------
+    massif_rect = Rectangle(
+        (6.6, 45.7), width=0.7, height=0.3,
+        linewidth=1.5, edgecolor=rect_color, facecolor='none',
+        linestyle='--', zorder=5,
+    )
+    ax.add_patch(massif_rect)
+
+    # ---- Station dots -------------------------------------------------------
+    n_plotted = 0
+    for sta_code, snr_val in snr_series.items():
+        if sta_code not in sta_coords:
+            continue
+        lat, lon = sta_coords[sta_code]
+        color = cmap_obj(norm(snr_val)) if not np.isnan(snr_val) else 'lightgrey'
+        ax.scatter(lon, lat, s=130, color=color,
+                   edgecolors='black', linewidths=0.8, zorder=6)
+        ax.annotate(sta_code, (lon, lat),
+                    textcoords='offset points', xytext=(4, 4),
+                    fontsize=6.5, color=label_color, fontweight='bold',
+                    path_effects=_stroke if _has_basemap else [])
+        n_plotted += 1
+
+    return n_plotted

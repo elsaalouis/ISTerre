@@ -26,7 +26,7 @@ For each event where the target station has a pick, this script:
 
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
-OUTPUT_DIR  = "/data/failles/louisels/project/results/diag_station_waveforms"
+OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_05b"
 
 # Catalog query
 T_START = "2022-02-01"
@@ -79,7 +79,7 @@ from detection import compute_snr
 
 RUN_DIR, _RUN_STAMP = create_run_dir(OUTPUT_DIR)
 _log_file, _log_filename = setup_logging(
-    RUN_DIR, "diag_station_waveforms.py",
+    RUN_DIR, "05b_diag_station_waveforms.py",
     extra_info=f"Stations: {TARGET_STATIONS}  FREQ={FREQ_MIN}–{FREQ_MAX} Hz  "
                f"PRE={PRE_EVENT}s  POST={POST_EVENT}s"
 )
