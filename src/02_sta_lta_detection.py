@@ -56,8 +56,8 @@ ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
 OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_02"
 
 # -- Catalog query window -----------------------------------------------------
-T_START = "2022-06-01"
-T_END   = "2022-07-01"
+T_START = "2022-02-01"
+T_END   = "2022-08-01"
 
 LAT_MIN, LAT_MAX = 45.5, 46.0
 LON_MIN, LON_MAX = 6.5, 7.2
@@ -110,9 +110,7 @@ N_FEATURES   = 99
 # -- Events to process --------------------------------------------------------
 # Leave empty [] to process ALL catalog events of TARGET_TYPES, or list exact origin times to restrict the events
 TARGET_EVENT_TIMES = [        # format: "YYYY-MM-DDTHH:MM:SS"
-    "2022-06-26T07:27:02",
-    "2022-06-29T20:22:22",
-    "2022-06-01T00:06:33",
+    
 ]
 
 

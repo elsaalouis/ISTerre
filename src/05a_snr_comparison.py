@@ -7,8 +7,7 @@ Date   : April 2026
 
 Goal
 ----
-Compare the 7 SNR metrics computed by script 02 to identify which one best separates
-high-quality detections from poor ones.
+Compare the 7 SNR metrics computed by script 02 to identify which one best separates high-quality detections from poor ones
 
 Ground truth: origin_inside_det
   True  -> catalog origin time falls inside the detected window (good detection)
@@ -20,12 +19,9 @@ Ground truth: pick_inside_det
 
 Analyses
 --------
-  3.1  Basic distribution statistics per metric (mean, median, std, IQR)
-       + mean for good vs bad detections separately
-  3.2  Pearson correlation matrix between the 7 metrics
-       (are some metrics redundant?)
-  3.3  ROC curves + AUC for each metric
-       (which metric best discriminates good from bad detections?)
+  3.1  Basic distribution statistics per metric (mean, median, std, IQR) + mean for good vs bad detections separately
+  3.2  Pearson correlation matrix between the 7 metrics (are some metrics redundant?)
+  3.3  ROC curves + AUC for each metric (which metric best discriminates good from bad detections?)
   3.4  Youden J optimal threshold per metric
   3.5  Threshold sensitivity: pass rate, TPR, FPR vs threshold value
   3.6  Per-station and per-event-type summary
@@ -34,7 +30,7 @@ Analyses
 Input
 -----
   catalog_windows_<stamp>.csv  (output of script 02)
-  ISTerre SDS archive          (for waveform panel, cluster only)
+  ISTerre SDS archive          (for waveform panel)
 
 Output
 ------
@@ -43,9 +39,10 @@ Output
   fig_correlation_<stamp>.png           : Pearson correlation heatmap
   fig_roc_<stamp>.png                   : ROC curves for all 7 metrics
   fig_threshold_sensitivity_<stamp>.png : pass rate / TPR / FPR vs threshold
-  fig_boxplots_type_<stamp>.png         : per event-type boxplots
-  fig_station_heatmap_<stamp>.png       : per-station mean SNR values
-  fig_waveforms_<stamp>.png             : waveform panel for sampled detections
+  fig_station_heatmap_<stamp>.png              : global per-station mean SNR heatmap
+  fig_station_heatmap_<etype>_<stamp>.png     : one heatmap per event type
+  fig_station_map_<stamp>.png                 : geographic station map (global + per type)
+  fig_waveforms_<stamp>.png                   : waveform panel for sampled detections
 """
 
 
@@ -56,14 +53,12 @@ Output
 # =============================================================================
 
 # -- Input CSV (output of script 02) ------------------------------------------
-# Leave INPUT_CSV = "" to auto-detect the most recent catalog_windows_*.csv in SEARCH_DIR
-INPUT_CSV  = ""
-SEARCH_DIR = "/data/failles/louisels/project/results/outputs_02"
+INPUT_CSV  = "/data/failles/louisels/project/results/outputs_02/run_20260429_154458/catalog_windows_20260429_154458.csv"
 
 # -- Paths --------------------------------------------------------------------
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
-OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_03"
+OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_05a"
 
 # -- Key diagnostic -----------------------------------------------------------
 GROUND_TRUTH = 'pick_inside_det'  # origin_inside_det or pick_inside_det
@@ -86,7 +81,7 @@ SNR_SHORT = {
     'SNR_picking_1_3'  : 'pick_1-3\n(1s/3s)',
     'SNR_full_mean'    : 'full_mean',
     'SNR_full_median'  : 'full_median',
-    'SNR_s2n_median'   : 's2n_median\n(robust)',
+    'SNR_s2n_median'   : 's2n_median\n(MAD noise)',
 }
 # Full descriptions for figure titles
 SNR_LONG = {
@@ -102,13 +97,12 @@ SNR_LONG = {
 # -- Threshold sensitivity sweep (section 3.5) --------------------------------
 THRESHOLD_RANGE = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5, 10.0, 15.0, 20.0]
 
-# -- Waveform panel -----------------------------------------------------------
-N_WAVEFORM_SAMPLES   = 20             # number of traces shown (spread across the SNR range)
-WAVEFORM_RANK_METRIC = 'SNR_full_mean'# metric used to rank detections in the panel
-WAVEFORM_PAD_S       = 10.0           # seconds added before/after the detection window
-WAVEFORM_FREQMIN     = 1.0            # Hz — bandpass filter for display
-WAVEFORM_FREQMAX     = 20.0           # Hz
-WAVEFORM_CHANNEL     = "??Z"          # channel wildcard for SDS query
+# -- Station map ---------------------------------------------------------------
+# One dot per station on a geographic map, colored by mean SNR of MAP_METRIC
+MAP_METRIC      = 'SNR_s2n_median'   # metric displayed on the geographic map
+MAP_EXTENT_PAD  = 0.5                # degrees of padding added around the event bounding box
+MONT_BLANC_LON  = 6.865              
+MONT_BLANC_LAT  = 45.832             
 
 
 
@@ -135,14 +129,17 @@ from run_setup import (
     create_run_dir,
     setup_logging,
     connect_sds,
+    connect_fdsn,
+    fetch_inventory,
     set_matplotlib_defaults,
 )
+from visualization import plot_station_map
 
 
 # ----------- Run setup ---------------
 RUN_DIR, _RUN_STAMP = create_run_dir(OUTPUT_DIR)
 _log_file, _log_filename = setup_logging(
-    RUN_DIR, "03_snr_comparison.py",
+    RUN_DIR, "05a_snr_comparison.py",
     extra_info=f"Ground truth: {GROUND_TRUTH} | Metrics: {SNR_METRICS}"
 )
 set_matplotlib_defaults()
@@ -152,15 +149,7 @@ set_matplotlib_defaults()
 if INPUT_CSV and os.path.isfile(INPUT_CSV):
     csv_path = INPUT_CSV
 else:
-    # Auto-detect the most recent catalog_windows_*.csv produced by script 02
-    pattern    = os.path.join(SEARCH_DIR, "**", "catalog_windows_*.csv")
-    candidates = sorted(glob.glob(pattern, recursive=True))
-    if not candidates:
-        print(f"[ERROR] No catalog_windows_*.csv found under {SEARCH_DIR}.")
-        print(f"        Set INPUT_CSV manually in SECTION 1.")
-        sys.exit(1)
-    csv_path = candidates[-1]   # most recent file
-    print(f"[AUTO] Using most recent CSV:\n       {csv_path}")
+    print(f"[ERROR] No catalog_windows_*.csv found.")
 
 print(f"\nLoading CSV ...")
 df_all = pd.read_csv(csv_path)
@@ -195,6 +184,41 @@ for et, cnt in df['event_type'].value_counts().items():
 
 # ----------- SDS connection (needed only for waveform panel) -----------------
 client_sds = connect_sds(SDS_ROOT)
+
+# ----------- Auto-derive date range and map extent from CSV ------------------
+# Date range for the FDSN inventory query: use the actual event period in the CSV
+_ev_times    = pd.to_datetime(df['event_time'], errors='coerce').dropna()
+MAP_T_START  = _ev_times.min().strftime('%Y-%m-%d')
+MAP_T_END    = _ev_times.max().strftime('%Y-%m-%d')
+print(f"\n  Study period (from CSV): {MAP_T_START} → {MAP_T_END}")
+
+# Geographic extent for the map: bounding box of catalog events + padding
+_lats = df['catalog_lat'].dropna()
+_lons = df['catalog_lon'].dropna()
+MAP_LAT_MIN  = float(_lats.min()) - MAP_EXTENT_PAD
+MAP_LAT_MAX  = float(_lats.max()) + MAP_EXTENT_PAD
+MAP_LON_MIN  = float(_lons.min()) - MAP_EXTENT_PAD
+MAP_LON_MAX  = float(_lons.max()) + MAP_EXTENT_PAD
+print(f"  Map extent (from CSV):  lat [{MAP_LAT_MIN:.2f}, {MAP_LAT_MAX:.2f}]"
+      f"  lon [{MAP_LON_MIN:.2f}, {MAP_LON_MAX:.2f}]")
+
+# ----------- FDSN connection + station coordinates (for station maps) --------
+client_fdsn = connect_fdsn(ISTERRE_URL)
+sta_coords  = {}   # {station_code: (latitude, longitude)}
+if client_fdsn is not None:
+    try:
+        inv = fetch_inventory(client_fdsn, MAP_T_START, MAP_T_END)
+        if inv is not None:
+            for net in inv:
+                for sta in net:
+                    sta_coords[sta.code] = (sta.latitude, sta.longitude)
+            print(f"  Station coordinates fetched: {len(sta_coords)} stations")
+        else:
+            print("  [WARN] Inventory is None — station maps will be skipped")
+    except Exception as e:
+        print(f"  [WARN] Could not fetch station coordinates: {e}")
+else:
+    print("  [WARN] FDSN unavailable — station maps will be skipped")
 
 
 # ----------- Color scheme used in all figures --------------------------------
@@ -555,45 +579,8 @@ plt.close()
 print(f"    [SAVED] {path}")
 
 
-# ---- Figure 5: Boxplots by event type ---------------------------------------
-print("  Fig 5: Boxplots by event type ...")
-
-event_types = sorted(df['event_type'].dropna().unique())
-ncols = min(4, N_M)
-nrows = int(np.ceil(N_M / ncols))
-fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
-axes = np.array(axes).flatten()
-
-for k, metric in enumerate(SNR_METRICS):
-    ax = axes[k]
-    data_by_type = [
-        df.loc[df['event_type'] == et, metric].dropna().values
-        for et in event_types
-    ]
-    bp = ax.boxplot(data_by_type, patch_artist=True,
-                    medianprops={'color': 'black', 'lw': 2.0},
-                    flierprops={'marker': '.', 'markersize': 3, 'alpha': 0.5})
-    for patch, color in zip(bp['boxes'], plt.cm.Set2.colors):
-        patch.set_facecolor(color); patch.set_alpha(0.75)
-    ax.set_xticks(range(1, len(event_types) + 1))
-    ax.set_xticklabels(event_types, rotation=30, ha='right', fontsize=8)
-    ax.set_title(SNR_LONG.get(metric, metric), fontsize=8)
-    ax.set_ylabel('SNR value', fontsize=8)
-    ax.tick_params(labelsize=7)
-
-for idx in range(N_M, len(axes)):
-    axes[idx].set_visible(False)
-
-fig.suptitle('SNR metric distributions per event type', fontsize=11)
-plt.tight_layout(rect=[0, 0, 1, 0.97])
-path = os.path.join(RUN_DIR, f"fig_boxplots_type_{_RUN_STAMP}.png")
-fig.savefig(path, dpi=150, bbox_inches='tight')
-plt.close()
-print(f"    [SAVED] {path}")
-
-
-# ---- Figure 6: Per-station mean SNR heatmap ---------------------------------
-print("  Fig 6: Per-station heatmap ...")
+# ---- Figure 5: Per-station mean SNR heatmap ---------------------------------
+print("  Fig 5: Per-station heatmap ...")
 
 df_sta_plot = df.groupby('station')[SNR_METRICS].mean()
 n_sta = len(df_sta_plot)
@@ -622,127 +609,126 @@ print(f"    [SAVED] {path}")
 
 
 
-# =============================================================================
-# SECTION 5 — WAVEFORM PANEL
-# =============================================================================
+# ---- Figures 6+: Per-event-type heatmaps ------------------------------------
+# Same format as Fig 5 (per-station mean SNR heatmap) but restricted to each event type. One file saved per event type.
 
-print("\n" + "=" * 70)
-print("  WAVEFORM PANEL")
-print("=" * 70)
+print("  Fig 6+: Per-event-type station heatmaps ...")
 
-if client_sds is None:
-    print("[SKIP] SDS client unavailable — waveform panel requires cluster access.")
+event_types_hm = sorted(df['event_type'].dropna().unique())
+
+for etype in event_types_hm:
+    df_sub  = df[df['event_type'] == etype]
+    df_hm   = df_sub.groupby('station')[SNR_METRICS].mean()
+    n_sta_e = len(df_hm)
+
+    if n_sta_e == 0:
+        print(f"    [{etype}] No data — skipping heatmap.")
+        continue
+
+    fig, ax = plt.subplots(figsize=(max(9, N_M * 1.6), max(3, n_sta_e * 0.55)))
+    vmax_e  = np.nanpercentile(df_hm.values, 95)
+    im = ax.imshow(df_hm.values, aspect='auto', cmap='YlOrRd',
+                   vmin=0, vmax=max(vmax_e, 1e-3))
+    ax.set_xticks(range(N_M))
+    ax.set_xticklabels([SNR_SHORT.get(m, m).replace('\n', ' ') for m in SNR_METRICS],
+                       rotation=40, ha='right', fontsize=9)
+    ax.set_yticks(range(n_sta_e))
+    ax.set_yticklabels(df_hm.index.tolist(), fontsize=9)
+    for i in range(n_sta_e):
+        for j in range(N_M):
+            val = df_hm.values[i, j]
+            if not np.isnan(val):
+                ax.text(j, i, f'{val:.1f}', ha='center', va='center', fontsize=8)
+    plt.colorbar(im, ax=ax, label='Mean SNR  (capped at 95th percentile)')
+    n_ev_e = df_sub['event_time'].nunique()
+    ax.set_title(f'Per-station mean SNR — {etype}  ({n_ev_e} events, {len(df_sub)} detections)',
+                 fontsize=10)
+    plt.tight_layout()
+    safe_name = etype.replace(' ', '_').replace('/', '_')
+    path = os.path.join(RUN_DIR, f"fig_station_heatmap_{safe_name}_{_RUN_STAMP}.png")
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"    [{etype}] [SAVED] {path}")
+
+
+# ---- Figures 7+: Station geographic maps ------------------------------------
+# One dot per station on a map, colored by mean SNR of MAP_METRIC.
+# plot_station_map() is defined in visualization.py.
+
+print(f"  Fig 7+: Station geographic maps (metric: {MAP_METRIC}) ...")
+
+_map_extent = (MAP_LON_MIN, MAP_LON_MAX, MAP_LAT_MIN, MAP_LAT_MAX)
+
+# Panels: global + one per event type
+map_tasks = [('global', df)] + [(et, df[df['event_type'] == et]) for et in event_types_hm]
+
+# Shared color scale across all panels (so colors are directly comparable)
+all_snr_vals = []
+for _, df_sub in map_tasks:
+    if MAP_METRIC in df_sub.columns:
+        vals = df_sub.groupby('station')[MAP_METRIC].mean().dropna().values
+        all_snr_vals.extend(vals.tolist())
+
+if not sta_coords:
+    print("    [SKIP] No station coordinates — station maps skipped.")
+elif not all_snr_vals:
+    print(f"    [SKIP] Metric {MAP_METRIC} not found in data.")
 else:
-    # Sort all detections by WAVEFORM_RANK_METRIC and sample N evenly across the range
-    df_ranked = df.dropna(subset=[WAVEFORM_RANK_METRIC]).sort_values(WAVEFORM_RANK_METRIC)
-    df_ranked = df_ranked.reset_index(drop=True)
+    vmin_map = 0.0
+    vmax_map = float(np.nanpercentile(all_snr_vals, 95))
 
-    if len(df_ranked) == 0:
-        print("[SKIP] No valid rows for waveform panel.")
-    else:
-        n_sample  = min(N_WAVEFORM_SAMPLES, len(df_ranked))
-        indices   = np.linspace(0, len(df_ranked) - 1, n_sample, dtype=int)
-        df_sample = df_ranked.iloc[indices].reset_index(drop=True)
+    n_tasks = len(map_tasks)
+    fig_map, axes_map = plt.subplots(1, n_tasks, figsize=(6 * n_tasks, 5.5), constrained_layout=True)
+    if n_tasks == 1:
+        axes_map = [axes_map]
 
-        print(f"\n  Sampling {n_sample} detections across {WAVEFORM_RANK_METRIC} range")
-        print(f"  (min={df_ranked[WAVEFORM_RANK_METRIC].iloc[0]:.2f}  "
-              f"max={df_ranked[WAVEFORM_RANK_METRIC].iloc[-1]:.2f})")
+    for ax_m, (label, df_sub) in zip(axes_map, map_tasks):
+        snr_by_sta = df_sub.groupby('station')[MAP_METRIC].mean()
+        if label == 'global':
+            title_m = f'All event types\n(n_det={len(df_sub)})'
+        else:
+            n_ev_e = df_sub['event_time'].nunique()
+            title_m = f'{label}\n({n_ev_e} events, {len(df_sub)} det.)'
 
-        fig, axes = plt.subplots(n_sample, 1, figsize=(19, max(6, n_sample * 1.3)),
-                                 sharex=False)
-        if n_sample == 1:
-            axes = [axes]
-
-        n_loaded = 0
-        for row_idx, (_, row) in enumerate(df_sample.iterrows()):
-            ax  = axes[row_idx]
-            net = str(row['network'])
-            sta = str(row['station'])
-            chan = str(row.get('channel', WAVEFORM_CHANNEL))
-
-            try:
-                t_on   = UTCDateTime(row['det_starttime'])
-                t_off  = UTCDateTime(row['det_endtime'])
-                t_orig = UTCDateTime(row['event_time'])
-            except Exception:
-                ax.text(0.5, 0.5, 'Bad timestamps in CSV',
-                        transform=ax.transAxes, ha='center', va='center', fontsize=8)
-                continue
-
-            # Try several location codes (location is not stored in the script 02 CSV)
-            tr = None
-            for loc in ['', '*', '00', '10', '20']:
-                try:
-                    st_tmp = client_sds.get_waveforms(
-                        network=net, station=sta, location=loc, channel=chan,
-                        starttime=t_on - WAVEFORM_PAD_S,
-                        endtime=t_off + WAVEFORM_PAD_S,
-                    )
-                    if len(st_tmp) > 0:
-                        tr = st_tmp[0]; break
-                except Exception:
-                    continue
-
-            if tr is None:
-                ax.text(0.5, 0.5, f'{net}.{sta}.{chan} — no SDS data',
-                        transform=ax.transAxes, ha='center', va='center',
-                        fontsize=8, color='gray')
-                continue
-
-            # Bandpass filter
-            try:
-                tr.detrend('demean')
-                nyq = tr.stats.sampling_rate / 2.0
-                tr.filter('bandpass',
-                          freqmin=WAVEFORM_FREQMIN,
-                          freqmax=min(WAVEFORM_FREQMAX, 0.9 * nyq),
-                          corners=2, zerophase=True)
-            except Exception:
-                pass
-
-            # Time axis: 0 = detection onset (t_on)
-            t_sec = (np.arange(tr.stats.npts) / tr.stats.sampling_rate
-                     + float(tr.stats.starttime - t_on))
-
-            ax.plot(t_sec, tr.data * 1e6, color='#333333', lw=0.5)
-            ax.axvspan(0, float(t_off - t_on), color='steelblue', alpha=0.12)
-            ax.axvline(0, color='steelblue', lw=1.1, ls='--', alpha=0.8)
-            ax.axvline(float(t_off - t_on), color='steelblue', lw=1.1, ls='--', alpha=0.8)
-            ax.axvline(float(t_orig - t_on), color='red', lw=1.3, ls=':')
-
-            inside_str = 'IN' if row['origin_inside_det'] else 'OUT'
-            snr_annot  = '   '.join([
-                f"{SNR_SHORT.get(m, m).replace(chr(10),' ')}={row.get(m, float('nan')):.1f}"
-                for m in SNR_METRICS if m in row
-            ])
-            ax.set_title(
-                f"Rank {row_idx+1}/{n_sample}  {net}.{sta}  {row.get('event_type','?')}"
-                f"  [{WAVEFORM_RANK_METRIC}={row[WAVEFORM_RANK_METRIC]:.2f}  origin={inside_str}]\n"
-                f"{snr_annot}",
-                fontsize=6.5, loc='left', pad=2
-            )
-            ax.set_ylabel('µm/s', fontsize=6)
-            ax.tick_params(labelsize=6)
-            ax.set_xlim(t_sec[0], t_sec[-1])
-            n_loaded += 1
-
-        axes[-1].set_xlabel(
-            'Time relative to detection onset (s)  |  '
-            'Blue shade = detected window  |  Red dotted = catalog origin',
-            fontsize=9
+        n_ok = plot_station_map(
+            ax_m, snr_by_sta, sta_coords,
+            title      = title_m,
+            vmin       = vmin_map,
+            vmax       = vmax_map,
+            map_extent = _map_extent,
+            mont_blanc_lon = MONT_BLANC_LON,
+            mont_blanc_lat = MONT_BLANC_LAT,
         )
-        fig.suptitle(
-            f'Waveform panel — {n_sample} detections from lowest (rank 1) to highest '
-            f'(rank {n_sample}) {WAVEFORM_RANK_METRIC}\n'
-            f'Filter: {WAVEFORM_FREQMIN}–{WAVEFORM_FREQMAX} Hz',
-            fontsize=10
-        )
-        plt.tight_layout(rect=[0, 0.01, 1, 0.97])
-        path = os.path.join(RUN_DIR, f"fig_waveforms_{_RUN_STAMP}.png")
-        fig.savefig(path, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"\n  {n_loaded}/{n_sample} waveforms loaded.")
-        print(f"  [SAVED] {path}")
+        print(f"    [{label}] {n_ok} stations plotted")
+
+    # Shared colorbar
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
+    sm = cm.ScalarMappable(cmap='YlOrRd', norm=mcolors.Normalize(vmin=vmin_map, vmax=vmax_map))
+    sm.set_array([])
+    fig_map.colorbar(sm, ax=axes_map, label=f'Mean {MAP_METRIC}  (color capped at 95th pct)', shrink=0.7, pad=0.01)
+
+    # Legend on first subplot only
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+    legend_handles = [
+        Line2D([0], [0], marker='*', color='black', markersize=10, linestyle='None', label='Mont Blanc summit'),
+        Patch(edgecolor='black', facecolor='none', linestyle='--', label='Mont Blanc massif (approx.)'),
+        Patch(facecolor='lightgrey', edgecolor='black', label='Station — no coordinate in inventory'),
+    ]
+    axes_map[0].legend(handles=legend_handles, fontsize=7, loc='lower left')
+
+    fig_map.suptitle(
+        f'Station geographic map — mean {MAP_METRIC} per station and event type\n'
+        f'Light = low SNR  |  Dark = high SNR  |  ★ = Mont Blanc\n'
+        f'Light dot inside massif box → poor coupling  |  '
+        f'Light dot outside → too far from sources',
+        fontsize=9
+    )
+    path = os.path.join(RUN_DIR, f"fig_station_map_{_RUN_STAMP}.png")
+    fig_map.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig_map)
+    print(f"    [SAVED] {path}")
 
 
 
