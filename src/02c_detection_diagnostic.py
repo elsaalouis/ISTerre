@@ -7,9 +7,9 @@ Date   : April 2026
 
 Goal
 ----
-Quick QC tool to assess whether the detection thresholds in script 04 are well-calibrated
+Quick QC tool to assess whether the detection thresholds in script 02b are well-calibrated
 For a chosen station and day, this script:
-  1. Loads and preprocesses the full-day trace (same as script 04)
+  1. Loads and preprocesses the full-day trace (same as script 02b)
   2. Runs DetecteurV3 on each 10-min window and collects sum_cft
   3. Produces two figures:
        Fig 1 — Full-day waveform with detected event windows overlaid
