@@ -62,7 +62,7 @@ THRES_OFF = 2.0    # STA/LTA ratio to declare event end    [was 1.5 → raised]
 MIN_DURATION_S = 0.5   # discard detections shorter than this  [0.5 s: good balance for local microseismicity]
 
 # -- Reference date -----------------------------------------------------------
-DESTAB_DATE = "2026-04-15"   # apparently destabilisation onset
+DESTAB_DATE = "2026-04-13"   # apparently destabilisation onset
 
 # -- Instrument sensitivity ---------------------------------------------------
 SENSITIVITY = None    # e.g. 4e8  [counts / (m/s)]
@@ -70,8 +70,8 @@ SENSITIVITY = None    # e.g. 4e8  [counts / (m/s)]
 # -- Night-time window (UTC) for seismicity-only counting ---------------------
 # Workers and machinery inactive → detections in this window are mostly seismic
 # Switzerland is CEST = UTC+2 in spring  →  22:00–05:00 local = 20:00–03:00 UTC
-NIGHT_START_UTC = 20   # 20:00 UTC = 22:00 local
-NIGHT_END_UTC   = 3    # 03:00 UTC = 05:00 local
+NIGHT_START_UTC = 18   # 18:00 UTC = 20:00 local
+NIGHT_END_UTC   = 4    # 04:00 UTC = 06:00 local
 
 # -- Plotting -----------------------------------------------------------------
 PLOT_DAYS     = True   # save a per-day waveform + CFT figure
@@ -482,7 +482,6 @@ if all_rows:
         f"Band: {FREQMIN}–{FREQMAX} Hz  |  "
         f"STA={STA_S}s  LTA={LTA_S}s  |  "
         f"thr ON={THRES_ON} / OFF={THRES_OFF}\n"
-        f"Blue bands = night window (UTC {NIGHT_START_UTC:02d}:00–{NIGHT_END_UTC:02d}:00)  |  "
         f"Dashed lines = destabilisation onset ({DESTAB_DATE})"
     )
     plt.tight_layout()
