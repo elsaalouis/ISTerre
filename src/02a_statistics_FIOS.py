@@ -43,6 +43,9 @@ DESTAB_DATE = "2026-04-14"
 NIGHT_START_UTC = 18   # 18:00 UTC = 20:00 local (CEST)
 NIGHT_END_UTC   = 4    # 04:00 UTC = 06:00 local
 
+FREQMIN = 5.0   
+FREQMAX = 20.0    
+
 
 
 # =============================================================================
@@ -428,7 +431,7 @@ if has_night:
     ax.set_ylim(bottom=0)
     ax.set_title(
         f'FIO1 — Night-only microseismicity trend  [Classical STA/LTA]\n'
-        f'Band: 10–80 Hz  |  Night window: UTC {NIGHT_START_UTC:02d}:00–{NIGHT_END_UTC:02d}:00  |  '
+        f'Band: {FREQMIN}–{FREQMAX} Hz  |  Night window: UTC {NIGHT_START_UTC:02d}:00–{NIGHT_END_UTC:02d}:00  |  '
         f'{ROLLING_DAYS}-day rolling mean  |  Dashed = linear trends'
     )
     ax.legend(fontsize=9, loc='upper right')

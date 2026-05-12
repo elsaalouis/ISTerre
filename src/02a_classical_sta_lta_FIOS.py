@@ -49,13 +49,13 @@ T_START = "2026-03-19"   # first day to process
 T_END   = "2026-05-06"   # last  day to process (exclusive)
 
 # -- Preprocessing ------------------------------------------------------------
-FREQMIN = 10.0    # bandpass low  cutoff -> above the 5–6 Hz resonance peak
-FREQMAX = 80.0    # bandpass high cutoff
+FREQMIN = 5.0    # bandpass low  cutoff -> above the 5–6 Hz resonance peak
+FREQMAX = 20.0    # bandpass high cutoff
 
 # -- STA/LTA parameters -------------------------------------------------------
-STA_S     = 0.5    # Short-Term Average window (seconds)
-LTA_S     = 60.0   # Long-Term Average window  (seconds)  [was 10 → raised]
-THRES_ON  = 5.0    # STA/LTA ratio to declare event onset  [was 3.0 → raised]
+STA_S     = 1    # Short-Term Average window (seconds)
+LTA_S     = 80.0   # Long-Term Average window  (seconds)  [was 10 → raised]
+THRES_ON  = 4.0    # STA/LTA ratio to declare event onset  [was 3.0 → raised]
 THRES_OFF = 2.0    # STA/LTA ratio to declare event end    [was 1.5 → raised]
 
 # -- Post-detection quality filter --------------------------------------------
