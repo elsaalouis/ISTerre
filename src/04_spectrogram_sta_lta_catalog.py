@@ -92,16 +92,14 @@ PAD_SEC = 5        # seconds added before t_on and after t_off when cutting the 
 SNR_MEAN_MIN   = 3.0
 SNR_MEDIAN_MIN = 3.0
 
-# -- Kurtosis onset refiner (Fuchs et al. 2018) — applied to rockslides only --
-# Uses a narrower bandpass (1–5 Hz) to suppress microseism and enhance emergent
-# rockslide onsets, following Fuchs et al. recommendation.
+# -- Kurtosis onset refiner (Fuchs 2018), applied to rockslides only ----------
 KURTOSIS_REFINE       = True    # set False to skip refinement entirely
-KURTOSIS_FREQ_MIN     = 1.0    # Hz — narrow band for the kurtosis picker
-KURTOSIS_FREQ_MAX     = 5.0    # Hz — Fuchs et al. use 1–5 Hz
-KURTOSIS_DT_S         = 5.0    # s  — kurtosis sliding window length (Fuchs: 5 s)
-KURTOSIS_SEARCH_BEFORE= 10.0   # s  — search from this many s before Groult t_on (Fuchs: 10 s)
-KURTOSIS_SEARCH_AFTER = 1.0    # s  — search to this many s after Groult t_on (Fuchs: 1 s)
-KURTOSIS_ETYPES       = ('rockslide', 'rockfall', 'landslide')  # event types to refine
+KURTOSIS_FREQ_MIN     = 1.0    # [Hz] narrow band for the kurtosis picker
+KURTOSIS_FREQ_MAX     = 5.0    # [Hz] (Fuchs: 1–5 Hz)
+KURTOSIS_DT_S         = 5.0    # [s] kurtosis sliding window length (Fuchs: 5 s)
+KURTOSIS_SEARCH_BEFORE= 10.0   # [s] search from this many s before Groult t_on (Fuchs: 10 s)
+KURTOSIS_SEARCH_AFTER = 1.0    # [s] search to this many s after Groult t_on (Fuchs: 1 s)
+KURTOSIS_ETYPES       = ('rockslide', 'landslide')  # event types to refine
 
 # -- Feature extraction -------------------------------------------------------
 FEATURE_FLAG = 0   # 0 = 99 features, vertical component only
@@ -254,8 +252,7 @@ for i, ev in enumerate(batch):
         tr.filter('bandpass', freqmin=FREQ_MIN, freqmax=min(FREQ_MAX, 0.9 * nyq),
                   corners=2, zerophase=True)
 
-    # Narrow bandpass (1–5 Hz) for kurtosis onset picker — Fuchs et al. recommendation
-    # Suppresses microseism and enhances emergent rockslide onsets
+    # Narrow bandpass (1–5 Hz) for kurtosis onset picker (rockslides), Fuchs 2018
     st_kurtosis = st_vel.copy()
     for tr in st_kurtosis:
         nyq = tr.stats.sampling_rate / 2
@@ -347,9 +344,7 @@ for i, ev in enumerate(batch):
             origin_inside = bool(t_on <= t_orig <= t_off)
             origin_lag_s  = round(float(t_orig - t_on), 2)   # positive = origin after detection start
 
-            # Kurtosis onset refiner (Fuchs et al. 2018) — rockslides only
-            # Runs on the 1–5 Hz filtered trace; refines the emergent onset
-            # that DetecteurV3 tends to pick too late.
+            # Kurtosis onset refiner (Fuchs 2018) — rockslides only
             t_on_groult   = t_on    # keep Groult's t_on for comparison
             onset_refine_s = 0.0   # shift applied (negative = moved earlier)
 

@@ -185,49 +185,35 @@ def compute_snr(tr_filt, t_on, t_off):
 
 
 # =============================================================================
-# KURTOSIS ONSET REFINER — Fuchs et al. (2018) / Hibert et al. (2014)
+# KURTOSIS ONSET REFINER — Fuchs et al. (2018)
 # =============================================================================
 
 def refine_onset_kurtosis(tr, t_on, dt_s=5.0, search_before=10.0, search_after=1.0):
     """
-    Refine a preliminary STA/LTA onset time using the kurtosis-based picker
-    described in Fuchs et al. (2018) and Hibert et al. (2014).
+    Refine a preliminary STA/LTA onset time using the kurtosis-based picker described in Fuchs (2018) 
 
-    Designed for rockslide signals whose onsets are emergent (gradual build-up),
-    so the STA/LTA fires later than the true onset. The kurtosis rises sharply
-    when impulsive seismic energy first enters the sliding window, allowing
-    precise detection of the true signal start.
+    Designed for rockslide signals whose onsets are emergent, so the STA/LTA fires later than the true onset 
+     -> the kurtosis rises sharply when impulsive seismic energy enters the sliding window, allowing precise detection of the true signal start
 
     Algorithm (Fuchs eq. 1–3):
-      1. Slide a window of dt_s seconds from (t_on - search_before) to
-         (t_on + search_after) and compute kurtosis β at each step → CF(t).
-         β = 3 for Gaussian noise; rises above 3 when a signal arrives.
-      2. Build cCF(k) = cumulative sum of only the *positive* slopes of CF(t).
-         This accumulates rises and ignores flat/decreasing parts.
-      3. Refined onset = time where d(cCF)/dt is maximum (steepest kurtosis rise).
+      1. Slide a window of dt_s seconds from (t_on - search_before) to (t_on + search_after) and compute kurtosis β at each step → CF(t)
+         β = 3 for Gaussian noise; rises above 3 when a signal arrives
+      2. Build cCF(k) = cumulative sum of only the *positive* slopes of CF(t) -> accumulates rises and ignores flat/decreasing parts
+      3. Refined onset = time where d(cCF)/dt is maximum (steepest kurtosis rise)
          If the maximum is a plateau, the first occurrence is used (Fuchs).
          The onset corresponds to the START of the kurtosis window at that step.
 
     Parameters
     ----------
-    tr            : obspy.Trace
-        Bandpass-filtered trace. Fuchs et al. use 1–5 Hz (suppresses
-        microseism and enhances the emergent onset). Pass a 1–5 Hz filtered
-        copy, not the 1–20 Hz copy used for SNR.
-    t_on          : UTCDateTime
-        Preliminary onset from the spectrogram STA/LTA detector (DetecteurV3).
-    dt_s          : float
-        Kurtosis sliding window length in seconds. Fuchs: 5 s.
-    search_before : float
-        Search start = t_on − search_before seconds. Fuchs: 10 s.
-    search_after  : float
-        Search end   = t_on + search_after  seconds. Fuchs: 1 s.
+    tr   : obspy.Trace — bandpass-filtered trace, Fuchs uses 1–5 Hz (suppresses microseism and enhances the emergent onset)
+    t_on : UTCDateTime — preliminary onset from the spectrogram STA/LTA detector (DetecteurV3)
+    dt_s : float       — kurtosis sliding window length in seconds, Fuchs: 5 s
+    search_before : float — search start = t_on − search_before seconds, Fuchs: 10 s
+    search_after  : float — search end   = t_on + search_after  seconds, Fuchs: 1 s
 
     Returns
     -------
-    t_refined : UTCDateTime
-        Refined onset time. Falls back to t_on if refinement fails
-        (trace too short, insufficient samples, flat CF, etc.).
+    t_refined : UTCDateTime — refined onset time, falls back to t_on if refinement fails
     info : dict
         Diagnostic arrays for plotting (all times are seconds from trace start):
           't0'          — UTCDateTime of the trace slice start
@@ -239,7 +225,7 @@ def refine_onset_kurtosis(tr, t_on, dt_s=5.0, search_before=10.0, search_after=1
           't_refined_rel'  — refined onset in seconds from t0
     """
     fs   = tr.stats.sampling_rate
-    nwin = max(2, int(dt_s * fs))   # kurtosis window in samples
+    nwin = max(2, int(dt_s * fs))   # number of samples in the kurtosis window -> converting the window duration dt_s [s] into samples using the sampling rate fs
 
     # Slice the trace: need dt_s of lead-in before the search window
     t_slice_start = max(t_on - search_before - dt_s, tr.stats.starttime)
@@ -249,21 +235,21 @@ def refine_onset_kurtosis(tr, t_on, dt_s=5.0, search_before=10.0, search_after=1
     if tr_slice.stats.npts < nwin + 2:
         return t_on, {}
 
-    data = tr_slice.data
-    n    = len(data)
+    data = tr_slice.data   # raw array of amplitude values
+    n    = len(data)       # length in samples
     t0   = tr_slice.stats.starttime   # UTCDateTime
 
     # ---- Step 1: compute CF(t) — kurtosis of the window ending at sample i+nwin ----
-    cf_all   = []
-    tcf_all  = []   # time of the END of each kurtosis window (seconds from t0)
+    cf_all   = []   # time series of kurtosis values (one per window position)
+    tcf_all  = []   # timestamps of the END of each kurtosis window (seconds from t0)
 
-    for i in range(n - nwin):
-        window = data[i : i + nwin]
-        beta   = float(scipy_kurtosis(window, fisher=False))   # standard kurtosis (β=3 for Gaussian)
+    for i in range(n - nwin):        # stops at n-nwin (not n) so the last window data[n-nwin : n] doesn't go out of bounds
+        window = data[i : i + nwin]  # extract the samples inside the current window
+        beta   = float(scipy_kurtosis(window, fisher=False))   # standard Pearson kurtosis (β=3 for Gaussian)
         cf_all.append(beta)
         tcf_all.append((i + nwin) / fs)
-
-    cf_all  = np.array(cf_all)
+ 
+    cf_all  = np.array(cf_all)    # convert lists to numpy arrays
     tcf_all = np.array(tcf_all)   # seconds from t0
 
     # Restrict to the search window [t_on - search_before, t_on + search_after]
@@ -271,24 +257,25 @@ def refine_onset_kurtosis(tr, t_on, dt_s=5.0, search_before=10.0, search_after=1
     search_start_rel = t_on_rel - search_before
     search_end_rel   = t_on_rel + search_after
 
+    # Keep only the CF values whose window end falls inside the search zone 
     mask = (tcf_all >= search_start_rel) & (tcf_all <= search_end_rel)
-    if mask.sum() < 3:
+    if mask.sum() < 3:    # if fewer than 3 values survive, fall back to the original onset
         return t_on, {}
 
     cf   = cf_all[mask]
     tcf  = tcf_all[mask]   # time of window END, seconds from t0
 
     # ---- Step 2: cCF = cumulative sum of positive slopes only ----
-    slopes     = np.diff(cf)
-    pos_slopes = np.where(slopes > 0, slopes, 0.0)
-    ccf        = np.concatenate([[0.0], np.cumsum(pos_slopes)])
+    slopes     = np.diff(cf)    # compute the difference between consecutive CF values: slopes[k] = cf[k+1] - cf[k]
+    pos_slopes = np.where(slopes > 0, slopes, 0.0)               # only accumulate rises
+    ccf        = np.concatenate([[0.0], np.cumsum(pos_slopes)])  # cumsum computes the running total of pos_slopes
 
     # ---- Step 3: refined onset = time where d(cCF)/dt is maximum ----
-    dccf   = np.diff(ccf)           # same as pos_slopes; length M-1
+    dccf   = np.diff(ccf)           # derivative of cCF, which is pos_slopes again (same values, same length M−1)
     i_peak = int(np.argmax(dccf))   # index of steepest positive kurtosis rise
 
-    # tcf[i_peak] is the END of the kurtosis window at the peak step.
-    # The onset corresponds to the START of that window: subtract dt_s.
+    # tcf[i_peak] is the END of the kurtosis window at the peak step
+    # The onset corresponds to the START of that window: subtract dt_s
     t_refined_rel = tcf[i_peak] - dt_s
     t_refined     = t0 + t_refined_rel
 
