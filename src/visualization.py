@@ -276,7 +276,7 @@ def plot_station_coverage(station_counts, n_stations_per_event, counts_by_type, 
 # WAVEFORM + STA/LTA CHARACTERISTIC FUNCTION — ALL STATIONS (script 02)
 # =============================================================================
 
-def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir, freq_min=1.0, freq_max=20.0, nsta=1, nlta=15):
+def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir, freq_min=1.0, freq_max=20.0, nsta=1, nlta=15, pre_event=150):
     """
     One figure per catalog event —> all stations stacked in rows
 
@@ -293,8 +293,8 @@ def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir, freq_m
 
     Detection window colour code
     ----------------------------
-      Green      : the catalog origin time falls INSIDE the detected window -> the detector agrees with the catalog
-      Orange     : the catalog origin time falls OUTSIDE the detected window
+      Green      : P-pick (or S-pick if no P available) falls INSIDE the detected window -> the detector captured the wave arrival
+      Orange     : the reference pick falls OUTSIDE the detected window (or no pick available at all)
       No shading : sum_cft never reached THR_ON on this station, the event was too weak or the noise level too high
 
     Parameters
@@ -374,10 +374,14 @@ def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir, freq_m
                         linestyle='--', zorder=3)
 
         # Detection windows: green border (onset solid, offset dashed) + shading
+        # Colour: green if P-pick inside the window; if no P-pick, fall back to S-pick
+        p_pick   = picks.get('P')
+        s_pick   = picks.get('S')
+        ref_pick = p_pick if p_pick is not None else s_pick   # P preferred, S as fallback
         for det_key, (t_on, t_off) in detections.items():
             t_on_s  = t_on  - t_start
             t_off_s = t_off - t_start
-            inside  = t_on <= t_orig <= t_off
+            inside  = (ref_pick is not None) and (t_on <= ref_pick <= t_off)
             col     = '#2ca02c' if inside else '#ff7f0e'   # green / orange
             ax_wave.axvspan(t_on_s, t_off_s, alpha=0.20, color=col, zorder=1)
             ax_wave.axvline(t_on_s,  color=col, linewidth=1.6, alpha=0.9, zorder=3)
@@ -428,11 +432,11 @@ def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir, freq_m
         ax_cft.axhline(thr_off, color='darkorange', linewidth=1.1,
                        linestyle=':', zorder=3)
 
-        # Same detection shading as waveform panel
+        # Same detection shading as waveform panel (same ref_pick logic)
         for det_key, (t_on, t_off) in detections.items():
             t_on_s  = t_on  - t_start
             t_off_s = t_off - t_start
-            inside  = t_on <= t_orig <= t_off
+            inside  = (ref_pick is not None) and (t_on <= ref_pick <= t_off)
             col     = '#2ca02c' if inside else '#ff7f0e'
             ax_cft.axvspan(t_on_s, t_off_s, alpha=0.20, color=col, zorder=1)
             ax_cft.axvline(t_on_s,  color=col, linewidth=1.4, alpha=0.8, zorder=3)
@@ -476,11 +480,11 @@ def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir, freq_m
         Line2D([0], [0], color='#2ca02c', linewidth=1.2, linestyle='--',
                label='Trigger OFF  (det. offset)'),
         Patch(facecolor='#2ca02c', alpha=0.25,
-              label='Detected window — origin INSIDE\n'
-                    '(detector agrees with catalog pick)'),
+              label='Detected window — P pick inside\n'
+                    '(S pick used as fallback if no P)'),
         Patch(facecolor='#ff7f0e', alpha=0.25,
-              label='Detected window — origin OUTSIDE\n'
-                    '(emergent onset)'),
+              label='Detected window — pick outside\n'
+                    '(or no pick available)'),
     ]
     axes[0][0].legend(
         handles=legend_elements,
