@@ -124,7 +124,7 @@ print(f"  Total rows: {len(df_all)}")
 
 # Check required columns
 required = ['event_type', 'station', 'network', 'det_starttime',
-            'det_starttime_groult', 'onset_refine_s']
+            'det_starttime_raw', 'onset_refine_s']
 missing = [c for c in required if c not in df_all.columns]
 if missing:
     print(f"[ERROR] Missing columns in CSV: {missing}")
@@ -241,8 +241,8 @@ else:
     inventory = None
     if client_fdsn:
         try:
-            t_min = df_rock['det_starttime_groult'].dropna().min()
-            t_max = df_rock['det_starttime_groult'].dropna().max()
+            t_min = df_rock['det_starttime_raw'].dropna().min()
+            t_max = df_rock['det_starttime_raw'].dropna().max()
             inventory = fetch_inventory(client_fdsn, str(t_min)[:10], str(t_max)[:10])
         except Exception as e:
             print(f"  [WARN] Could not fetch inventory: {e}")
@@ -277,7 +277,7 @@ else:
         refine = row['onset_refine_s']
         snr    = row.get('SNR_s2n_median', np.nan)
 
-        t_groult   = UTCDateTime(row['det_starttime_groult'])
+        t_groult   = UTCDateTime(row['det_starttime_raw'])
         t_kurtosis = UTCDateTime(row['det_starttime'])
 
         # Y-label shared across columns
@@ -408,10 +408,12 @@ else:
             ax2b.set_ylabel('d(cCF)/dt', fontsize=8, color='#FF6F00')
             ax2b.tick_params(axis='y', labelcolor='#FF6F00', labelsize=7)
 
-            # Mark the peak of d(cCF)/dt
-            i_peak = int(np.argmax(dccf))
+            # Mark the onset step — use the same i_peak returned by the detection
+            # function (cCF threshold-based), not a fresh argmax(dccf).
+            i_peak = int(kurt_info.get('i_peak', int(np.argmax(dccf))))
+            i_peak = min(i_peak, len(cf_rel_d) - 1)   # guard against edge case
             ax2b.axvline(cf_rel_d[i_peak], color='#FF6F00', lw=1.2, ls=':',
-                         label='peak d(cCF)/dt')
+                         label='argmax d(cCF)/dt')
 
             ax2.axvline(0,      color=GROULT_COLOR,   lw=1.5, ls='--')
             ax2.axvline(refine, color=KURTOSIS_COLOR, lw=1.5, ls='-')

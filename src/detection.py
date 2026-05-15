@@ -227,9 +227,10 @@ def refine_onset_kurtosis(tr, t_on, dt_s=5.0, search_before=10.0, search_after=1
     fs   = tr.stats.sampling_rate
     nwin = max(2, int(dt_s * fs))   # number of samples in the kurtosis window -> converting the window duration dt_s [s] into samples using the sampling rate fs
 
-    # Slice the trace: need dt_s of lead-in before the search window
-    t_slice_start = max(t_on - search_before - dt_s, tr.stats.starttime)
-    t_slice_end   = min(t_on + search_after,          tr.stats.endtime)
+    # Slice the trace to cover the full search window plus one window-length of tail so that the last 
+    # kurtosis window (starting at t_on + search_after) has enough samples to be computed.
+    t_slice_start = max(t_on - search_before,         tr.stats.starttime)
+    t_slice_end   = min(t_on + search_after + dt_s,   tr.stats.endtime)
 
     tr_slice = tr.slice(t_slice_start, t_slice_end)
     if tr_slice.stats.npts < nwin + 2:
@@ -239,16 +240,17 @@ def refine_onset_kurtosis(tr, t_on, dt_s=5.0, search_before=10.0, search_after=1
     n    = len(data)       # length in samples
     t0   = tr_slice.stats.starttime   # UTCDateTime
 
-    # ---- Step 1: compute CF(t) — kurtosis of the window ending at sample i+nwin ----
+    # ---- Step 1: compute CF(t) — kurtosis of the window starting at sample i ----
+    # We timestamp each value at the window START so that the onset (= argmax of d(cCF)/dt) gives the pick time without any dt_s correction
     cf_all   = []   # time series of kurtosis values (one per window position)
-    tcf_all  = []   # timestamps of the END of each kurtosis window (seconds from t0)
+    tcf_all  = []   # timestamps of the START of each kurtosis window (seconds from t0)
 
-    for i in range(n - nwin):        # stops at n-nwin (not n) so the last window data[n-nwin : n] doesn't go out of bounds
+    for i in range(n - nwin):        # stops at n-nwin so the last window data[n-nwin : n] doesn't go out of bounds
         window = data[i : i + nwin]  # extract the samples inside the current window
         beta   = float(scipy_kurtosis(window, fisher=False))   # standard Pearson kurtosis (β=3 for Gaussian)
         cf_all.append(beta)
-        tcf_all.append((i + nwin) / fs)
- 
+        tcf_all.append(i / fs)       # window START time (seconds from t0)
+
     cf_all  = np.array(cf_all)    # convert lists to numpy arrays
     tcf_all = np.array(tcf_all)   # seconds from t0
 
@@ -257,26 +259,31 @@ def refine_onset_kurtosis(tr, t_on, dt_s=5.0, search_before=10.0, search_after=1
     search_start_rel = t_on_rel - search_before
     search_end_rel   = t_on_rel + search_after
 
-    # Keep only the CF values whose window end falls inside the search zone 
+    # Keep only the CF values whose window START falls inside the search zone
     mask = (tcf_all >= search_start_rel) & (tcf_all <= search_end_rel)
     if mask.sum() < 3:    # if fewer than 3 values survive, fall back to the original onset
         return t_on, {}
 
     cf   = cf_all[mask]
-    tcf  = tcf_all[mask]   # time of window END, seconds from t0
+    tcf  = tcf_all[mask]   # time of window START, seconds from t0
 
     # ---- Step 2: cCF = cumulative sum of positive slopes only ----
     slopes     = np.diff(cf)    # compute the difference between consecutive CF values: slopes[k] = cf[k+1] - cf[k]
     pos_slopes = np.where(slopes > 0, slopes, 0.0)               # only accumulate rises
     ccf        = np.concatenate([[0.0], np.cumsum(pos_slopes)])  # cumsum computes the running total of pos_slopes
 
-    # ---- Step 3: refined onset = time where d(cCF)/dt is maximum ----
-    dccf   = np.diff(ccf)           # derivative of cCF, which is pos_slopes again (same values, same length M−1)
-    i_peak = int(np.argmax(dccf))   # index of steepest positive kurtosis rise
+    # ---- Step 3: refined onset = argmax of d(cCF)/dt ----
+    dccf = np.diff(ccf)   # = pos_slopes (same values, length M-1)
 
-    # tcf[i_peak] is the END of the kurtosis window at the peak step
-    # The onset corresponds to the START of that window: subtract dt_s
-    t_refined_rel = tcf[i_peak] - dt_s
+    # With window-START timestamps and the corrected search zone [t_on-search_before,
+    # t_on+search_after], argmax(dccf) no longer locks onto the Groult onset:
+    # it finds the window start where the kurtosis rise is largest within the
+    # actual signal content of the search zone — the tallest orange bar in the
+    # diagnostic plot. This is the standard Fuchs (2018) criterion.
+    i_peak = int(np.argmax(dccf))
+
+    # tcf[i_peak] is the START of the kurtosis window at the onset step.
+    t_refined_rel = tcf[i_peak]
     t_refined     = t0 + t_refined_rel
 
     # Clamp to trace boundaries
@@ -285,10 +292,11 @@ def refine_onset_kurtosis(tr, t_on, dt_s=5.0, search_before=10.0, search_after=1
 
     info = {
         't0'            : t0,
-        'cf_times_s'    : tcf,           # time axis of CF, seconds from t0
+        'cf_times_s'    : tcf,           # window START times of CF, seconds from t0
         'cf_values'     : cf,
         'ccf_values'    : ccf,
         'dccf'          : dccf,
+        'i_peak'        : i_peak,        # index used for the refined onset (in cf/tcf/ccf)
         't_on_rel'      : t_on_rel,
         't_refined_rel' : t_refined_rel,
     }
