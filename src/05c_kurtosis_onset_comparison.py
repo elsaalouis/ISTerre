@@ -7,13 +7,12 @@ Date   : May 2026
 
 Goal
 ----
-Compare the preliminary onset time from the spectrogram STA/LTA (DetecteurV3, Groult 2026)
-with the kurtosis-refined onset (Fuchs et al. 2018) for rockslide / landslide events
+Compare the preliminary onset time from the STA/LTA method with the kurtosis-refined onset (Fuchs et al. 2018) for rockslide / landslide events
 
 Two types of output:
   Fig 1 — Statistical overview
-      Histogram of onset corrections (onset_refine_s = t_kurtosis - t_groult)
-      Negative values mean the kurtosis picker found the onset earlier than Groult
+      Histogram of onset corrections (onset_refine_s = t_kurtosis - t_detected)
+      Negative values mean the kurtosis picker found the onset earlier than in the detection method
 
   Fig 2 — Per-event kurtosis diagnostic (waveform + CF + cCF)
       For the N_EVENTS_DIAG best-SNR events:
@@ -52,8 +51,8 @@ KURTOSIS_SEARCH_AFTER  = 1.0    # s
 # Waveform display parameters
 WAVEFORM_FREQ_MIN  = 1.0    # Hz — broadband bandpass for the waveform panel
 WAVEFORM_FREQ_MAX  = 20.0   # Hz
-WAVEFORM_BEFORE    = 15.0   # s before Groult onset to display
-WAVEFORM_AFTER     = 30.0   # s after Groult onset to display
+WAVEFORM_BEFORE    = 15.0   # s before detected onset to display
+WAVEFORM_AFTER     = 30.0   # s after detected onset to display
 
 # Number of events to show in the per-event diagnostic figure (Fig 2)
 # Events are ranked by SNR_s2n_median (highest first)
@@ -167,7 +166,7 @@ fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 fig.suptitle(
     f"Kurtosis onset correction for {', '.join(KURTOSIS_ETYPES)} events  "
     f"(n = {n_total})\n"
-    f"onset_refine_s = t_kurtosis − t_Groult  "
+    f"onset_refine_s = t_kurtosis − t_detected  "
     f"(negative = kurtosis onset is earlier)",
     fontsize=11, fontweight='bold'
 )
@@ -266,7 +265,7 @@ else:
             fontsize=10, fontweight='bold'
         )
 
-    GROULT_COLOR   = '#E53935'   # red — preliminary onset (DetecteurV3)
+    PREL_COLOR     = '#E53935'   # red — preliminary onset
     KURTOSIS_COLOR = '#1565C0'   # blue — kurtosis-refined onset
     BETA3_COLOR    = '#999999'   # grey — β = 3 reference line
 
@@ -277,17 +276,17 @@ else:
         refine = row['onset_refine_s']
         snr    = row.get('SNR_s2n_median', np.nan)
 
-        t_groult   = UTCDateTime(row['det_starttime_raw'])
+        t_detected = UTCDateTime(row['det_starttime_raw'])
         t_kurtosis = UTCDateTime(row['det_starttime'])
 
         # Y-label shared across columns
-        label_txt = (f"{sta}  {str(t_groult)[:19]}\n"
+        label_txt = (f"{sta}  {str(t_detected)[:19]}\n"
                      f"{etype}  Δ={refine:+.2f}s  SNR={snr:.1f}" if not np.isnan(snr)
-                     else f"{sta}  {str(t_groult)[:19]}\n{etype}  Δ={refine:+.2f}s")
+                     else f"{sta}  {str(t_detected)[:19]}\n{etype}  Δ={refine:+.2f}s")
 
         # ── Load waveform ──────────────────────────────────────────────
-        t_load_start = t_groult - WAVEFORM_BEFORE - KURTOSIS_SEARCH_BEFORE - KURTOSIS_DT_S
-        t_load_end   = t_groult + WAVEFORM_AFTER
+        t_load_start = t_detected - WAVEFORM_BEFORE - KURTOSIS_SEARCH_BEFORE - KURTOSIS_DT_S
+        t_load_end   = t_detected + WAVEFORM_AFTER
 
         try:
             st_raw = client_sds.get_waveforms(
@@ -295,7 +294,7 @@ else:
                 starttime=t_load_start, endtime=t_load_end
             )
         except Exception as e:
-            print(f"  [{sta} {t_groult}] waveform load failed: {e}")
+            print(f"  [{sta} {t_detected}] waveform load failed: {e}")
             for col in range(3):
                 ax = fig.add_subplot(gs[row_idx, col])
                 ax.text(0.5, 0.5, 'No waveform', ha='center', va='center',
@@ -303,7 +302,7 @@ else:
             continue
 
         if len(st_raw) == 0:
-            print(f"  [{sta} {t_groult}] empty stream.")
+            print(f"  [{sta} {t_detected}] empty stream.")
             for col in range(3):
                 ax = fig.add_subplot(gs[row_idx, col])
                 ax.text(0.5, 0.5, 'No waveform', ha='center', va='center',
@@ -341,7 +340,7 @@ else:
 
         # Re-run kurtosis to retrieve the diagnostic info dict
         t_refined_check, kurt_info = refine_onset_kurtosis(
-            tr_kurt, t_groult,
+            tr_kurt, t_detected,
             dt_s          = KURTOSIS_DT_S,
             search_before = KURTOSIS_SEARCH_BEFORE,
             search_after  = KURTOSIS_SEARCH_AFTER,
@@ -350,20 +349,20 @@ else:
 
         # ── COLUMN 0: waveform ─────────────────────────────────────────
         ax0 = fig.add_subplot(gs[row_idx, 0])
-        t0_disp  = t_groult - WAVEFORM_BEFORE
-        t1_disp  = t_groult + WAVEFORM_AFTER
+        t0_disp  = t_detected - WAVEFORM_BEFORE
+        t1_disp  = t_detected + WAVEFORM_AFTER
         tr_clip  = tr_display.slice(t0_disp, t1_disp)
         if tr_clip.stats.npts > 0:
             t_ax = np.arange(tr_clip.stats.npts) / tr_clip.stats.sampling_rate - WAVEFORM_BEFORE
             ax0.plot(t_ax, tr_clip.data, lw=0.6, color='#333333', alpha=0.9)
-        ax0.axvline(0,       color=GROULT_COLOR,   lw=1.5, ls='--', label='Groult onset')
+        ax0.axvline(0,       color=PREL_COLOR,   lw=1.5, ls='--', label='Detected onset')
         ax0.axvline(refine,  color=KURTOSIS_COLOR, lw=1.5, ls='-',  label='Kurtosis onset')
         ax0.set_xlim(-WAVEFORM_BEFORE, WAVEFORM_AFTER)
         ax0.set_ylabel(label_txt, fontsize=7)
         ax0.tick_params(labelsize=7)
         ax0.grid(True, alpha=0.2, lw=0.4)
         if row_idx == n_rows - 1:
-            ax0.set_xlabel('Time from Groult onset [s]', fontsize=8)
+            ax0.set_xlabel('Time from detected onset [s]', fontsize=8)
         if row_idx == 0:
             ax0.legend(fontsize=7, loc='upper right')
 
@@ -372,10 +371,10 @@ else:
         if has_kurt:
             t0_kurt    = kurt_info['t0']
             cf_times   = kurt_info['cf_times_s']                    # seconds from t0_kurt
-            cf_rel     = np.array(cf_times) - float(t_groult - t0_kurt)  # seconds from t_groult
+            cf_rel     = np.array(cf_times) - float(t_detected - t0_kurt)  # seconds from t_detected
             ax1.plot(cf_rel, kurt_info['cf_values'], lw=0.9, color='#555555')
             ax1.axhline(3.0, color=BETA3_COLOR, lw=1.0, ls=':', label='β = 3 (Gaussian)')
-            ax1.axvline(0,      color=GROULT_COLOR,   lw=1.5, ls='--')
+            ax1.axvline(0,      color=PREL_COLOR,   lw=1.5, ls='--')
             ax1.axvline(refine, color=KURTOSIS_COLOR, lw=1.5, ls='-')
             ax1.set_xlim(-KURTOSIS_SEARCH_BEFORE - 1, KURTOSIS_SEARCH_AFTER + 1)
             ax1.legend(fontsize=7, loc='upper left')
@@ -386,7 +385,7 @@ else:
         ax1.tick_params(labelsize=7)
         ax1.grid(True, alpha=0.2, lw=0.4)
         if row_idx == n_rows - 1:
-            ax1.set_xlabel('Time from Groult onset [s]', fontsize=8)
+            ax1.set_xlabel('Time from detected onset [s]', fontsize=8)
 
         # ── COLUMN 2: cCF + d(cCF)/dt ─────────────────────────────────
         ax2  = fig.add_subplot(gs[row_idx, 2])
@@ -394,7 +393,7 @@ else:
         if has_kurt:
             t0_kurt  = kurt_info['t0']
             cf_times = kurt_info['cf_times_s']
-            cf_rel   = np.array(cf_times) - float(t_groult - t0_kurt)
+            cf_rel   = np.array(cf_times) - float(t_detected - t0_kurt)
             ccf      = kurt_info['ccf_values']
             dccf     = kurt_info['dccf']
 
@@ -415,7 +414,7 @@ else:
             ax2b.axvline(cf_rel_d[i_peak], color='#FF6F00', lw=1.2, ls=':',
                          label='argmax d(cCF)/dt')
 
-            ax2.axvline(0,      color=GROULT_COLOR,   lw=1.5, ls='--')
+            ax2.axvline(0,      color=PREL_COLOR,   lw=1.5, ls='--')
             ax2.axvline(refine, color=KURTOSIS_COLOR, lw=1.5, ls='-')
             ax2.set_xlim(-KURTOSIS_SEARCH_BEFORE - 1, KURTOSIS_SEARCH_AFTER + 1)
 
@@ -428,16 +427,16 @@ else:
         ax2.tick_params(axis='x', labelsize=7)
         ax2.grid(True, alpha=0.2, lw=0.4)
         if row_idx == n_rows - 1:
-            ax2.set_xlabel('Time from Groult onset [s]', fontsize=8)
+            ax2.set_xlabel('Time from detected onset [s]', fontsize=8)
 
-        print(f"  [{row_idx+1}/{n_rows}] {sta}  {str(t_groult)[:19]}  "
+        print(f"  [{row_idx+1}/{n_rows}] {sta}  {str(t_detected)[:19]}  "
               f"Δ={refine:+.2f}s  SNR={snr:.1f}" if not np.isnan(snr)
-              else f"  [{row_idx+1}/{n_rows}] {sta}  {str(t_groult)[:19]}  Δ={refine:+.2f}s")
+              else f"  [{row_idx+1}/{n_rows}] {sta}  {str(t_detected)[:19]}  Δ={refine:+.2f}s")
 
     fig.suptitle(
         f"Kurtosis onset diagnostic — {', '.join(KURTOSIS_ETYPES)}  "
         f"(top {n_rows} by SNR_s2n_median)\n"
-        f"Red dashed = Groult (DetecteurV3)  |  Blue solid = Kurtosis-refined (Fuchs 2018)  |  "
+        f"Red dashed = detected onset  |  Blue solid = Kurtosis-refined (Fuchs 2018)  |  "
         f"Kurtosis band: {KURTOSIS_FREQ_MIN}–{KURTOSIS_FREQ_MAX} Hz  dt = {KURTOSIS_DT_S} s",
         fontsize=10, fontweight='bold', y=0.995
     )
