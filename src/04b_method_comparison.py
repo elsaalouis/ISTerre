@@ -11,28 +11,22 @@ Compare two precise-windowing methods applied to the same set of catalog events:
   Method A — Groult spectrogram-based bidirectional STA/LTA  (script 04a output)
   Method B — Classical STA/LTA on bandpass-filtered waveform  (script 04b output)
 
-The primary question: which method produces more accurate detection windows,
-measured by how often the station's P-wave pick falls inside the detected window?
+The primary question: 
+which method produces more accurate detection windows, measured by how often the station's P-wave pick falls inside the detected window?
 
 Metrics
 -------
-  1. pick_inside_det rate  —  fraction of detections where the P pick is inside
-                              the window (primary accuracy metric, same ground truth
-                              as 05a)
-  2. Detection coverage    —  fraction of catalog events detected by at least one
-                              station per method (missed events = false negatives)
-  3. Window precision      —  distribution of pick_lag_s (seconds between the
-                              detected onset and the P pick):
-                              a tighter distribution closer to 0 = more precise onset
+  1. pick_inside_det rate  —  fraction of detections where the P pick is inside the window
+  2. Detection coverage    —  fraction of catalog events detected by at least one station per method (missed events = false negatives)
+  3. Window precision      —  distribution of pick_lag_s (seconds between the detected onset and the P pick): a tighter distribution closer to 0 = more precise onset
   4. Window duration       —  distribution of det_duration_s
-  5. Quality gate rate     —  fraction of detections passing SNR_full_mean ≥ 3
-                              AND SNR_full_median ≥ 3 (Groult quality gate)
+  5. Quality gate rate     —  fraction of detections passing SNR_full_mean ≥ 3 AND SNR_full_median ≥ 3 (Groult quality gate)
   6. SNR comparison        —  box plots of SNR_s2n_median for each method
 
 Input
 -----
   CSV_04A  — catalog_windows_<stamp>.csv produced by 04a (Groult)
-  CSV_04B  — catalog_windows_<stamp>.csv produced by 04b (classical STA/LTA)
+  CSV_04B  — catalog_windows_<stamp>.csv produced by 04a (classical STA/LTA)
 
 Output
 ------
@@ -53,21 +47,21 @@ Output
 
 # -- Input CSVs ---------------------------------------------------------------
 # Point each path to the catalog_windows_<stamp>.csv file from the relevant run
-CSV_04A = "/data/failles/louisels/project/results/outputs_04a/run_XXXXXXXX_XXXXXX/catalog_windows_XXXXXXXX_XXXXXX.csv"
-CSV_04B = "/data/failles/louisels/project/results/outputs_04b/run_XXXXXXXX_XXXXXX/catalog_windows_XXXXXXXX_XXXXXX.csv"
+CSV_04A = "/data/failles/louisels/project/results/outputs_04a/groult/run_XXXXXXXX_XXXXXX/catalog_windows_XXXXXXXX_XXXXXX.csv"
+CSV_04B = "/data/failles/louisels/project/results/outputs_04a/sta_lta/run_XXXXXXXX_XXXXXX/catalog_windows_XXXXXXXX_XXXXXX.csv"
 
 # -- Output -------------------------------------------------------------------
-OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_05d"
+OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_04b"
 
 # -- Event types to include in comparison (set [] to keep all) ----------------
-TARGET_TYPES = []    # e.g. ["earthquake", "rockslide"] — empty = all types in the data
+TARGET_TYPES = []    # ["earthquake", "rockslide", ...] — empty = all types in the data
 
 # -- Ground truth column ------------------------------------------------------
 GROUND_TRUTH = 'pick_inside_det'   # or 'origin_inside_det'
 
-# -- Quality gate thresholds (same as 04a / 04b) ------------------------------
-SNR_MEAN_MIN   = 3.0
-SNR_MEDIAN_MIN = 3.0
+# -- Quality gate thresholds (must match 04a) ---------------------------------
+SNR_MEAN_MIN  = 2.70    # SNR_full_mean  >= this
+SNR_S2N_MIN   = 20.99   # SNR_s2n_median >= this
 
 # -- Display labels -----------------------------------------------------------
 LABEL_A = "Groult\n(spectrogram STA/LTA)"
@@ -153,15 +147,18 @@ print("=" * 70)
 
 
 def pick_rate(df):
-    """Fraction of rows where pick_inside_det is True (NaN excluded from denominator)."""
+    """
+    Fraction of rows where pick_inside_det is True (NaN excluded from denominator)
+     -> measures window precision (high pick-rate = windows well-placed)
+    """
     col = df['label'].dropna()
     return float(col.mean()) if len(col) > 0 else np.nan
 
 
 def coverage_rate(df, all_event_times):
     """
-    Fraction of unique event times in all_event_times that have at least one detection
-    in df (regardless of pick quality).
+    Fraction of catalog events that generated at least one detection on any station (regardless of pick quality)
+     -> measures sensitivity (a method can have a high pick-rate but low coverage)
     """
     detected = set(df['event_time'].dropna().unique())
     return len(detected & all_event_times) / len(all_event_times) if all_event_times else np.nan
@@ -242,8 +239,8 @@ key_cols = ['event_time', 'event_type', 'station']
 grp_a = df_a.groupby(key_cols).apply(_summarise_pair).add_prefix('A_').reset_index()
 grp_b = df_b.groupby(key_cols).apply(_summarise_pair).add_prefix('B_').reset_index()
 
-df_matched = pd.merge(grp_a, grp_b, on=key_cols, how='outer')
-df_matched['A_detected']    = df_matched['A_detected'].fillna(False)
+df_matched = pd.merge(grp_a, grp_b, on=key_cols, how='outer')         # 'outer' keeps a station that is in one csv (if one method detected it and the other didn't)
+df_matched['A_detected']    = df_matched['A_detected'].fillna(False)  # fills missing detections as False for the method that didn't detect
 df_matched['B_detected']    = df_matched['B_detected'].fillna(False)
 
 # Detection agreement categories
@@ -365,52 +362,90 @@ print(f"    [SAVED] {path}")
 # ---- Figure 3: pick_lag_s distribution per method × event type -------------
 print("  Fig 3: Pick lag distribution ...")
 
-# Only keep rows where the pick is inside the window (lag is meaningful when pick is captured)
-df_lag_a = df_a[df_a['label'] == True].copy()
-df_lag_b = df_b[df_b['label'] == True].copy()
+# Keep ALL rows that have a P pick (pick_lag_s not NaN), regardless of pick_inside_det.
+# This exposes negative lags (detector fired AFTER the P pick → onset missed) as well
+# as large positive lags (detector fired very early, pick far inside a wide window).
+df_lag_a = df_a[df_a['pick_lag_s'].notna()].copy()
+df_lag_b = df_b[df_b['pick_lag_s'].notna()].copy()
+df_lag_a['pick_lag_s'] = pd.to_numeric(df_lag_a['pick_lag_s'], errors='coerce')
+df_lag_b['pick_lag_s'] = pd.to_numeric(df_lag_b['pick_lag_s'], errors='coerce')
+
+# Scatter colour: green = pick inside window (good), red = pick outside (missed/late)
+COLOR_INSIDE  = '#2e7d32'   # dark green
+COLOR_OUTSIDE = '#c62828'   # dark red
 
 n_cols = max(1, n_types)
-fig, axes = plt.subplots(1, n_cols, figsize=(max(6, n_cols * 4), 5), sharey=False)
+fig, axes = plt.subplots(1, n_cols, figsize=(max(6, n_cols * 4), 6), sharey=False)
 if n_cols == 1:
     axes = [axes]
 
 for ax, etype in zip(axes, all_etypes):
-    lag_a = pd.to_numeric(df_lag_a.loc[df_lag_a['event_type'] == etype, 'pick_lag_s'], errors='coerce').dropna()
-    lag_b = pd.to_numeric(df_lag_b.loc[df_lag_b['event_type'] == etype, 'pick_lag_s'], errors='coerce').dropna()
+    sub_a = df_lag_a[df_lag_a['event_type'] == etype].dropna(subset=['pick_lag_s'])
+    sub_b = df_lag_b[df_lag_b['event_type'] == etype].dropna(subset=['pick_lag_s'])
 
-    data   = [lag_a.values, lag_b.values]
-    labels = [LABEL_A, LABEL_B]
-    colors = [COLOR_A, COLOR_B]
+    lag_a = sub_a['pick_lag_s'].values
+    lag_b = sub_b['pick_lag_s'].values
 
-    parts = ax.violinplot(data, positions=[1, 2], showmedians=True,
-                          showextrema=False)
-    for pc, col in zip(parts['bodies'], colors):
+    # Clip display range to 2nd–98th percentile across both methods so extreme
+    # outliers don't flatten the violin (raw data are still used for the violin shape)
+    all_lags = np.concatenate([lag_a, lag_b])
+    y_lo = np.percentile(all_lags, 2)
+    y_hi = np.percentile(all_lags, 98)
+    # Always show at least a ±5 s window around zero
+    y_lo = min(y_lo, -5)
+    y_hi = max(y_hi,  5)
+
+    # Violin on the full (unclipped) distribution
+    parts = ax.violinplot([lag_a, lag_b], positions=[1, 2],
+                          showmedians=True, showextrema=False)
+    for pc, col in zip(parts['bodies'], [COLOR_A, COLOR_B]):
         pc.set_facecolor(col)
-        pc.set_alpha(0.6)
+        pc.set_alpha(0.5)
     parts['cmedians'].set_color('black')
     parts['cmedians'].set_linewidth(2)
 
-    # Scatter individual points with jitter
-    for xi, (lag, col) in enumerate([(lag_a, COLOR_A), (lag_b, COLOR_B)], 1):
-        jitter = np.random.normal(0, 0.05, size=len(lag))
-        ax.scatter(xi + jitter, lag, s=10, color=col, alpha=0.4, zorder=3)
+    # Scatter: colour by pick_inside_det
+    for xi, sub, col_method in [(1, sub_a, COLOR_A), (2, sub_b, COLOR_B)]:
+        inside  = sub[sub['label'] == True]['pick_lag_s']
+        outside = sub[sub['label'] != True]['pick_lag_s']
+        jitter_in  = np.random.normal(0, 0.05, size=len(inside))
+        jitter_out = np.random.normal(0, 0.05, size=len(outside))
+        ax.scatter(xi + jitter_in,  inside,  s=10, color=COLOR_INSIDE,
+                   alpha=0.5, zorder=3, label='pick inside'  if xi == 1 else '')
+        ax.scatter(xi + jitter_out, outside, s=10, color=COLOR_OUTSIDE,
+                   alpha=0.3, zorder=3, label='pick outside' if xi == 1 else '')
 
-    ax.axhline(0, color='black', lw=1.0, ls='--', alpha=0.5)
+    ax.axhline(0, color='black', lw=1.2, ls='--', alpha=0.6, label='lag = 0')
+    ax.set_ylim(y_lo, y_hi)
     ax.set_xticks([1, 2])
-    ax.set_xticklabels(labels, fontsize=9)
+    ax.set_xticklabels([LABEL_A, LABEL_B], fontsize=9)
     ax.set_title(etype, fontsize=10, fontweight='bold')
     ax.set_ylabel('pick_lag_s  [s]', fontsize=9)
     ax.grid(axis='y', alpha=0.3, lw=0.5)
 
-    # Annotate median values
+    # Annotate median (all picks) and fraction with negative lag
     for xi, lag in [(1, lag_a), (2, lag_b)]:
-        if len(lag) > 0:
-            ax.text(xi, lag.median() + 0.5, f'{lag.median():+.1f}s',
-                    ha='center', va='bottom', fontsize=8, fontweight='bold')
+        if len(lag) == 0:
+            continue
+        med = np.median(lag)
+        pct_neg = (lag < 0).mean() * 100
+        ax.text(xi, y_hi * 0.97, f'med={med:+.1f}s\n{pct_neg:.0f}% neg',
+                ha='center', va='top', fontsize=7.5, fontweight='bold')
+
+# One shared legend on the first axis
+axes[0].legend(
+    handles=[
+        plt.scatter([], [], s=15, color=COLOR_INSIDE,  label='pick inside window'),
+        plt.scatter([], [], s=15, color=COLOR_OUTSIDE, label='pick outside window'),
+        Line2D([0], [0], color='black', ls='--', lw=1.2, label='lag = 0'),
+    ],
+    fontsize=8, loc='lower right'
+)
 
 fig.suptitle(
-    'Pick lag (P-pick time − detected onset) — only for detections where pick is inside window\n'
-    'Closer to 0 = more accurate onset  |  Negative = onset found BEFORE the P pick',
+    'Pick lag (P-pick time − detected onset) — all detections with a known P pick\n'
+    'Green = pick inside window  |  Red = pick outside  |  '
+    'Negative lag = detector fired AFTER the P pick (onset missed)',
     fontsize=10
 )
 plt.tight_layout()
@@ -472,7 +507,7 @@ ax.set_xticklabels(all_etypes, fontsize=10)
 ax.set_ylabel('quality_ok rate (%)', fontsize=11)
 ax.set_ylim(0, 1.1)
 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
-ax.set_title(f'Quality gate rate\n(SNR_mean ≥ {SNR_MEAN_MIN} AND SNR_median ≥ {SNR_MEDIAN_MIN})', fontsize=10)
+ax.set_title(f'Quality gate rate\n(SNR_full_mean ≥ {SNR_MEAN_MIN} AND SNR_s2n_median ≥ {SNR_S2N_MIN})', fontsize=10)
 ax.legend(handles=[
     mpatches.Patch(color=COLOR_A, alpha=0.85, label=LABEL_A.replace('\n', ' ')),
     mpatches.Patch(color=COLOR_B, alpha=0.85, label=LABEL_B.replace('\n', ' ')),
@@ -580,8 +615,8 @@ axes[0, 0].legend(handles=[
 
 # Bottom-left: pick_lag_s violin (all event types merged)
 ax = axes[1, 0]
-lag_a_all = pd.to_numeric(df_lag_a['pick_lag_s'], errors='coerce').dropna()
-lag_b_all = pd.to_numeric(df_lag_b['pick_lag_s'], errors='coerce').dropna()
+lag_a_all = pd.to_numeric(df_lag_a['pick_lag_s'], errors='coerce').dropna().values
+lag_b_all = pd.to_numeric(df_lag_b['pick_lag_s'], errors='coerce').dropna().values
 if len(lag_a_all) > 0 and len(lag_b_all) > 0:
     parts = ax.violinplot([lag_a_all, lag_b_all], positions=[1, 2],
                           showmedians=True, showextrema=False)
@@ -591,11 +626,16 @@ if len(lag_a_all) > 0 and len(lag_b_all) > 0:
     ax.axhline(0, color='black', lw=1.0, ls='--', alpha=0.5)
     ax.set_xticks([1, 2]); ax.set_xticklabels([LABEL_A, LABEL_B], fontsize=9)
     ax.set_ylabel('pick_lag_s  [s]', fontsize=9)
-    ax.text(1, lag_a_all.median() + 0.5, f'{lag_a_all.median():+.1f}s',
-            ha='center', fontsize=8, fontweight='bold')
-    ax.text(2, lag_b_all.median() + 0.5, f'{lag_b_all.median():+.1f}s',
-            ha='center', fontsize=8, fontweight='bold')
-ax.set_title('Pick lag (onset accuracy)\nwhen pick is inside window', fontsize=10, fontweight='bold')
+    # Clip y-axis to 2nd–98th percentile so the violin is readable
+    all_ov = np.concatenate([lag_a_all, lag_b_all])
+    ax.set_ylim(min(np.percentile(all_ov, 2), -5),
+                max(np.percentile(all_ov, 98), 5))
+    for xi, lag in [(1, lag_a_all), (2, lag_b_all)]:
+        ax.text(xi, ax.get_ylim()[1] * 0.97,
+                f'med={np.median(lag):+.1f}s\n{(lag < 0).mean()*100:.0f}% neg',
+                ha='center', va='top', fontsize=7, fontweight='bold')
+ax.set_title('Pick lag (all picks)\nGreen=inside  Red=outside  neg=missed onset',
+             fontsize=9, fontweight='bold')
 ax.grid(axis='y', alpha=0.3, lw=0.5)
 
 # Bottom-center: detection duration

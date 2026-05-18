@@ -95,9 +95,11 @@ MIN_DURAT_S = 2.0
 # -- Feature extraction window padding ----------------------------------------
 PAD_SEC = 5        # seconds added before t_on and after t_off for feature extraction only
 
-# -- Quality flag thresholds (Groult: both mean AND median > 3) ---------------
-SNR_MEAN_MIN   = 3.0
-SNR_MEDIAN_MIN = 3.0
+# -- Quality flag thresholds — from ROC analysis (script 05a) -----------------
+# SNR_full_mean  : AUC=0.653, ROC-optimal threshold=2.70  (TPR=0.507, FPR=0.271)
+# SNR_s2n_median : AUC=0.663, ROC-optimal threshold=20.99 (TPR=0.517, FPR=0.272)
+SNR_MEAN_MIN  = 2.70    # SNR_full_mean  >= this
+SNR_S2N_MIN   = 20.99   # SNR_s2n_median >= this
 
 # -- Kurtosis onset refiner (Fuchs 2018) — rockslides only --------------------
 KURTOSIS_REFINE        = True
@@ -486,7 +488,7 @@ for i, ev in enumerate(batch):
 
             quality_ok = (
                 snr.get('SNR_full_mean',   0) >= SNR_MEAN_MIN and
-                snr.get('SNR_full_median', 0) >= SNR_MEDIAN_MIN
+                snr.get('SNR_s2n_median',  0) >= SNR_S2N_MIN
             )
 
             row = {
