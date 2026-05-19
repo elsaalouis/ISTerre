@@ -63,6 +63,10 @@ LON_MIN, LON_MAX = 6.5, 7.2
 
 TARGET_TYPES = ["earthquake", "rockslide", "ice quake"]
 
+# -- Chunked catalog query (avoids FDSN server timeout) -----------------------
+CHUNK_DAYS        = 90    # query window size in days (90 = 3 months per request)
+CATALOG_CACHE_FILE = "/data/failles/louisels/project/results/catalog_cache.xml"
+
 # -- Waveform extraction window -----------------------------------------------
 PRE_EVENT  = 150   # [s] before the first pick, must be > LTA_S (classical) or enough for DetecteurV3 LTA warm-up
 POST_EVENT = 90    # [s] after origin time
@@ -114,6 +118,15 @@ KURTOSIS_ETYPES        = ('rockslide', 'landslide')
 FEATURE_FLAG = 0   # 0 = 99 features, vertical component only
 N_FEATURES   = 99
 
+# -- Checkpoint ---------------------------------------------------------------
+CHECKPOINT_EVERY = 20   # save a partial CSV every N successfully processed events (0 = disabled)
+
+# -- Diagnostic figures -------------------------------------------------------
+PLOT_EVERY = 0   # produce a windowing figure every N successfully processed events
+                 #   0  → no figures at all  (recommended for long runs: no thousands of PNGs)
+                 #   1  → every event        (original behaviour)
+                 #  10  → one figure every 10 events (representative sample)
+
 # -- Events to process --------------------------------------------------------
 # Leave empty [] to process ALL catalog events, or list exact origin times
 TARGET_EVENT_TIMES = [        # format: "YYYY-MM-DDTHH:MM:SS"
@@ -154,6 +167,7 @@ from catalog_helpers import (
     find_event_by_time,
     summarise_catalog,
     query_catalog,
+    query_catalog_chunked,
     get_stations_from_picks,
     get_pick_times,
 )
@@ -215,8 +229,15 @@ if client_fdsn is None:
     sys.exit(1)
 
 
-# -------- Catalog query --------------
-events = query_catalog(client_fdsn, T_START, T_END, LAT_MIN, LAT_MAX, LON_MIN, LON_MAX, TARGET_TYPES)
+# -------- Catalog query (chunked to avoid FDSN timeout on long windows) ------
+events = query_catalog_chunked(
+    client_fdsn,
+    T_START, T_END,
+    LAT_MIN, LAT_MAX, LON_MIN, LON_MAX,
+    TARGET_TYPES,
+    chunk_days  = CHUNK_DAYS,
+    cache_path  = CATALOG_CACHE_FILE if CATALOG_CACHE_FILE else None,
+)
 summarise_catalog(events)
 
 if TARGET_EVENT_TIMES:
@@ -525,7 +546,7 @@ for i, ev in enumerate(batch):
             all_rows.append(row)
 
     # ---- One diagnostic figure per event (all stations stacked) -------------
-    if station_data:
+    if station_data and PLOT_EVERY > 0 and n_ev_ok % PLOT_EVERY == 0:
         plot_windowing(
             station_data, t_orig,
             thr_on   = THR_ON    if DETECTION_METHOD == 'groult' else THRES_ON,
@@ -538,6 +559,27 @@ for i, ev in enumerate(batch):
             nlta     = NLTA      if DETECTION_METHOD == 'groult' else LTA_S,
             pre_event= PRE_EVENT,
         )
+
+    # ---- Checkpoint save (every CHECKPOINT_EVERY successfully processed events) ----
+    if CHECKPOINT_EVERY > 0 and n_ev_ok % CHECKPOINT_EVERY == 0 and all_rows:
+        df_chk = pd.DataFrame(all_rows)
+        meta_cols_chk = [
+            'event_time', 'event_type', 'catalog_lat', 'catalog_lon',
+            'catalog_depth_km', 'network', 'station', 'channel',
+            'det_starttime', 'det_starttime_raw', 'onset_refine_s',
+            'det_endtime', 'det_duration_s',
+            'trigger_on_cft', 'trigger_off_cft',
+            'origin_inside_det', 'origin_lag_s',
+            'pick_inside_det', 'pick_lag_s', 'quality_ok',
+            'SNR', 'SNR_picking_5_5', 'SNR_picking_3_3',
+            'SNR_picking_1_3', 'SNR_full_mean', 'SNR_full_median', 'SNR_s2n_median',
+        ]
+        ordered_chk = meta_cols_chk + FEATURE_NAMES
+        df_chk = df_chk[[c for c in ordered_chk if c in df_chk.columns]]
+        chk_path = os.path.join(RUN_DIR, f"catalog_windows_checkpoint_{n_ev_ok}ev.csv")
+        df_chk.to_csv(chk_path, index=False)
+        print(f"\n  [CHECKPOINT] {len(all_rows)} rows | {n_ev_ok} events processed "
+              f"→ {os.path.basename(chk_path)}\n")
 
 
 

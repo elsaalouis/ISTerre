@@ -202,6 +202,108 @@ def compute_station_coverage(events):
     return dict(station_counts), n_stations_per_event, dict(counts_by_type)
 
 
+
+# =============================================================================
+# CHUNKED CATALOG QUERY WITH DISK CACHE
+# =============================================================================
+
+def query_catalog_chunked(client_fdsn, t_start, t_end,
+                          lat_min, lat_max, lon_min, lon_max,
+                          target_types, chunk_days=90, cache_path=None):
+    """
+    Query the FDSN catalog in small time chunks to avoid server timeouts
+    Optionally save/reload the result from a QuakeML cache file on disk
+
+    Parameters
+    ----------
+    client_fdsn    : ObsPy FDSN_Client
+    t_start, t_end : str — ISO date strings e.g. "2022-01-01"
+    lat_min/max, lon_min/max : float — bounding box
+    target_types   : list of str — event types to keep
+    chunk_days     : int — size of each query window in days (default 90 = 3 months)
+    cache_path     : str or None — path to a .xml QuakeML cache file
+                     • If the file already exists → load from it, no FDSN query
+                     • If it does not exist     → query in chunks, save result there
+                     • None                     → query in chunks, no caching
+
+    Returns
+    -------
+    events : list of ObsPy Event objects (filtered by target_types)
+    """
+    import os
+    from obspy import UTCDateTime, Catalog, read_events
+
+    # ---- Load from cache if available ----------------------------------------
+    if cache_path and os.path.isfile(cache_path):
+        print(f"\n[CACHE] Loading catalog from {cache_path} ...")
+        cat    = read_events(cache_path)
+        events = [ev for ev in cat if str(ev.event_type) in target_types]
+        print(f"[CACHE] {len(cat)} events in file, "
+              f"{len(events)} kept after type filter: {target_types}")
+        return events
+
+    # ---- Build chunk list ----------------------------------------------------
+    t0        = UTCDateTime(t_start)
+    t1        = UTCDateTime(t_end)
+    chunk_sec = chunk_days * 86400
+
+    chunks  = []
+    current = t0
+    while current < t1:
+        next_t = min(current + chunk_sec, t1)
+        chunks.append((current, next_t))
+        current = next_t
+
+    print(f"\nQuerying catalog in {len(chunks)} chunks of ~{chunk_days} days ...")
+    print(f"  Full window  : {t_start} → {t_end}")
+    print(f"  Bounding box : lat [{lat_min}, {lat_max}]  lon [{lon_min}, {lon_max}]")
+    print(f"  Types kept   : {target_types}")
+
+    # ---- Query chunk by chunk ------------------------------------------------
+    all_events = []
+    seen_ids   = set()   # deduplicate events that might straddle chunk boundaries
+
+    for k, (c_start, c_end) in enumerate(chunks, 1):
+        label = f"{str(c_start)[:10]} → {str(c_end)[:10]}"
+        print(f"  Chunk {k:2d}/{len(chunks)} : {label} ...", end=" ", flush=True)
+        try:
+            cat_chunk = client_fdsn.get_events(
+                starttime       = c_start,
+                endtime         = c_end,
+                minlatitude     = lat_min,
+                maxlatitude     = lat_max,
+                minlongitude    = lon_min,
+                maxlongitude    = lon_max,
+                includearrivals = True,
+            )
+            n_new = 0
+            for ev in cat_chunk:
+                ev_id = str((ev.preferred_origin() or ev.origins[0]).time)
+                if ev_id not in seen_ids:
+                    seen_ids.add(ev_id)
+                    all_events.append(ev)
+                    n_new += 1
+            print(f"{len(cat_chunk)} returned, {n_new} new")
+        except Exception as e:
+            print(f"FAILED — {e}")
+
+    # ---- Filter by type ------------------------------------------------------
+    events = [ev for ev in all_events
+              if str(ev.event_type) in target_types]
+    print(f"\nTotal : {len(all_events)} events fetched across all chunks, "
+          f"{len(events)} kept after type filter.")
+
+    # ---- Save cache ----------------------------------------------------------
+    if cache_path and events:
+        os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
+        Catalog(events=events).write(cache_path, format="QUAKEML")
+        print(f"[CACHE] Catalog saved → {cache_path}")
+        print(f"        Next run will skip the FDSN query entirely.")
+
+    return events
+
+
+
 # =============================================================================
 # STATION LIST FROM INVENTORY (used by script 04)
 # =============================================================================
