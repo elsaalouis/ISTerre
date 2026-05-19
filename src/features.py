@@ -18,11 +18,9 @@ import numpy as np
 # FEATURE NAMES AND DESCRIPTIONS
 # =============================================================================
 
-# Column names feat_01 … feat_99 —> indices match the numbered comments in seismic_params.py
-FEATURE_NAMES = [f"feat_{i:02d}" for i in range(1, 100)]
-
-# Human-readable descriptions (same order as FEATURE_NAMES)
-FEATURE_DESCRIPTIONS = [
+# Human-readable feature names — used as CSV column headers and in all scripts.
+# Order matches the numbered comments in seismic_params.py (feat_01 → index 0, etc.)
+FEATURE_NAMES = [
     # Waveform shape (1–24)
     "duration",                      # 1
     "rapp_max_mean",                 # 2
@@ -130,6 +128,42 @@ FEATURE_DESCRIPTIONS = [
     "energy_1_8Hz",                  # 98
     "kurtosis_1_8Hz",                # 99
 ]
+
+# Sanity check — catches accidental edits that break the 99-feature contract
+assert len(FEATURE_NAMES) == 99, f"FEATURE_NAMES must have 99 entries, got {len(FEATURE_NAMES)}"
+
+
+# =============================================================================
+# BACKWARD COMPATIBILITY — legacy feat_01 … feat_99 column names
+# =============================================================================
+# CSVs produced before this rename used generic column names feat_01 … feat_99.
+# LEGACY_NAMES maps old names → new descriptive names so old files can still
+# be loaded by any script that calls rename_legacy_columns().
+
+LEGACY_NAMES = [f"feat_{i:02d}" for i in range(1, 100)]   # feat_01 … feat_99
+
+# dict: {"feat_01": "duration", "feat_02": "rapp_max_mean", …}
+LEGACY_TO_NAMED = dict(zip(LEGACY_NAMES, FEATURE_NAMES))
+
+
+def rename_legacy_columns(df):
+    """
+    If a DataFrame still uses old feat_XX column names, rename them in-place
+    to the descriptive names defined in FEATURE_NAMES.
+    Does nothing if the columns are already named correctly.
+
+    Parameters
+    ----------
+    df : pd.DataFrame — typically the catalog_windows CSV loaded by script 06
+
+    Returns
+    -------
+    df : pd.DataFrame with renamed columns (same object, modified in place)
+    """
+    if LEGACY_NAMES[0] in df.columns:
+        df.rename(columns=LEGACY_TO_NAMED, inplace=True)
+        print("[INFO] Legacy feature columns (feat_01…feat_99) renamed to descriptive names.")
+    return df
 
 
 # =============================================================================
