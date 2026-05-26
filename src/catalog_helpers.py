@@ -209,28 +209,33 @@ def compute_station_coverage(events):
 
 def query_catalog_chunked(client_fdsn, t_start, t_end,
                           lat_min, lat_max, lon_min, lon_max,
-                          target_types, chunk_days=90, cache_path=None):
+                          target_types, chunk_days=90, cache_path=None,
+                          max_retries=3, retry_sleep_s=60):
     """
     Query the FDSN catalog in small time chunks to avoid server timeouts
-    Optionally save/reload the result from a QuakeML cache file on disk
+     -> each failed chunk is retried up to max_retries times before being skipped
+     -> the cache is only saved if ALL chunks succeeded — a partial cache is never written, so a re-run always fetches the missing windows
 
     Parameters
     ----------
-    client_fdsn    : ObsPy FDSN_Client
-    t_start, t_end : str — ISO date strings e.g. "2022-01-01"
+    client_fdsn      : ObsPy FDSN_Client
+    t_start, t_end   : str — ISO date strings e.g. "2022-01-01"
     lat_min/max, lon_min/max : float — bounding box
-    target_types   : list of str — event types to keep
-    chunk_days     : int — size of each query window in days (default 90 = 3 months)
-    cache_path     : str or None — path to a .xml QuakeML cache file
-                     • If the file already exists → load from it, no FDSN query
-                     • If it does not exist     → query in chunks, save result there
-                     • None                     → query in chunks, no caching
+    target_types     : list of str — event types to keep
+    chunk_days       : int — size of each query window in days (default 90 ≈ 3 months)
+    cache_path       : str or None — path to a .xml QuakeML cache file
+                       • If the file already exists → load from it, no FDSN query
+                       • If it does not exist       → query in chunks, save if complete
+                       • None                       → query in chunks, no caching
+    max_retries      : int — number of retry attempts per chunk on timeout (default 3)
+    retry_sleep_s    : int — seconds to wait between retries (default 60)
 
     Returns
     -------
     events : list of ObsPy Event objects (filtered by target_types)
     """
     import os
+    import time
     from obspy import UTCDateTime, Catalog, read_events
 
     # ---- Load from cache if available ----------------------------------------
@@ -258,34 +263,52 @@ def query_catalog_chunked(client_fdsn, t_start, t_end,
     print(f"  Full window  : {t_start} → {t_end}")
     print(f"  Bounding box : lat [{lat_min}, {lat_max}]  lon [{lon_min}, {lon_max}]")
     print(f"  Types kept   : {target_types}")
+    print(f"  Retry policy : up to {max_retries} attempts, {retry_sleep_s}s sleep between retries")
 
-    # ---- Query chunk by chunk ------------------------------------------------
-    all_events = []
-    seen_ids   = set()   # deduplicate events that might straddle chunk boundaries
+    # ---- Query chunk by chunk (with retries) ---------------------------------
+    all_events  = []
+    seen_ids    = set()    # deduplicate events that straddle chunk boundaries
+    failed_chunks = []     # (c_start, c_end) pairs that failed all retries
 
     for k, (c_start, c_end) in enumerate(chunks, 1):
         label = f"{str(c_start)[:10]} → {str(c_end)[:10]}"
-        print(f"  Chunk {k:2d}/{len(chunks)} : {label} ...", end=" ", flush=True)
-        try:
-            cat_chunk = client_fdsn.get_events(
-                starttime       = c_start,
-                endtime         = c_end,
-                minlatitude     = lat_min,
-                maxlatitude     = lat_max,
-                minlongitude    = lon_min,
-                maxlongitude    = lon_max,
-                includearrivals = True,
-            )
-            n_new = 0
-            for ev in cat_chunk:
-                ev_id = str((ev.preferred_origin() or ev.origins[0]).time)
-                if ev_id not in seen_ids:
-                    seen_ids.add(ev_id)
-                    all_events.append(ev)
-                    n_new += 1
-            print(f"{len(cat_chunk)} returned, {n_new} new")
-        except Exception as e:
-            print(f"FAILED — {e}")
+        success = False
+
+        for attempt in range(1, max_retries + 1):
+            attempt_label = f"attempt {attempt}/{max_retries}" if attempt > 1 else ""
+            print(f"  Chunk {k:2d}/{len(chunks)} : {label} {attempt_label}...",
+                  end=" ", flush=True)
+            try:
+                cat_chunk = client_fdsn.get_events(
+                    starttime       = c_start,
+                    endtime         = c_end,
+                    minlatitude     = lat_min,
+                    maxlatitude     = lat_max,
+                    minlongitude    = lon_min,
+                    maxlongitude    = lon_max,
+                    includearrivals = True,
+                )
+                n_new = 0
+                for ev in cat_chunk:
+                    ev_id = str((ev.preferred_origin() or ev.origins[0]).time)
+                    if ev_id not in seen_ids:
+                        seen_ids.add(ev_id)
+                        all_events.append(ev)
+                        n_new += 1
+                print(f"{len(cat_chunk)} returned, {n_new} new")
+                success = True
+                break   # chunk done — move to next
+
+            except Exception as e:
+                err_msg = str(e) if str(e) else type(e).__name__
+                if attempt < max_retries:
+                    print(f"FAILED ({err_msg}) — retrying in {retry_sleep_s}s ...")
+                    time.sleep(retry_sleep_s)
+                else:
+                    print(f"FAILED ({err_msg}) — giving up after {max_retries} attempts.")
+
+        if not success:
+            failed_chunks.append((c_start, c_end))
 
     # ---- Filter by type ------------------------------------------------------
     events = [ev for ev in all_events
@@ -293,11 +316,22 @@ def query_catalog_chunked(client_fdsn, t_start, t_end,
     print(f"\nTotal : {len(all_events)} events fetched across all chunks, "
           f"{len(events)} kept after type filter.")
 
-    # ---- Save cache ----------------------------------------------------------
+    # ---- Report any failures -------------------------------------------------
+    if failed_chunks:
+        print(f"\n[WARN] {len(failed_chunks)} chunk(s) failed after all retries "
+              f"— the following date ranges are MISSING from the catalog:")
+        for cs, ce in failed_chunks:
+            print(f"         {str(cs)[:10]} → {str(ce)[:10]}")
+        print(f"[WARN] Cache will NOT be saved because the catalog is incomplete.")
+        print(f"       Re-run the script to retry the missing chunks.")
+        print(f"       If the same chunks keep failing, try reducing CHUNK_DAYS (e.g. 45).")
+        return events
+
+    # ---- Save cache (only if all chunks succeeded) ---------------------------
     if cache_path and events:
         os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
         Catalog(events=events).write(cache_path, format="QUAKEML")
-        print(f"[CACHE] Catalog saved → {cache_path}")
+        print(f"[CACHE] All chunks succeeded. Catalog saved → {cache_path}")
         print(f"        Next run will skip the FDSN query entirely.")
 
     return events
