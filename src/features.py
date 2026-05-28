@@ -7,7 +7,7 @@ Date   : April 2026
 
 The 99-feature set defined in seismic_params.py (Maggi / Hibert):
   - FEATURE_NAMES: column names for the output CSV
-  - FEATURE_DESCRIPTIONS: human-readable description of each feature
+  - FEATURE_DESCRIPTIONS: description of each feature
   - extract_features(): safe wrapper around calculate_all_attributes()
 """
 
@@ -18,8 +18,8 @@ import numpy as np
 # FEATURE NAMES AND DESCRIPTIONS
 # =============================================================================
 
-# Human-readable feature names — used as CSV column headers and in all scripts.
-# Order matches the numbered comments in seismic_params.py (feat_01 → index 0, etc.)
+# Feature names — used as CSV column headers and in all scripts
+# order matches the numbered comments in seismic_params.py (feat_01 → index 0, etc.)
 FEATURE_NAMES = [
     # Waveform shape (1–24)
     "duration",                      # 1
@@ -134,11 +134,42 @@ assert len(FEATURE_NAMES) == 99, f"FEATURE_NAMES must have 99 entries, got {len(
 
 
 # =============================================================================
+# FEATURE GROUPS — semantic grouping of the 99 features
+# =============================================================================
+# Maps a readable group label to the list of feature names in that group
+# Used by script 03b for correlation heatmap axis annotations and grouped importance plots
+
+FEATURE_GROUPS = {
+    "Waveform shape":          FEATURE_NAMES[0:24],
+    "Spectral":               FEATURE_NAMES[24:41],
+    "Pseudo-spectrogram":     FEATURE_NAMES[41:58],
+    "Ext. freq. bands":       FEATURE_NAMES[58:66],
+    "Energy differences":     FEATURE_NAMES[66:81],
+    "Energy ratios":          FEATURE_NAMES[81:96],
+    "Misc":                   FEATURE_NAMES[96:99],
+}
+
+# Flat mapping: feature_name → group label  (used by get_feature_group())
+_FEAT_TO_GROUP = {
+    feat: grp
+    for grp, feats in FEATURE_GROUPS.items()
+    for feat in feats
+}
+
+
+def get_feature_group(feature_name):
+    """ Return the group label for a given feature name """
+    return _FEAT_TO_GROUP.get(feature_name, "Unknown")
+
+
+def feature_group_array():
+    """ Return a numpy array of group labels, one per feature, in FEATURE_NAMES order """
+    return [_FEAT_TO_GROUP[f] for f in FEATURE_NAMES]
+
+
+# =============================================================================
 # BACKWARD COMPATIBILITY — legacy feat_01 … feat_99 column names
 # =============================================================================
-# CSVs produced before this rename used generic column names feat_01 … feat_99.
-# LEGACY_NAMES maps old names → new descriptive names so old files can still
-# be loaded by any script that calls rename_legacy_columns().
 
 LEGACY_NAMES = [f"feat_{i:02d}" for i in range(1, 100)]   # feat_01 … feat_99
 
@@ -147,19 +178,7 @@ LEGACY_TO_NAMED = dict(zip(LEGACY_NAMES, FEATURE_NAMES))
 
 
 def rename_legacy_columns(df):
-    """
-    If a DataFrame still uses old feat_XX column names, rename them in-place
-    to the descriptive names defined in FEATURE_NAMES.
-    Does nothing if the columns are already named correctly.
-
-    Parameters
-    ----------
-    df : pd.DataFrame — typically the catalog_windows CSV loaded by script 06
-
-    Returns
-    -------
-    df : pd.DataFrame with renamed columns (same object, modified in place)
-    """
+    """ If a DataFrame still uses old feat_XX column names, rename them in-place to the descriptive names defined in FEATURE_NAMES """
     if LEGACY_NAMES[0] in df.columns:
         df.rename(columns=LEGACY_TO_NAMED, inplace=True)
         print("[INFO] Legacy feature columns (feat_01…feat_99) renamed to descriptive names.")
