@@ -690,11 +690,6 @@ for res in subset_results:
         line += f"  {res[f'f1_{safe}']:>10.3f}"
     print(line)
 
-print(f"\n  PCA: {n_comp} components analysed")
-for thresh in [0.80, 0.90, 0.95]:
-    n_needed = int(np.searchsorted(cum_explained, thresh)) + 1
-    print(f"    {thresh*100:.0f}% variance explained by {n_needed} PCs")
-
 print(f"\n  Cluster representatives ({len(cluster_reps)} features):")
 print(f"    {cluster_reps[:10]}")
 if len(cluster_reps) > 10:
