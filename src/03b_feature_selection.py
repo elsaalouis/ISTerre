@@ -14,15 +14,15 @@ Pipeline
 --------
   1. Load the catalog_windows CSV (output of script 04a)
   2. Correlation analysis: Pearson and Spearman 99×99 heatmaps, cluster extraction (group features with |r| > CORR_THRESHOLD into clusters)
-  3. RF feature importances: train a RF (same config as 06a) to rank all 99 features, bar chart of top-N importances
-  4. Feature subset experiments: for each subset (top-20 / top-40 / top-60 / all-99 / cluster-representatives), train RF with event-stratified split + SMOTE → compare precision / recall / F1
+  3. HGB feature importances: train HGB (same config as 06b) on all 99 features, rank them by permutation importance (how much Macro F1 drops when each feature is shuffled on the test set)
+  4. Feature subset experiments: for each subset (top-20 / top-40 / top-60 / all-99 / cluster-representatives), train HGB with event-stratified split + SMOTE → compare precision / recall / F1
   5. PCA exploration: cumulative explained variance, loadings of the first 3 principal components
 
 Output
 ------
   fig_correlation_pearson_<stamp>.png    : clustered Pearson heatmap
   fig_correlation_spearman_<stamp>.png   : clustered Spearman heatmap
-  fig_importances_<stamp>.png            : top-N RF importances, coloured by group
+  fig_importances_<stamp>.png            : top-N HGB permutation importances, coloured by group
   fig_importances_grouped_<stamp>.png    : box plot of importances per feature group
   fig_subset_comparison_<stamp>.png      : macro F1 / per-class F1 vs subset size
   fig_pca_variance_<stamp>.png           : PCA cumulative explained variance
@@ -40,7 +40,7 @@ Output
 # =============================================================================
 
 # -- Input CSV (output of script 04a) -----------------------------------------
-CSV_PATH = "/data/failles/louisels/project/results/outputs_04a/run_XXXX/catalog_windows_XXXX.csv"
+CSV_PATH = "/data/failles/louisels/project/results/outputs_04a/groult/run_20260531_104936/catalog_windows_20260531_104936.csv"
 
 # -- Output directory ----------------------------------------------------------
 OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_03b"
@@ -56,14 +56,19 @@ FILTER_QUALITY = True   # True → keep only quality_ok == True rows
 # lower value = finer clusters (more features considered distinct)
 CORR_THRESHOLD = 0.70   # |Pearson r| above which two features are "redundant"
 
-# -- RF training (same as 06a) -------------------------------------------------
-TEST_SIZE        = 0.20
-RANDOM_STATE     = 42
-USE_SMOTE        = True
-RF_N_ESTIMATORS  = 200
-RF_MAX_FEATURES  = "sqrt"
-RF_MIN_SAMPLES_LEAF = 2
-RF_CLASS_WEIGHT  = "balanced"
+# -- HGB training (same config as 06b, now the reference classifier) ----------
+TEST_SIZE         = 0.20
+RANDOM_STATE      = 42
+USE_SMOTE         = True
+SMOTE_K           = 5     # k_neighbors for SMOTE — must match 06b SMOTE_K
+HGB_N_ESTIMATORS  = 200
+HGB_MAX_DEPTH     = 6
+HGB_LEARNING_RATE = 0.1
+
+# -- Permutation importance (HGB has no built-in MDI like RF) -----------------
+# n_repeats: how many times each feature is shuffled — higher = more reliable but slower
+#  -> 10 good balance for ~6000 test rows × 99 features on cluster
+N_PERMUTATION_REPEATS = 10
 
 # -- Feature subsets to test ---------------------------------------------------
 SUBSET_CONFIGS = [        # each entry is (label_for_plot, n_features_or_None)
@@ -75,7 +80,7 @@ SUBSET_CONFIGS = [        # each entry is (label_for_plot, n_features_or_None)
 ]
 
 # -- Top-N importances to display in the bar chart ----------------------------
-N_PLOT_IMPORTANCES = 40
+N_PLOT_IMPORTANCES = 10
 
 
 
@@ -102,7 +107,8 @@ from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
 from scipy.spatial.distance import squareform
 from scipy.stats import spearmanr
 
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.inspection import permutation_importance
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, f1_score
 from sklearn.preprocessing import label_binarize, StandardScaler
@@ -169,7 +175,19 @@ if FILTER_QUALITY and "quality_ok" in df_raw.columns:
     print(f"After quality filter: {len(df_raw):,} rows kept  "
           f"({n_before - len(df_raw):,} dropped).")
 elif FILTER_QUALITY:
-    print("[WARN] 'quality_ok' column not found — skipping quality filter.")
+    # Fall back to SNR thresholds if quality_ok column is absent
+    snr_cols = {"SNR_full_mean": 2.70, "SNR_s2n_median": 20.99}
+    available = {c: t for c, t in snr_cols.items() if c in df_raw.columns}
+    if available:
+        n_before = len(df_raw)
+        mask = np.ones(len(df_raw), dtype=bool)
+        for col, thr in available.items():
+            mask &= (df_raw[col] >= thr).values
+        df_raw = df_raw[mask].copy()
+        print(f"After quality filter (SNR thresholds): {len(df_raw):,} rows kept  "
+              f"({n_before - len(df_raw):,} dropped).")
+    else:
+        print("[WARN] No quality column found — skipping quality filter.")
 
 # -- Drop rows missing any feature --------------------------------------------
 missing = [f for f in FEATURE_NAMES if f not in df_raw.columns]
@@ -201,22 +219,17 @@ print(f"\n{'='*65}")
 print(f"  STEP 2 — Train / test split  (by event)")
 print(f"{'='*65}")
 
+# Use drop_duplicates (same approach as 06b) — one row per event keeps the first
+# occurrence of event_type, which is consistent since each event has a single type.
 event_info = (
-    df_raw.groupby("event_time")["event_type"]  # split by event to avoid data leakage (same as 06a)
-    .agg(lambda x: x.mode().iloc[0])
-    .reset_index()
-    .rename(columns={"event_type": "label"})
+    df_raw[["event_time", "event_type"]]
+    .drop_duplicates("event_time")
 )
-
-min_class_events = event_info["label"].value_counts().min()
-stratify_col = event_info["label"] if min_class_events >= 5 else None
-if stratify_col is None:
-    print("[WARN] Smallest class has < 5 events — stratified split disabled.")
 
 train_evt, test_evt = train_test_split(
     event_info["event_time"],
     test_size    = TEST_SIZE,
-    stratify     = stratify_col,
+    stratify     = event_info["event_type"],
     random_state = RANDOM_STATE,
 )
 train_evt = set(train_evt);  test_evt = set(test_evt)
@@ -232,12 +245,15 @@ y_train      = df_train["event_type"].values
 X_test_full  = df_test[FEATURE_NAMES].values.astype(np.float32)
 y_test       = df_test["event_type"].values
 
-# SMOTE on the full training set (will be reused for every subset)
+# SMOTE on the full 99-feature training set — used ONLY for the baseline HGB
+# (permutation importance in Section 6).  Subset experiments (Section 7) each
+# apply SMOTE on their own feature columns so the interpolation happens in the
+# same feature space as 06b does. This makes results directly comparable.
 if USE_SMOTE:
-    min_rows   = pd.Series(y_train).value_counts().min()
-    k_nb       = min(5, min_rows - 1)
+    k_nb = min(SMOTE_K, pd.Series(y_train).value_counts().min() - 1)
     if k_nb >= 1:
-        print(f"\nApplying SMOTE (k_neighbors={k_nb}) on full training set ...")
+        print(f"\nApplying SMOTE (k_neighbors={k_nb}) on full training set  "
+              f"[used for baseline HGB / permutation importance only] ...")
         sm = SMOTE(sampling_strategy="auto", k_neighbors=k_nb,
                    random_state=RANDOM_STATE)
         X_train_full_sm, y_train_sm = sm.fit_resample(X_train_full, y_train)
@@ -391,42 +407,73 @@ _plot_corr_heatmap(
 
 
 # =============================================================================
-# SECTION 6 — RF FEATURE IMPORTANCES
+# SECTION 6 — HGB FEATURE IMPORTANCES  (permutation importance)
 # =============================================================================
+# HGB does not expose MDI (Mean Decrease in Impurity) like Random Forest does
+#  -> instead, use permutation importance: each feature is randomly shuffled in the TEST set and we measure the drop in macro F1
+#  -> a large drop = the model relied heavily on that feature
+#  -> this is evaluated on the test set (not train), so it is free of overfitting bias
 
 print(f"\n{'='*65}")
-print(f"  STEP 4 — RF feature importances")
+print(f"  STEP 4 — HGB feature importances  (permutation, {N_PERMUTATION_REPEATS} repeats)")
 print(f"{'='*65}")
 
-print("  Training Random Forest on full feature set ...")
-clf_full = RandomForestClassifier(
-    n_estimators     = RF_N_ESTIMATORS,
-    max_features     = RF_MAX_FEATURES,
-    min_samples_leaf = RF_MIN_SAMPLES_LEAF,
-    class_weight     = RF_CLASS_WEIGHT,
-    n_jobs           = -1,
-    random_state     = RANDOM_STATE,
+print("  Training HGB on full feature set ...")
+clf_full = HistGradientBoostingClassifier(
+    max_iter      = HGB_N_ESTIMATORS,   # number of boosting rounds (= number of trees)
+    max_depth     = HGB_MAX_DEPTH,      # maximum depth of each tree
+    learning_rate = HGB_LEARNING_RATE,  # shrinks each tree's contribution → regularisation
+    early_stopping = True,              # stops if validation loss stops improving
+    n_iter_no_change = 15,              # patience: stop after 15 rounds without improvement
+    random_state  = RANDOM_STATE,
 )
-clf_full.fit(X_train_full_sm, y_train_sm)  # where the actual training happens
+clf_full.fit(X_train_full_sm, y_train_sm)
 classes = list(clf_full.classes_)
-print(f"  Classes (RF order): {classes}")
+print(f"  Classes (HGB order): {classes}")
 
-importances = clf_full.feature_importances_  # computes the mean decrease in impurity (MDI) for every feature and stores it in .feature_importances_
+# Evaluate baseline so the user can see the model quality before feature selection
+from sklearn.metrics import accuracy_score
+y_pred_base = clf_full.predict(X_test_full)
+acc_base    = accuracy_score(y_test, y_pred_base)
+rep_base    = classification_report(y_test, y_pred_base,
+                                    labels=classes, target_names=classes,
+                                    output_dict=True, zero_division=0)
+print(f"  Baseline (all 99 features) — "
+      f"Accuracy={acc_base:.3f}  Macro F1={rep_base['macro avg']['f1-score']:.3f}")
+
+# -- Permutation importance on the TEST set -----------------------------------
+# Scoring = 'f1_macro' so the drop matches our main evaluation metric.
+# n_jobs=-1 parallelises across features.
+print(f"\n  Computing permutation importance  "
+      f"({N_PERMUTATION_REPEATS} repeats × {X_test_full.shape[1]} features) ...")
+print(f"  [This may take 5-15 min on the cluster — parallelised on all cores]")
+
+perm_result = permutation_importance(
+    clf_full, X_test_full, y_test,
+    n_repeats  = N_PERMUTATION_REPEATS,
+    random_state = RANDOM_STATE,
+    n_jobs     = -1,
+    scoring    = "f1_macro",   # macro F1 = our target metric
+)
+importances      = perm_result.importances_mean   # mean drop across repeats
+importances_std  = perm_result.importances_std    # std across repeats (measure of stability)
 
 # Build importance DataFrame
-imp_df = pd.DataFrame({             # imp_df sorted by importance descending
-    "feature"    : FEATURE_NAMES,
-    "importance" : importances,
-    "group"      : FEAT_GROUP_ARRAY,
-    "cluster_id" : cluster_labels,
+imp_df = pd.DataFrame({
+    "feature"         : FEATURE_NAMES,
+    "importance"      : importances,
+    "importance_std"  : importances_std,
+    "group"           : FEAT_GROUP_ARRAY,
+    "cluster_id"      : cluster_labels,
 }).sort_values("importance", ascending=False).reset_index(drop=True)
 imp_df["rank"] = imp_df.index + 1
 
 # Print top 20
-print(f"\n  Top-20 feature importances:")
+print(f"\n  Top-20 feature importances  (mean Macro F1 drop when shuffled):")
 for _, row in imp_df.head(20).iterrows():
     print(f"    {row['rank']:3d}. {row['feature']:<32s}  "
-          f"{row['importance']:.4f}  [{row['group'].replace(chr(10),' ')}]")
+          f"{row['importance']:+.4f} ± {row['importance_std']:.4f}  "
+          f"[{row['group'].replace(chr(10),' ')}]")
 
 # Save importance CSV (merged with cluster info)
 imp_csv = os.path.join(RUN_DIR, f"feature_importances_{STAMP}.csv")
@@ -441,34 +488,40 @@ rep_df = (
     .reset_index()
 )
 
-# Sorts the cluster representatives themselves by importance (the most important representative first)
+# Sorts the cluster representatives themselves by importance (most important first)
 cluster_reps = rep_df.sort_values("importance", ascending=False)["feature"].tolist()
 print(f"\n  Cluster representatives ({len(cluster_reps)} features, one per cluster):")
 for i, fname in enumerate(cluster_reps[:20]):
     grp = get_feature_group(fname)
     imp = imp_df.loc[imp_df["feature"] == fname, "importance"].values[0]
-    print(f"    {i+1:3d}. {fname:<32s}  imp={imp:.4f}  [{grp.replace(chr(10),' ')}]")
+    print(f"    {i+1:3d}. {fname:<32s}  imp={imp:+.4f}  [{grp.replace(chr(10),' ')}]")
 if len(cluster_reps) > 20:
     print(f"    … and {len(cluster_reps)-20} more")
 
 
-# -- Figure: top-N importances bar chart, coloured by group -------------------
+# -- Figure: top-N importances bar chart with error bars, coloured by group ---
 top_n   = imp_df.head(N_PLOT_IMPORTANCES)
 colours = [GROUP_COLORS[g] for g in top_n["group"]]
 
 fig, ax = plt.subplots(figsize=(10, N_PLOT_IMPORTANCES * 0.32 + 1.5))
-bars = ax.barh(top_n["feature"][::-1], top_n["importance"][::-1],
-               color=colours[::-1], edgecolor='white', linewidth=0.4)
-ax.set_xlabel("Mean decrease in impurity (feature importance)")
-ax.set_title(f"Top-{N_PLOT_IMPORTANCES} RF feature importances\n"
-             f"(trained on all 99 features, {len(df_train):,} train rows after SMOTE)")
+y_pos = np.arange(N_PLOT_IMPORTANCES)
+ax.barh(y_pos, top_n["importance"][::-1],
+        xerr=top_n["importance_std"][::-1],
+        color=colours[::-1], edgecolor='white', linewidth=0.4,
+        error_kw=dict(ecolor='grey', lw=0.8, capsize=2))
+ax.set_yticks(y_pos)
+ax.set_yticklabels(top_n["feature"][::-1].tolist(), fontsize=8)
+ax.axvline(0, color='black', lw=0.8, ls='--', alpha=0.5)   # zero line: negative = feature hurts
+ax.set_xlabel("Permutation importance  (mean Macro F1 drop when feature is shuffled)")
+ax.set_title(f"Top-{N_PLOT_IMPORTANCES} HGB feature importances\n"
+             f"(permutation on test set, {N_PERMUTATION_REPEATS} repeats  |  "
+             f"error bars = ±1 std across repeats)")
 # Legend for groups
 legend_patches = [
     mpatches.Patch(facecolor=GROUP_COLORS[g], label=g.replace('\n', ' '))
     for g in GROUP_NAMES if g in top_n["group"].values
 ]
 ax.legend(handles=legend_patches, fontsize=8, loc='lower right')
-ax.tick_params(axis='y', labelsize=8)
 plt.tight_layout()
 path = os.path.join(RUN_DIR, f"fig_importances_{STAMP}.png")
 fig.savefig(path, dpi=150, bbox_inches='tight')
@@ -492,8 +545,9 @@ for patch, grp in zip(bp['boxes'], groups_with_data):
     patch.set_alpha(0.8)
 ax.set_xticks(range(1, len(groups_with_data) + 1))
 ax.set_xticklabels(short_labels, rotation=20, ha='right', fontsize=9)
-ax.set_ylabel("Feature importance (mean decrease in impurity)")
-ax.set_title("RF feature importance distribution by semantic group\n"
+ax.axhline(0, color='black', lw=0.8, ls='--', alpha=0.5)
+ax.set_ylabel("Permutation importance  (mean Macro F1 drop)")
+ax.set_title("HGB permutation importance distribution by semantic group\n"
              "Boxes = IQR  |  Line = median  |  Whiskers = 1.5×IQR")
 ax.grid(axis='y', lw=0.4, alpha=0.4)
 plt.tight_layout()
@@ -506,42 +560,49 @@ print(f"[SAVED] {path}")
 
 # =============================================================================
 # SECTION 7 — FEATURE SUBSET EXPERIMENTS
-# For each subset: select features → train RF → evaluate on test set
+# For each subset: select features → train HGB → evaluate on test set
 # =============================================================================
 
 print(f"\n{'='*65}")
 print(f"  STEP 5 — Feature subset experiments")
 print(f"{'='*65}")
 
-# Ordered list of feature names by RF importance (used for top-N subsets)
+# Ordered list of feature names by HGB permutation importance (used for top-N subsets)
 features_by_importance = imp_df["feature"].tolist()
 
 
 def _run_subset(label, feature_subset):
     """
-    Train and evaluate an RF on feature_subset
-    Returns a dict with macro/per-class F1 and accuracy
+    Train and evaluate HGB on feature_subset.
+    SMOTE is applied on the subset columns (same feature space as 06b).
+    Returns a dict with macro/per-class F1 and accuracy.
     """
-    idx_train = [FEATURE_NAMES.index(f) for f in feature_subset]
-    Xtr = X_train_full_sm[:, idx_train]
-    Xte = X_test_full[:, idx_train]
+    idx = [FEATURE_NAMES.index(f) for f in feature_subset]
+    Xtr_raw = X_train_full[:, idx]   # pre-SMOTE, subset of columns
+    Xte     = X_test_full[:, idx]
 
-    if USE_SMOTE and Xtr.shape[1] > 0:
-        # SMOTE already applied to X_train_full_sm (same rows, just fewer columns)
-        pass   # reuse the already-SMOTE'd rows
+    # Apply SMOTE in the subset feature space — identical to 06b's approach
+    if USE_SMOTE:
+        k_nb = min(SMOTE_K, pd.Series(y_train).value_counts().min() - 1)
+        sm   = SMOTE(sampling_strategy="auto", k_neighbors=k_nb,
+                     random_state=RANDOM_STATE)
+        Xtr, ytr = sm.fit_resample(Xtr_raw, y_train)
+    else:
+        Xtr, ytr = Xtr_raw, y_train
 
-    clf = RandomForestClassifier(
-        n_estimators     = RF_N_ESTIMATORS,
-        max_features     = RF_MAX_FEATURES,
-        min_samples_leaf = RF_MIN_SAMPLES_LEAF,
-        class_weight     = RF_CLASS_WEIGHT,
-        n_jobs           = -1,
+    clf = HistGradientBoostingClassifier(
+        max_iter         = HGB_N_ESTIMATORS,
+        max_depth        = HGB_MAX_DEPTH,
+        learning_rate    = HGB_LEARNING_RATE,
+        early_stopping   = True,
+        n_iter_no_change = 15,
         random_state     = RANDOM_STATE,
     )
-    clf.fit(Xtr, y_train_sm)
+    clf.fit(Xtr, ytr)
     y_pred = clf.predict(Xte)
 
-    report = classification_report(y_test, y_pred, target_names=classes,
+    report = classification_report(y_test, y_pred,
+                                   labels=classes, target_names=classes,
                                    output_dict=True, zero_division=0)
     macro_f1 = report["macro avg"]["f1-score"]
     accuracy  = report["accuracy"]
@@ -609,7 +670,6 @@ fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 # --- Left panel: macro F1 ---
 macro_vals = [r["macro_f1"] for r in subset_results]
 bars = ax1.bar(x, macro_vals, color="#7570b3", edgecolor='white', width=0.6)
-# Annotate with value
 for bar, val in zip(bars, macro_vals):
     ax1.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.005,
              f"{val:.3f}", ha='center', va='bottom', fontsize=10, fontweight='bold')
@@ -617,7 +677,7 @@ ax1.set_xticks(x)
 ax1.set_xticklabels(subset_labels, fontsize=9)
 ax1.set_ylabel("Macro F1-score")
 ax1.set_ylim(0, 1.0)
-ax1.set_title("Macro F1 by feature subset\n(equal weight to all classes)")
+ax1.set_title("Macro F1 by feature subset  (HGB)\n(equal weight to all classes)")
 ax1.axhline(macro_vals[-1 if SUBSET_CONFIGS[-1][1] == 99 else
                         next(i for i,c in enumerate(SUBSET_CONFIGS) if c[1]==99)],
              color='grey', lw=1.2, ls='--', label='All 99 features')
@@ -643,11 +703,12 @@ ax2.set_xticks(x)
 ax2.set_xticklabels(subset_labels, fontsize=9)
 ax2.set_ylabel("F1-score per class")
 ax2.set_ylim(0, 1.15)
-ax2.set_title("Per-class F1 by feature subset")
+ax2.set_title("Per-class F1 by feature subset  (HGB)")
 ax2.legend(fontsize=9)
 ax2.grid(axis='y', lw=0.4, alpha=0.4)
 
-fig.suptitle("Feature subset experiments — does reducing the feature set hurt accuracy?",
+fig.suptitle("Feature subset experiments — HGB classifier  "
+             "(does reducing the feature set hurt accuracy?)",
              fontsize=12)
 plt.tight_layout(rect=[0, 0, 1, 0.95])
 path = os.path.join(RUN_DIR, f"fig_subset_comparison_{STAMP}.png")
@@ -658,7 +719,7 @@ print(f"[SAVED] {path}")
 
 
 # =============================================================================
-# SECTION 8 — SUMMARY + CONCLUSIONS
+# SECTION 9 — SUMMARY + CONCLUSIONS
 # =============================================================================
 
 print(f"\n{'='*65}")
@@ -671,15 +732,15 @@ sizes = cluster_df.groupby("cluster_id").size().value_counts().sort_index()
 for size, count in sizes.items():
     print(f"    {count:3d} cluster(s) of size {size}")
 
-print(f"\n  RF feature importances (full set):")
+print(f"\n  HGB feature importances (permutation, full set):")
 print(f"    Top feature: {imp_df.iloc[0]['feature']}  "
-      f"(importance={imp_df.iloc[0]['importance']:.4f})")
+      f"(importance={imp_df.iloc[0]['importance']:+.4f})")
 print(f"    Group with highest median importance: "
       f"{imp_df.groupby('group')['importance'].median().idxmax().replace(chr(10),' ')}")
 
 print(f"\n  Subset experiment results:")
-print(f"  {'Subset':<20s}  {'n_feat':>6}  {'Macro F1':>8}  {'Accuracy':>9}  "
-      + "  ".join(f"{c.replace(' ','_')[:8]:>10}" for c in classes))
+header_classes = "  ".join(f"{c.replace(' ','_')[:8]:>10}" for c in classes)
+print(f"  {'Subset':<20s}  {'n_feat':>6}  {'Macro F1':>8}  {'Accuracy':>9}  {header_classes}")
 print("  " + "-" * 70)
 for res in subset_results:
     line = (f"  {res['subset'].replace(chr(10),' '):<20s}  "
@@ -710,4 +771,3 @@ print(f"  Log file      : {_}")
 print("=" * 70)
 
 log_file.close()
-

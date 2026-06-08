@@ -30,7 +30,7 @@ Outputs
 # =============================================================================
 
 # -- Input CSV (output of script 04a) -----------------------------------------
-CSV_PATH   = "/data/failles/louisels/project/results/outputs_04a/groult/run_20260519_172158/catalog_windows_20260519_172158.csv"
+CSV_PATH   = "/data/failles/louisels/project/results/outputs_04a/groult/run_20260531_104936/catalog_windows_20260531_104936.csv"
 
 # -- Output directory ----------------------------------------------------------
 OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_06b"
@@ -149,12 +149,15 @@ df = rename_legacy_columns(df)
 df = df[df["event_type"].isin(TARGET_CLASSES)].copy()
 print(f"After class filter {TARGET_CLASSES}: {len(df):,} rows.")
 
-# Quality gate
-mask_quality = (
-    (df["SNR_full_mean"]  >= SNR_FULL_MEAN_MIN) &
-    (df["SNR_s2n_median"] >= SNR_S2N_MEDIAN_MIN)
-)
-df = df[mask_quality].copy()
+# Use quality_ok column if present, otherwise fall back to explicit SNR thresholds
+if "quality_ok" in df.columns:
+    df = df[df["quality_ok"] == True].copy()
+else:
+    mask_quality = (
+        (df["SNR_full_mean"]  >= SNR_FULL_MEAN_MIN) &
+        (df["SNR_s2n_median"] >= SNR_S2N_MEDIAN_MIN)
+    )
+    df = df[mask_quality].copy()
 print(f"After quality filter: {len(df):,} rows kept.")
 
 # Drop rows with NaN in any feature

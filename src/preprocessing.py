@@ -21,6 +21,90 @@ from obspy import UTCDateTime, Stream
 # WAVEFORM LOADING
 # =============================================================================
 
+def load_3component(client_sds, net, sta, loc, chan_z, t_start, t_end,
+                    target_fs=100, window_s=30, horizontal_suffixes=None):
+    """
+    Load up to 3 components for a given station and time window from SDS
+     -> used by 03c (DeepDenoiser data preparation) to build (3000, 3) .npz files in the format required by Zhu et al. (2019) DeepDenoiser
+
+    Parameters
+    ----------
+    client_sds          : ObsPy SDS_Client
+    net, sta, loc       : str — network, station, location codes
+    chan_z              : str — vertical channel code, e.g. "HHZ"
+    t_start, t_end      : UTCDateTime — time window to extract
+    target_fs           : float — target sampling rate in Hz (default 100)
+    window_s            : float — window duration in seconds (default 30)
+    horizontal_suffixes : list of (str, str) or None
+                          Pairs of (N-suffix, E-suffix) to try when loading horizontal components, e.g. [("N","E")]
+
+    Returns
+    -------
+    data : np.ndarray, shape (nt, 3), dtype float32
+           columns = [E, N, Z], if only Z is available, all 3 columns filled with Z
+    """
+    if horizontal_suffixes is None:
+        horizontal_suffixes = [("N", "E"), ("2", "1")]
+
+    nt = int(window_s * target_fs)
+
+    # ---- Z component (mandatory) --------------------------------------------
+    st_z = client_sds.get_waveforms(net, sta, loc, chan_z, t_start, t_end)
+    if not st_z:
+        raise ValueError(f"No Z trace for {net}.{sta}.{loc}.{chan_z}")
+    st_z.merge(fill_value=0)
+    tr_z = st_z[0].copy()
+
+    if abs(tr_z.stats.sampling_rate - target_fs) > 1:
+        tr_z.resample(target_fs)
+    tr_z.detrend("demean")
+    tr_z.trim(t_start, t_start + window_s, pad=True, fill_value=0)
+
+    data_z = tr_z.data[:nt].astype("float32")
+    if len(data_z) < nt:
+        data_z = np.pad(data_z, (0, nt - len(data_z)))
+
+    # ---- Horizontal components (optional) -----------------------------------
+    base   = chan_z[:-1]   # e.g. "HH" from "HHZ"
+    data_e = None
+    data_n = None
+
+    for suf_n, suf_e in horizontal_suffixes:
+        try:
+            st_h = client_sds.get_waveforms(
+                net, sta, loc,
+                base + suf_n + "," + base + suf_e,
+                t_start, t_end,
+            )
+            if len(st_h) < 2:
+                continue
+            st_h.merge(fill_value=0)
+            for tr in st_h:
+                if abs(tr.stats.sampling_rate - target_fs) > 1:
+                    tr.resample(target_fs)
+                tr.detrend("demean")
+                tr.trim(t_start, t_start + window_s, pad=True, fill_value=0)
+                d = tr.data[:nt].astype("float32")
+                if len(d) < nt:
+                    d = np.pad(d, (0, nt - len(d)))
+                if tr.stats.channel.endswith(suf_e):
+                    data_e = d
+                else:
+                    data_n = d
+            if data_e is not None and data_n is not None:
+                break
+        except Exception:
+            continue
+
+    # Fall back to Z if horizontals are unavailable
+    if data_e is None:
+        data_e = data_z.copy()
+    if data_n is None:
+        data_n = data_z.copy()
+
+    return np.stack([data_e, data_n, data_z], axis=1)   # shape (nt, 3)
+
+
 def load_waveforms_sds(client_sds, event, z_channels, pre, post):
     """
     Load vertical-component waveforms for all pick-stations of an event
