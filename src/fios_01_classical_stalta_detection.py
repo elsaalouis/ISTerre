@@ -46,7 +46,7 @@ CHANNEL  = "DHZ"       # DHZ; DHN; DHE
 
 # -- Time window to process ---------------------------------------------------
 T_START = "2026-03-19"   # first day to process
-T_END   = "2026-05-06"   # last  day to process (exclusive)
+T_END   = "2026-06-10"   # last  day to process (exclusive)
 
 # -- Preprocessing ------------------------------------------------------------
 FREQMIN = 5.0    # bandpass low  cutoff -> above the 5–6 Hz resonance peak

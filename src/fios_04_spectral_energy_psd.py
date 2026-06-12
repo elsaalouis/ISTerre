@@ -47,7 +47,7 @@ LOCATION = "01"
 CHANNEL  = "DHZ"
 
 T_START = "2026-03-19"
-T_END   = "2026-05-06"   # exclusive
+T_END   = "2026-06-10"   # exclusive
 
 # Band to analyse (Hz)
 FREQ_BAND = (2.0, 10.0)
@@ -64,6 +64,15 @@ DESTAB_DATE = "2026-04-13"
 
 # Rolling-mean window (days)
 ROLLING_DAYS = 7
+
+# Gap handling
+# Recording gaps are filled with zeros by ObsPy (fill_value=0).
+# These zero-valued samples dilute the Welch PSD average by a factor of (1 − gap_fraction).
+# Correction strategy:
+#   gap_fraction < 5 %          → no correction needed
+#   5 % ≤ gap_fraction < 95 %  → divide energy by (1 − gap_fraction) to recover true level
+#   gap_fraction ≥ 95 %        → NaN  (not enough real signal for a reliable estimate)
+GAP_SKIP_THRESHOLD = 0.95   # fraction of zero samples above which the file is discarded
 
 
 
@@ -96,10 +105,19 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 def compute_welch_psd(tr, nperseg):
     """
     Detrend, taper, then compute Welch PSD.
-    Returns (freqs [Hz], psd [counts²/Hz]).
+    Returns (freqs [Hz], psd [counts²/Hz], gap_fraction).
     nperseg must be consistent across calls (fixes the frequency axis).
+
+    gap_fraction : float in [0, 1]
+        Fraction of raw samples that are zero-filled recording gaps
+        (|amplitude| < 0.5 counts). Used by the caller to correct for
+        power dilution or to discard unreliable files.
     """
     data = tr.data.astype(float)
+
+    # Detect gap fraction BEFORE any processing (raw counts, gaps = exact zeros)
+    gap_fraction = float(np.mean(np.abs(data) < 0.5))
+
     data -= np.mean(data)
     data -= np.polyval(np.polyfit(np.arange(len(data)), data, 1),
                        np.arange(len(data)))          # linear detrend
@@ -107,7 +125,7 @@ def compute_welch_psd(tr, nperseg):
     freqs, psd = welch(data, fs=tr.stats.sampling_rate,
                        nperseg=nperseg, noverlap=nperseg // 2,  # nperseg number of points per segment, frequency resolution of Δf = 1/4 s = 0.25 Hz < 2-10 Hz
                        window='hann', scaling='density')
-    return freqs, psd
+    return freqs, psd, gap_fraction
 
 
 def band_energy(freqs, psd, fmin, fmax):
@@ -191,23 +209,39 @@ for day_utc in days:
         if tr.stats.npts < 2 * nperseg:
             continue
 
-        freqs, psd = compute_welch_psd(tr, nperseg)
-        e          = band_energy(freqs, psd, FREQ_BAND[0], FREQ_BAND[1])
-        e_db       = 10 * np.log10(max(e, 1e-30))
+        freqs, psd, gap_frac = compute_welch_psd(tr, nperseg)
 
-        t_file     = tr.stats.starttime
-        hour_utc   = t_file.hour
-        is_night   = (hour_utc >= NIGHT_START_UTC) or (hour_utc < NIGHT_END_UTC)
+        if gap_frac >= GAP_SKIP_THRESHOLD:
+            # Nearly all zeros — no reliable energy estimate
+            e, e_db = np.nan, np.nan
+            print(f"    [GAP]  {os.path.basename(fpath)}: "
+                  f"{gap_frac:.0%} zeros → NaN (skipped)")
+        else:
+            e_raw = band_energy(freqs, psd, FREQ_BAND[0], FREQ_BAND[1])
+            if gap_frac > 0.05:
+                # Partial gap: the Welch average is diluted by a factor of
+                # (1 − gap_fraction) because zero-filled windows contribute
+                # near-zero power.  Divide to recover the true signal level.
+                e_raw = e_raw / (1.0 - gap_frac)
+            e     = e_raw
+            e_db  = 10 * np.log10(max(e, 1e-30))
+
+        t_file   = tr.stats.starttime
+        hour_utc = t_file.hour
+        is_night = (hour_utc >= NIGHT_START_UTC) or (hour_utc < NIGHT_END_UTC)
 
         hourly_rows.append({
-            'datetime'  : t_file.datetime,
-            'day'       : day_str,
-            'hour_utc'  : hour_utc,
-            'energy'    : e,
-            'energy_db' : e_db,
-            'is_night'  : is_night,
+            'datetime'     : t_file.datetime,
+            'day'          : day_str,
+            'hour_utc'     : hour_utc,
+            'energy'       : e,
+            'energy_db'    : e_db,
+            'gap_fraction' : gap_frac,
+            'is_night'     : is_night,
         })
-        day_psds.append(psd)
+        # Only accumulate non-gap files for the daily median PSD heatmap
+        if gap_frac < GAP_SKIP_THRESHOLD:
+            day_psds.append(psd)
 
     if day_psds:
         daily_psd_med[day_str] = np.median(np.array(day_psds), axis=0)
@@ -223,7 +257,7 @@ df_h.sort_values('datetime', inplace=True)
 
 # Save hourly CSV
 csv_path = os.path.join(OUTPUT_DIR, "psd_hourly.csv")
-df_h[['datetime', 'day', 'hour_utc', 'energy_db', 'is_night']].to_csv(
+df_h[['datetime', 'day', 'hour_utc', 'energy_db', 'gap_fraction', 'is_night']].to_csv(
     csv_path, index=False)
 print(f"\n[SAVED] {csv_path}")
 
@@ -251,13 +285,29 @@ rolling_night = daily_night.rolling(ROLLING_DAYS, center=True, min_periods=3).me
 # --------------------------------------------------------------------------
 fig, ax = plt.subplots(figsize=(16, 5))
 
-day_mask   = ~df_h['is_night']
-night_mask =  df_h['is_night']
+day_mask        = ~df_h['is_night']
+night_mask      =  df_h['is_night']
+corrected_mask  =  df_h['gap_fraction'] > 0.05   # gap-corrected hours
 
-ax.scatter(df_h.loc[day_mask,   'datetime'], df_h.loc[day_mask,   'energy_db'],
+# Normal (no significant gap)
+ax.scatter(df_h.loc[day_mask   & ~corrected_mask, 'datetime'],
+           df_h.loc[day_mask   & ~corrected_mask, 'energy_db'],
            s=4, color='#d7191c', alpha=0.4, label='Daytime')
-ax.scatter(df_h.loc[night_mask, 'datetime'], df_h.loc[night_mask, 'energy_db'],
-           s=6, color='#2c7bb6', alpha=0.7, label=f'Night (UTC {NIGHT_START_UTC:02d}–{NIGHT_END_UTC:02d})')
+ax.scatter(df_h.loc[night_mask & ~corrected_mask, 'datetime'],
+           df_h.loc[night_mask & ~corrected_mask, 'energy_db'],
+           s=6, color='#2c7bb6', alpha=0.7,
+           label=f'Night (UTC {NIGHT_START_UTC:02d}–{NIGHT_END_UTC:02d})')
+# Gap-corrected hours (open diamond marker)
+ax.scatter(df_h.loc[day_mask   & corrected_mask, 'datetime'],
+           df_h.loc[day_mask   & corrected_mask, 'energy_db'],
+           s=14, color='#d7191c', alpha=0.6, marker='D', linewidths=0.5,
+           facecolors='none', edgecolors='#d7191c',
+           label='Daytime (gap-corrected)')
+ax.scatter(df_h.loc[night_mask & corrected_mask, 'datetime'],
+           df_h.loc[night_mask & corrected_mask, 'energy_db'],
+           s=18, color='#2c7bb6', alpha=0.85, marker='D', linewidths=0.6,
+           facecolors='none', edgecolors='#2c7bb6',
+           label='Night (gap-corrected)')
 ax.plot(rolling_night.index.to_pydatetime(), rolling_night.values,
         color='#1a3f6f', lw=2.0, label=f'{ROLLING_DAYS}-day rolling median (night)')
 
