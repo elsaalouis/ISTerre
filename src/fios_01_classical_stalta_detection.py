@@ -36,7 +36,7 @@ Output
 
 # -- Data paths ---------------------------------------------------------------
 DATA_ROOT  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\data\FIOS"
-OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\02a_fios_classical_sta_lta"
+OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\fios\01_classical_sta_lta"
 
 # -- Station ------------------------------------------------------------------
 NETWORK  = "XT"
@@ -46,7 +46,7 @@ CHANNEL  = "DHZ"       # DHZ; DHN; DHE
 
 # -- Time window to process ---------------------------------------------------
 T_START = "2026-03-19"   # first day to process
-T_END   = "2026-06-10"   # last  day to process (exclusive)
+T_END   = "2026-06-29"   # last  day to process (exclusive)
 
 # -- Preprocessing ------------------------------------------------------------
 FREQMIN = 5.0    # bandpass low  cutoff -> above the 5–6 Hz resonance peak
@@ -74,7 +74,7 @@ NIGHT_START_UTC = 18   # 18:00 UTC = 20:00 local
 NIGHT_END_UTC   = 4    # 04:00 UTC = 06:00 local
 
 # -- Plotting -----------------------------------------------------------------
-PLOT_DAYS     = True   # save a per-day waveform + CFT figure
+PLOT_DAYS     = False  # save a per-day waveform + CFT figure
 WAVEFORM_YLIM = 20000  # fixed y-axis amplitude for all daily waveform panels
 
 
@@ -86,6 +86,7 @@ WAVEFORM_YLIM = 20000  # fixed y-axis amplitude for all daily waveform panels
 import os
 import sys
 import glob
+import argparse
 import warnings
 from datetime import datetime
 
@@ -245,6 +246,18 @@ def plot_day(tr_filt, cft, detections, day_str, sta_s, lta_s, thres_on, thres_of
     fig_path = os.path.join(out_dir, f"fig_{day_str.replace('-', '')}.png")
     plt.savefig(fig_path, dpi=120)
     plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# CLI argument parsing — overrides config-section flags
+# ---------------------------------------------------------------------------
+
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument('--plots',    dest='plot_days', action='store_true',  default=None)
+_parser.add_argument('--no-plots', dest='plot_days', action='store_false')
+_args, _ = _parser.parse_known_args()
+if _args.plot_days is not None:
+    PLOT_DAYS = _args.plot_days
 
 
 # ---------------------------------------------------------------------------

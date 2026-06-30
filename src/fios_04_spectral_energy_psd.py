@@ -39,7 +39,7 @@ Outputs
 # =============================================================================
 
 DATA_ROOT  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\data\FIOS"
-OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\02a_psd_fios"
+OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\fios\04_psd"
 
 NETWORK  = "XT"
 STATION  = "FIO1"
@@ -47,13 +47,19 @@ LOCATION = "01"
 CHANNEL  = "DHZ"
 
 T_START = "2026-03-19"
-T_END   = "2026-06-10"   # exclusive
+T_END   = "2026-06-29"   # exclusive
 
-# Band to analyse (Hz)
-FREQ_BAND = (2.0, 10.0)
+# ---- Multi-band energy analysis -------------------------------------------
+# Each tuple (fmin, fmax) produces a separate energy time series + figure
+# The first band is also used as the "reference" band in the summary printout
+FREQ_BANDS = [
+    (1.0,  5.0),   # low-frequency tremor / stick-slip fundamentals
+    (5.0,  20.0),  # classical microseismic / impulsive events band
+    (20.0, 60.0),  # high-frequency band — turbine harmonics, impact events
+]
 
-# Upper frequency limit for the spectrogram heatmap
-FREQ_PLOT_MAX = 25.0
+# Upper frequency limit for the spectrogram heatmap (fig_psd_spectrogram)
+FREQ_PLOT_MAX = 60.0
 
 # Night window (UTC)
 NIGHT_START_UTC = 18
@@ -61,6 +67,15 @@ NIGHT_END_UTC   = 4
 
 # Destabilisation date
 DESTAB_DATE = "2026-04-13"
+
+# ---- Key events to annotate on the PSD spectrogram heatmap ----------------
+# Each entry: (date_str, label, color)
+# These appear as horizontal lines on the time–frequency heatmap.
+KEY_EVENTS = [
+    ("2026-04-13", "1st destabilisation", "red"),
+    ("2026-05-25", "2nd destabilisation", "orange"),
+    ("2026-06-23", "3nd destabilisation",  "gold"),
+]
 
 # Rolling-mean window (days)
 ROLLING_DAYS = 7
@@ -155,8 +170,9 @@ while d < t1:
     days.append(d)
     d += 86400
 
+band_labels = [f"{fmin:.0f}–{fmax:.0f} Hz" for fmin, fmax in FREQ_BANDS]
 print(f"Processing {len(days)} day(s) — station {NETWORK}.{STATION}.{LOCATION}.{CHANNEL}")
-print(f"Band: {FREQ_BAND[0]}–{FREQ_BAND[1]} Hz\n")
+print(f"Bands: {', '.join(band_labels)}\n")
 
 nperseg       = None          # initialised from the first file
 freqs_ref     = None          # reference frequency axis (fixed for all files)
@@ -211,34 +227,36 @@ for day_utc in days:
 
         freqs, psd, gap_frac = compute_welch_psd(tr, nperseg)
 
-        if gap_frac >= GAP_SKIP_THRESHOLD:
-            # Nearly all zeros — no reliable energy estimate
-            e, e_db = np.nan, np.nan
-            print(f"    [GAP]  {os.path.basename(fpath)}: "
-                  f"{gap_frac:.0%} zeros → NaN (skipped)")
-        else:
-            e_raw = band_energy(freqs, psd, FREQ_BAND[0], FREQ_BAND[1])
-            if gap_frac > 0.05:
-                # Partial gap: the Welch average is diluted by a factor of
-                # (1 − gap_fraction) because zero-filled windows contribute
-                # near-zero power.  Divide to recover the true signal level.
-                e_raw = e_raw / (1.0 - gap_frac)
-            e     = e_raw
-            e_db  = 10 * np.log10(max(e, 1e-30))
-
         t_file   = tr.stats.starttime
         hour_utc = t_file.hour
         is_night = (hour_utc >= NIGHT_START_UTC) or (hour_utc < NIGHT_END_UTC)
 
-        hourly_rows.append({
+        row = {
             'datetime'     : t_file.datetime,
             'day'          : day_str,
             'hour_utc'     : hour_utc,
-            'energy'       : e,
-            'energy_db'    : e_db,
             'gap_fraction' : gap_frac,
             'is_night'     : is_night,
-        })
+        }
+
+        if gap_frac >= GAP_SKIP_THRESHOLD:
+            print(f"    [GAP]  {os.path.basename(fpath)}: "
+                  f"{gap_frac:.0%} zeros → NaN (skipped)")
+            for fmin, fmax in FREQ_BANDS:
+                key = f"energy_db_{fmin:.0f}_{fmax:.0f}"
+                row[key] = np.nan
+        else:
+            for fmin, fmax in FREQ_BANDS:
+                e_raw = band_energy(freqs, psd, fmin, fmax)
+                if gap_frac > 0.05:
+                    e_raw = e_raw / (1.0 - gap_frac)
+                key = f"energy_db_{fmin:.0f}_{fmax:.0f}"
+                row[key] = 10 * np.log10(max(e_raw, 1e-30))
+
+        # Keep first band as legacy 'energy_db' for backward-compatible CSV
+        row['energy_db'] = row[f"energy_db_{FREQ_BANDS[0][0]:.0f}_{FREQ_BANDS[0][1]:.0f}"]
+
+        hourly_rows.append(row)
         # Only accumulate non-gap files for the daily median PSD heatmap
         if gap_frac < GAP_SKIP_THRESHOLD:
             day_psds.append(psd)
@@ -269,104 +287,93 @@ print(f"\n[SAVED] {csv_path}")
 
 t_destab = pd.Timestamp(DESTAB_DATE)
 
-# Daily stats: median and median-of-nights
-daily_all   = df_h.groupby('day')['energy_db'].median()
-daily_night = df_h[df_h['is_night']].groupby('day')['energy_db'].median()
-
-daily_all.index   = pd.to_datetime(daily_all.index)
-daily_night.index = pd.to_datetime(daily_night.index)
-
-rolling_all   = daily_all.rolling(  ROLLING_DAYS, center=True, min_periods=3).mean()
-rolling_night = daily_night.rolling(ROLLING_DAYS, center=True, min_periods=3).mean()
+day_mask       = ~df_h['is_night']
+night_mask     =  df_h['is_night']
+corrected_mask =  df_h['gap_fraction'] > 0.05
 
 
 # --------------------------------------------------------------------------
-# Figure 1 — Hourly energy scatter: night vs day
+# Figures 1 & 2 — one panel per frequency band
 # --------------------------------------------------------------------------
-fig, ax = plt.subplots(figsize=(16, 5))
+n_bands  = len(FREQ_BANDS)
+COLORS_B = ['#2c7bb6', '#1a9641', '#d7191c']  # one colour per band
 
-day_mask        = ~df_h['is_night']
-night_mask      =  df_h['is_night']
-corrected_mask  =  df_h['gap_fraction'] > 0.05   # gap-corrected hours
+for bi, (fmin, fmax) in enumerate(FREQ_BANDS):
+    col      = COLORS_B[bi % len(COLORS_B)]
+    edb_col  = f"energy_db_{fmin:.0f}_{fmax:.0f}"
+    blabel   = f"{fmin:.0f}–{fmax:.0f} Hz"
 
-# Normal (no significant gap)
-ax.scatter(df_h.loc[day_mask   & ~corrected_mask, 'datetime'],
-           df_h.loc[day_mask   & ~corrected_mask, 'energy_db'],
-           s=4, color='#d7191c', alpha=0.4, label='Daytime')
-ax.scatter(df_h.loc[night_mask & ~corrected_mask, 'datetime'],
-           df_h.loc[night_mask & ~corrected_mask, 'energy_db'],
-           s=6, color='#2c7bb6', alpha=0.7,
-           label=f'Night (UTC {NIGHT_START_UTC:02d}–{NIGHT_END_UTC:02d})')
-# Gap-corrected hours (open diamond marker)
-ax.scatter(df_h.loc[day_mask   & corrected_mask, 'datetime'],
-           df_h.loc[day_mask   & corrected_mask, 'energy_db'],
-           s=14, color='#d7191c', alpha=0.6, marker='D', linewidths=0.5,
-           facecolors='none', edgecolors='#d7191c',
-           label='Daytime (gap-corrected)')
-ax.scatter(df_h.loc[night_mask & corrected_mask, 'datetime'],
-           df_h.loc[night_mask & corrected_mask, 'energy_db'],
-           s=18, color='#2c7bb6', alpha=0.85, marker='D', linewidths=0.6,
-           facecolors='none', edgecolors='#2c7bb6',
-           label='Night (gap-corrected)')
-ax.plot(rolling_night.index.to_pydatetime(), rolling_night.values,
-        color='#1a3f6f', lw=2.0, label=f'{ROLLING_DAYS}-day rolling median (night)')
+    daily_all   = df_h.groupby('day')[edb_col].median()
+    daily_night = df_h[night_mask].groupby('day')[edb_col].median()
+    daily_all.index   = pd.to_datetime(daily_all.index)
+    daily_night.index = pd.to_datetime(daily_night.index)
+    rolling_all   = daily_all.rolling(  ROLLING_DAYS, center=True, min_periods=3).mean()
+    rolling_night = daily_night.rolling(ROLLING_DAYS, center=True, min_periods=3).mean()
 
-ax.axvline(t_destab.to_pydatetime(), color='black', lw=1.8,
-           label=f'Destabilisation onset ({DESTAB_DATE})')
+    # --- Figure 1a: hourly scatter -----------------------------------------
+    fig, ax = plt.subplots(figsize=(16, 5))
+    ax.scatter(df_h.loc[day_mask   & ~corrected_mask, 'datetime'],
+               df_h.loc[day_mask   & ~corrected_mask, edb_col],
+               s=4, color='#d7191c', alpha=0.4, label='Daytime')
+    ax.scatter(df_h.loc[night_mask & ~corrected_mask, 'datetime'],
+               df_h.loc[night_mask & ~corrected_mask, edb_col],
+               s=6, color=col, alpha=0.7,
+               label=f'Night (UTC {NIGHT_START_UTC:02d}–{NIGHT_END_UTC:02d})')
+    ax.scatter(df_h.loc[night_mask & corrected_mask, 'datetime'],
+               df_h.loc[night_mask & corrected_mask, edb_col],
+               s=18, color=col, alpha=0.85, marker='D', linewidths=0.6,
+               facecolors='none', edgecolors=col, label='Night (gap-corrected)')
+    ax.plot(rolling_night.index.to_pydatetime(), rolling_night.values,
+            color=col, lw=2.0, label=f'{ROLLING_DAYS}-day rolling median (night)')
+    for ev_date, ev_label, ev_color in KEY_EVENTS:
+        ax.axvline(pd.Timestamp(ev_date).to_pydatetime(),
+                   color=ev_color, lw=1.4, ls='--', alpha=0.8, label=ev_label)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
+    ax.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0))
+    plt.xticks(rotation=45, ha='right')
+    ax.set_ylabel(f'Band energy [{blabel}]  (dB re counts²·Hz)')
+    ax.set_title(
+        f'FIO1 — Hourly seismic energy  [{blabel}]  (Welch PSD, no bandpass)\n'
+        f'Blue/green/red = night  |  Line = {ROLLING_DAYS}-day rolling median (night)'
+    )
+    ax.legend(fontsize=8, markerscale=2)
+    ax.grid(axis='y', lw=0.3, alpha=0.4)
+    plt.tight_layout()
+    tag = f"{fmin:.0f}_{fmax:.0f}"
+    fig_path = os.path.join(OUTPUT_DIR, f"fig_psd_hourly_energy_{tag}Hz.png")
+    plt.savefig(fig_path, dpi=150)
+    plt.close()
+    print(f"[SAVED] {os.path.basename(fig_path)}")
 
-ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
-ax.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0))
-plt.xticks(rotation=45, ha='right')
-ax.set_ylabel(f'Band energy  [{FREQ_BAND[0]}–{FREQ_BAND[1]} Hz]  (dB re counts²·Hz)')
-ax.set_title(
-    f'FIO1 — Hourly seismic energy  [{FREQ_BAND[0]}–{FREQ_BAND[1]} Hz]  '
-    f'(Welch PSD, no bandpass)\n'
-    f'Blue = night  |  Red = day  |  '
-    f'Line = {ROLLING_DAYS}-day rolling median (night only)'
-)
-ax.legend(fontsize=9, markerscale=3)
-ax.grid(axis='y', lw=0.3, alpha=0.4)
-plt.tight_layout()
-fig_path = os.path.join(OUTPUT_DIR, "fig_psd_hourly_energy.png")
-plt.savefig(fig_path, dpi=150)
-plt.close()
-print(f"[SAVED] {os.path.basename(fig_path)}")
-
-
-# --------------------------------------------------------------------------
-# Figure 2 — Daily median energy: all-hours vs night-only + rolling mean
-# --------------------------------------------------------------------------
-fig, ax = plt.subplots(figsize=(16, 5))
-
-ax.bar(daily_all.index.to_pydatetime(),   daily_all.values,
-       color='#aec7e8', alpha=0.7, width=0.8, label='All hours (daily median)')
-ax.bar(daily_night.index.to_pydatetime(), daily_night.values,
-       color='#1f4e79', alpha=0.85, width=0.8,
-       label=f'Night only (daily median,  UTC {NIGHT_START_UTC:02d}–{NIGHT_END_UTC:02d})')
-ax.plot(rolling_all.index.to_pydatetime(),   rolling_all.values,
-        color='steelblue', lw=1.5, ls='--', label=f'{ROLLING_DAYS}-d rolling (all)')
-ax.plot(rolling_night.index.to_pydatetime(), rolling_night.values,
-        color='#e67e22',   lw=2.2, label=f'{ROLLING_DAYS}-d rolling (night)')
-
-ax.axvline(t_destab.to_pydatetime(), color='black', lw=1.8,
-           label=f'Destabilisation onset ({DESTAB_DATE})')
-
-ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
-ax.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0))
-plt.xticks(rotation=45, ha='right')
-ax.set_ylabel(f'Median band energy  (dB re counts²·Hz)')
-ax.set_title(
-    f'FIO1 — Daily median seismic energy  [{FREQ_BAND[0]}–{FREQ_BAND[1]} Hz]\n'
-    f'Decrease = real seismicity drop   |   '
-    f'Increase = detector blind (tremor raised LTA background)'
-)
-ax.legend(fontsize=9)
-ax.grid(axis='y', lw=0.3, alpha=0.4)
-plt.tight_layout()
-fig_path = os.path.join(OUTPUT_DIR, "fig_psd_daily_energy.png")
-plt.savefig(fig_path, dpi=150)
-plt.close()
-print(f"[SAVED] {os.path.basename(fig_path)}")
+    # --- Figure 1b: daily median bars --------------------------------------
+    fig, ax = plt.subplots(figsize=(16, 5))
+    ax.bar(daily_all.index.to_pydatetime(),   daily_all.values,
+           color='#aec7e8', alpha=0.7, width=0.8, label='All hours (daily median)')
+    ax.bar(daily_night.index.to_pydatetime(), daily_night.values,
+           color=col, alpha=0.85, width=0.8,
+           label=f'Night only (daily median, UTC {NIGHT_START_UTC:02d}–{NIGHT_END_UTC:02d})')
+    ax.plot(rolling_all.index.to_pydatetime(),   rolling_all.values,
+            color='steelblue', lw=1.5, ls='--', label=f'{ROLLING_DAYS}-d rolling (all)')
+    ax.plot(rolling_night.index.to_pydatetime(), rolling_night.values,
+            color=col, lw=2.2, label=f'{ROLLING_DAYS}-d rolling (night)')
+    for ev_date, ev_label, ev_color in KEY_EVENTS:
+        ax.axvline(pd.Timestamp(ev_date).to_pydatetime(),
+                   color=ev_color, lw=1.4, ls='--', alpha=0.8, label=ev_label)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
+    ax.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0))
+    plt.xticks(rotation=45, ha='right')
+    ax.set_ylabel('Median band energy  (dB re counts²·Hz)')
+    ax.set_title(
+        f'FIO1 — Daily median seismic energy  [{blabel}]\n'
+        f'Decrease = real seismicity drop  |  Increase = tremor raised LTA → detector blind'
+    )
+    ax.legend(fontsize=8)
+    ax.grid(axis='y', lw=0.3, alpha=0.4)
+    plt.tight_layout()
+    fig_path = os.path.join(OUTPUT_DIR, f"fig_psd_daily_energy_{tag}Hz.png")
+    plt.savefig(fig_path, dpi=150)
+    plt.close()
+    print(f"[SAVED] {os.path.basename(fig_path)}")
 
 
 # --------------------------------------------------------------------------
@@ -394,16 +401,17 @@ if daily_psd_med and freqs_ref is not None:
     )
     plt.colorbar(im, ax=ax_h, label='PSD  (dB re counts²/Hz)', pad=0.01)
 
-    # Vertical lines for frequency band of interest
-    ax_h.axvline(FREQ_BAND[0], color='white', lw=1.0, ls='--', alpha=0.7)
-    ax_h.axvline(FREQ_BAND[1], color='white', lw=1.0, ls='--', alpha=0.7)
-
-    # Destabilisation onset — horizontal line on the day axis
-    if DESTAB_DATE in sorted_days:
-        i_d = sorted_days.index(DESTAB_DATE)
-        ax_h.axhline(i_d + 0.5, color='red', lw=1.5, ls='--',
-                     label=f'Destabilisation ({DESTAB_DATE})')
-        ax_h.legend(fontsize=8, loc='upper right')
+    # Annotate all key events as horizontal lines
+    for ev_date, ev_label, ev_color in KEY_EVENTS:
+        if ev_date in sorted_days:
+            i_ev = sorted_days.index(ev_date)
+            ax_h.axhline(i_ev + 0.5, color=ev_color, lw=1.5, ls='--',
+                         label=ev_label)
+    # Draw vertical guide lines at the band boundaries
+    for fmin, fmax in FREQ_BANDS:
+        ax_h.axvline(fmin, color='white', lw=0.8, ls=':', alpha=0.6)
+        ax_h.axvline(fmax, color='white', lw=0.8, ls=':', alpha=0.6)
+    ax_h.legend(fontsize=7, loc='upper right')
 
     # Y-axis: date labels (every 3 days to avoid crowding)
     tick_idx    = list(range(0, n_days, 3))
@@ -414,10 +422,10 @@ if daily_psd_med and freqs_ref is not None:
     ax_h.set_xlabel('Frequency (Hz)')
     ax_h.set_ylabel('Date')
     ax_h.set_xlim(0, FREQ_PLOT_MAX)
+    band_desc = "  |  ".join([f"{fmin:.0f}–{fmax:.0f} Hz" for fmin, fmax in FREQ_BANDS])
     ax_h.set_title(
-        f'FIO1 — Daily median PSD (time–frequency heatmap)\n'
-        f'White dashed lines = {FREQ_BAND[0]}–{FREQ_BAND[1]} Hz analysis band  |  '
-        f'Red dashed line = destabilisation onset ({DESTAB_DATE})'
+        f'FIO1 — Daily median PSD (time–frequency heatmap, 0–{FREQ_PLOT_MAX:.0f} Hz)\n'
+        f'Analysis bands: {band_desc}  |  dashed lines = key events'
     )
     plt.tight_layout()
     fig_path = os.path.join(OUTPUT_DIR, "fig_psd_spectrogram.png")
@@ -431,36 +439,18 @@ if daily_psd_med and freqs_ref is not None:
 # SECTION 5 — PRINT SUMMARY
 # =============================================================================
 
-pre_night  = df_h[df_h['is_night'] & (df_h['day'] <  DESTAB_DATE)]['energy_db']
-post_night = df_h[df_h['is_night'] & (df_h['day'] >= DESTAB_DATE)]['energy_db']
-
 print("\n" + "=" * 60)
-print(f"  PSD SUMMARY  —  band {FREQ_BAND[0]}–{FREQ_BAND[1]} Hz  (night only)")
+print(f"  PSD SUMMARY  (night only)  —  split at {DESTAB_DATE}")
 print("=" * 60)
-print(f"  Pre  {DESTAB_DATE}  :  "
-      f"median = {pre_night.median():.1f} dB   "
-      f"mean = {pre_night.mean():.1f} dB   (n={len(pre_night)} hours)")
-print(f"  Post {DESTAB_DATE}  :  "
-      f"median = {post_night.median():.1f} dB   "
-      f"mean = {post_night.mean():.1f} dB   (n={len(post_night)} hours)")
-delta = post_night.median() - pre_night.median()
-sign  = "INCREASE" if delta > 0 else "DECREASE"
-print(f"  Change : {delta:+.1f} dB  →  {sign}")
-print(f"\n  Interpretation:")
-if delta > 1.0:
-    print("  Background energy INCREASED after destabilisation.")
-    print("  → Suggests continuous tremor/noise raised the LTA, making")
-    print("    the STA/LTA detector blind. The seismicity drop was partly")
-    print("    a detection artefact.")
-elif delta < -1.0:
-    print("  Background energy DECREASED after destabilisation.")
-    print("  → Confirms the seismicity drop is real: less seismic energy")
-    print("    was emitted after April 13, consistent with a transition")
-    print("    from brittle cracking to aseismic creep.")
-else:
-    print("  Background energy is approximately stable (< 1 dB change).")
-    print("  → The seismicity rate change is driven by fewer impulsive")
-    print("    events, not a change in background noise level.")
+for fmin, fmax in FREQ_BANDS:
+    edb_col    = f"energy_db_{fmin:.0f}_{fmax:.0f}"
+    pre_night  = df_h[df_h['is_night'] & (df_h['day'] <  DESTAB_DATE)][edb_col].dropna()
+    post_night = df_h[df_h['is_night'] & (df_h['day'] >= DESTAB_DATE)][edb_col].dropna()
+    delta = post_night.median() - pre_night.median()
+    sign  = "▲ INCREASE" if delta > 0 else "▼ DECREASE"
+    print(f"  {fmin:.0f}–{fmax:.0f} Hz :  "
+          f"pre={pre_night.median():.1f} dB  post={post_night.median():.1f} dB  "
+          f"Δ={delta:+.1f} dB  →  {sign}")
 print("=" * 60)
 
 print(f"\n[DONE]  All outputs in: {OUTPUT_DIR}")

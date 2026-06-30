@@ -29,13 +29,13 @@ Usage
 # The script automatically picks the most recent run_* subfolder inside each.
 CONFIGURATIONS = [
     ("10–80 Hz  (STA=0.5s  LTA=60s)",
-     r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\02a_fios_classical_sta_lta\10-80Hz"),
+     r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\fios\01_classical_sta_lta\10-80Hz"),
 
     ("5–20 Hz   (STA=1s    LTA=80s)",
-     r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\02a_fios_classical_sta_lta\5-20Hz"),
+     r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\fios\01_classical_sta_lta\5-20Hz"),
 
     ("2–10 Hz   (STA=2s    LTA=120s)",
-     r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\02a_fios_classical_sta_lta\2-10Hz"),
+     r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\fios\01_classical_sta_lta\2-10Hz"),
 ]
 
 # Destabilisation onset

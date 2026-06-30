@@ -33,8 +33,8 @@ Output
 # SECTION 1 — CONFIGURATION
 # =============================================================================
 
-# Directory that contains the run_* subfolders from 02a
-OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\02a_fios_classical_sta_lta"
+# Directory that contains the run_* subfolders from 01
+OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\fios\01_classical_sta_lta"
 
 # Destabilisation onset
 DESTAB_DATE = "2026-04-14"
@@ -68,7 +68,7 @@ run_dirs = sorted(glob.glob(os.path.join(OUTPUT_DIR, "run_*")))
 if not run_dirs:
     raise FileNotFoundError(
         f"No run_* directories found in {OUTPUT_DIR}.\n"
-        "Run 02a_classical_sta_lta_FIOS.py first."
+        "Run 01_classical_sta_lta.py first."
     )
 RUN_DIR = run_dirs[-1]
 print(f"Using run directory: {RUN_DIR}\n")
