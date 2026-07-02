@@ -47,7 +47,7 @@ LOCATION = "01"
 CHANNEL  = "DHZ"
 
 T_START = "2026-03-19"
-T_END   = "2026-06-29"   # exclusive
+T_END   = "2026-07-01"   # exclusive
 
 # ---- Multi-band energy analysis -------------------------------------------
 # Each tuple (fmin, fmax) produces a separate energy time series + figure
@@ -56,6 +56,7 @@ FREQ_BANDS = [
     (1.0,  5.0),   # low-frequency tremor / stick-slip fundamentals
     (5.0,  20.0),  # classical microseismic / impulsive events band
     (20.0, 60.0),  # high-frequency band — turbine harmonics, impact events
+    (1.0,  20.0),
 ]
 
 # Upper frequency limit for the spectrogram heatmap (fig_psd_spectrogram)

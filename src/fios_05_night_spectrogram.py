@@ -10,10 +10,10 @@ Goal
 Investigate the nature of the seismic signal during a high-activity night to distinguish between two possible sources:
 
   Tremor / stick-slip   → harmonic spectral lines (f0, 2f0, 3f0 ...) possibly with "gliding" (slow frequency drift over time)
-                          continuous and emergent waveform envelope high autocorrelation coefficient (ρ > 10 %)
+                          continuous and emergent waveform envelope 
 
   Microcrack impulses   → broadband, short-duration bursts (< 2 s) triangular spectrogram shape (high-f first, then decay)
-                          impulsive envelope with clear P-wave onsets low autocorrelation coefficient (ρ < 5 %)
+                          impulsive envelope with clear P-wave onsets 
 
 Method
 ------
@@ -24,24 +24,11 @@ For each chosen night (UTC 18:00 → UTC 04:00 next day, i.e. 10 hours):
        - SPECGRAM_WINDOW_S-second Hann windows
        - 90 % overlap  →  time step ≈ 1 s,  Δf = 1/SPECGRAM_WINDOW_S Hz
        - Sufficient to resolve harmonic lines separated by ~1 Hz
-  4. Compute the autocorrelation coefficient ρ on sliding 60-s windows
-       ρ(t) = max |r(τ)|  for τ ∈ [AC_LAG_MIN, AC_LAG_MAX]
-       ρ > 10 %  →  periodic/repetitive signal  (tremor)
-       ρ < 5 %   →  random/impulsive signal      (microcracks)
 
 Outputs (all saved to OUTPUT_DIR / one subfolder per date)
 -------
   fig_spectrogram_night_YYYYMMDD.png  — waveform + full-night high-resolution spectrogram
-  fig_autocorrelation_YYYYMMDD.png    — waveform + ρ(t) time series with interpretation thresholds
   fig_spectrogram_zoom_YYYYMMDD.png   — 30-min zoom on the most active window
-
-Usage
------
-  # Use dates from config:
-  python fios_05_night_spectrogram.py
-
-  # Pass dates directly from the command line (overrides TARGET_DATES):
-  python fios_05_night_spectrogram.py --dates 2026-04-14 2026-04-17 2026-05-25
 """
 
 
@@ -71,7 +58,7 @@ TARGET_DATES = [
     "2026-06-01","2026-06-02","2026-06-03","2026-06-04","2026-06-05",
     "2026-06-08","2026-06-12","2026-06-16","2026-06-20","2026-06-22",
     "2026-06-23","2026-06-24","2026-06-25","2026-06-26","2026-06-27",
-    "2026-06-28","2026-06-29",
+    "2026-06-28","2026-06-29","2026-06-30",
 ]
 
 """
@@ -85,12 +72,12 @@ TARGET_DATES = [
     "2026-06-01","2026-06-02","2026-06-03","2026-06-04","2026-06-05",
     "2026-06-08","2026-06-12","2026-06-16","2026-06-20","2026-06-22",
     "2026-06-23","2026-06-24","2026-06-25","2026-06-26","2026-06-27",
-    "2026-06-28",
+    "2026-06-28","2026-06-29","2026-06-30",
 """
 
 # ---- Time window -----------------------------------------------------------
-WINDOW_START_UTC  = 0   # UTC hour at which the window begins (0–23)
-WINDOW_DURATION_H = 24   # duration in hours
+WINDOW_START_UTC  = 18   # UTC hour at which the window begins (0–23)
+WINDOW_DURATION_H = 10   # duration in hours
 
 # ---- Per-date zoom override -------------------------------------------------
 # By default the zoom window is auto-detected (loudest 30-min block in 2-10 Hz)
@@ -123,20 +110,11 @@ VSCALE_MODE = "fixed"
 
 # Used only when VSCALE_MODE = "fixed" (ignored otherwise):
 VMIN_DB = -15
-VMAX_DB = 60
+VMAX_DB = 55
 
 # Percentiles used to clip the colour scale (both "per_night" and "global")
 VSCALE_PLOW  =  2   # lower percentile  (e.g. 2 → clips the darkest 2 %)
 VSCALE_PHIGH = 99   # upper percentile  (e.g. 99 → clips the brightest 1 %)
-
-# ---- Autocorrelation -------------------------------------------------------
-# ρ quantifies how periodic the signal is within each sliding window
-# For each window of AC_WINDOW_S seconds, ρ = max|r(τ)| for τ in the lag range
-# r(τ) is the normalized autocorrelation of the bandpassed signal
-AC_WINDOW_S = 60.0   # sliding window length (seconds)
-AC_STEP_S   = 30.0   # step between consecutive windows (seconds)
-AC_LAG_MIN  = 0.5    # minimum lag to search (s) — avoids trivial lag-0 = 1
-AC_LAG_MAX  = 10.0   # maximum lag to search (s) — looks for periods up to 10 s
 
 # ---- Zoom window -----------------------------------------------------------
 ZOOM_DURATION_MIN = 30
@@ -245,44 +223,6 @@ def compute_spectrogram(data, fs, window_s, overlap_frac):
     )
     Sxx_db = 10 * np.log10(np.maximum(Sxx, 1e-30))
     return t_sec, f_hz, Sxx_db
-
-
-def compute_autocorr_series(data, fs, t_start_utc,
-                            window_s, step_s, lag_min_s, lag_max_s):
-    """
-    Sliding autocorrelation coefficient ρ(t).
-    Returns (t_centres [datetime], rho [float list]).
-    """
-    n_win        = int(window_s * fs)
-    n_step       = int(step_s * fs)
-    lag_min_samp = int(lag_min_s * fs)
-    lag_max_samp = int(lag_max_s * fs)
-    n_data       = len(data)
-
-    t_centres, rho = [], []
-    i = 0
-    while i + n_win <= n_data:
-        win = data[i : i + n_win].copy()
-        if np.var(win) < 1e-20:
-            i += n_step
-            continue
-        win -= np.mean(win)
-        r_full = correlate(win, win, mode='full')
-        r0     = r_full[n_win - 1]
-        if r0 == 0:
-            i += n_step
-            continue
-        r_norm = r_full / r0
-        r_lags = r_norm[n_win - 1 + lag_min_samp :
-                        n_win - 1 + lag_max_samp + 1]
-        if len(r_lags) == 0:
-            i += n_step
-            continue
-        t_centres.append((t_start_utc + (i + n_win // 2) / fs).datetime)
-        rho.append(float(np.max(np.abs(r_lags))))
-        i += n_step
-
-    return t_centres, rho
 
 
 
@@ -406,16 +346,6 @@ for TARGET_DATE in TARGET_DATES:
           f"Δt≈{SPECGRAM_WINDOW_S*(1-SPECGRAM_OVERLAP):.1f}s  "
           f"[{vmin:.1f}, {vmax:.1f}] dB")
 
-    # ---- Compute autocorrelation ---------------------------------------------
-    print("  Computing autocorrelation ρ ...")
-    t_ac, rho = compute_autocorr_series(
-        tr_filt.data, fs, tr_filt.stats.starttime,
-        AC_WINDOW_S, AC_STEP_S, AC_LAG_MIN, AC_LAG_MAX
-    )
-    rho_arr = np.array(rho)
-    print(f"  {len(rho)} windows  |  "
-          f"median ρ={np.median(rho_arr):.3f}  max ρ={np.max(rho_arr):.3f}")
-
     # Downsampled waveform for plots
     step_ds = max(1, tr_filt.stats.npts // 10000)
     t_wave  = np.array([
@@ -461,46 +391,6 @@ for TARGET_DATE in TARGET_DATES:
     plt.setp(ax_s.xaxis.get_majorticklabels(), rotation=45, ha='right')
     plt.tight_layout()
     fig_path = os.path.join(OUTPUT_DIR, f"fig_spectrogram_night_{TARGET_DATE}.png")
-    plt.savefig(fig_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"  [SAVED] {os.path.basename(fig_path)}")
-
-    # ---- Figure 2 — Autocorrelation ρ(t) ------------------------------------
-    print("  Saving Figure 2 — autocorrelation ρ(t) ...")
-    fig, (ax_w2, ax_r) = plt.subplots(
-        2, 1, figsize=(18, 6),
-        gridspec_kw={'height_ratios': [1, 1.5]},
-        sharex=True
-    )
-    ax_w2.plot(t_wave, d_wave, color='black', lw=0.4, rasterized=True)
-    ax_w2.set_ylabel('Amplitude (counts)', fontsize=9)
-    ax_w2.set_title(
-        f'FIO1  —  {TARGET_DATE}  ({_window_label})  |  '
-        f'Autocorrelation coefficient ρ\n'
-        f'Window = {AC_WINDOW_S:.0f} s,  step = {AC_STEP_S:.0f} s,  '
-        f'lags searched: {AC_LAG_MIN}–{AC_LAG_MAX} s  '
-        f'(ρ > 10 %  →  tremor-like  |  ρ < 5 %  →  microcrack-like)',
-        fontsize=10
-    )
-    ax_w2.grid(axis='y', lw=0.3, alpha=0.4)
-    ax_r.fill_between(t_ac, rho, 0, color='#2c7bb6', alpha=0.3)
-    ax_r.plot(t_ac, rho, color='#2c7bb6', lw=1.2, label='ρ(t)')
-    ax_r.axhline(0.10, color='#d62728', lw=1.4, ls='--',
-                 label='ρ = 10 %  (tremor threshold, Provost et al. 2017)')
-    ax_r.axhline(0.05, color='#ff7f0e', lw=1.0, ls=':',
-                 label='ρ = 5 %  (lower bound)')
-    ax_r.set_ylabel('ρ  (norm. autocorr.)', fontsize=9)
-    ax_r.set_xlabel(
-        f'Time UTC  ({TARGET_DATE}  {_window_label})', fontsize=9
-    )
-    ax_r.set_ylim(0, min(1.0, max(0.30, float(np.max(rho_arr)) * 1.2)))
-    ax_r.legend(fontsize=8, loc='upper right')
-    ax_r.grid(axis='y', lw=0.3, alpha=0.4)
-    ax_r.xaxis.set_major_formatter(date_fmt)
-    ax_r.xaxis.set_major_locator(mdates.HourLocator(interval=1))
-    plt.setp(ax_r.xaxis.get_majorticklabels(), rotation=45, ha='right')
-    plt.tight_layout()
-    fig_path = os.path.join(OUTPUT_DIR, f"fig_autocorrelation_{TARGET_DATE}.png")
     plt.savefig(fig_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"  [SAVED] {os.path.basename(fig_path)}")
@@ -578,21 +468,6 @@ for TARGET_DATE in TARGET_DATES:
         plt.savefig(fig_path, dpi=180, bbox_inches='tight')
         plt.close()
         print(f"  [SAVED] {os.path.basename(fig_path)}")
-
-    # ---- Summary -------------------------------------------------------------
-    rho_median  = float(np.median(rho_arr))
-    rho_max_val = float(np.max(rho_arr))
-    pct_above   = float(np.mean(rho_arr > 0.10)) * 100
-
-    print(f"\n  AUTOCORRELATION SUMMARY  —  night {TARGET_DATE}")
-    print(f"  Median ρ={rho_median:.3f}  Max ρ={rho_max_val:.3f}  "
-          f"% windows > 10%={pct_above:.1f}%")
-    if rho_median > 0.10:
-        print("  → HIGH ρ : signal predominantly PERIODIC (tremor / stick-slip)")
-    elif rho_median > 0.05:
-        print("  → MODERATE ρ : mixed signal (tremor + microcrack bursts)")
-    else:
-        print("  → LOW ρ : signal predominantly RANDOM / IMPULSIVE (microcracks)")
 
 
 
