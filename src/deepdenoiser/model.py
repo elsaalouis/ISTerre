@@ -159,7 +159,9 @@ class UNet:
         else:
             self.regularizer = None
 
-        self.initializer = tf.compat.v1.keras.initializers.VarianceScaling(
+        # tf.compat.v1.keras requires tf_keras package (TF2.16+ legacy shim).
+        # Use the native TF compat initializer instead — same semantics, no keras dep.
+        self.initializer = tf.compat.v1.initializers.variance_scaling(
             scale=1.0, mode="fan_avg", distribution="uniform"
         )
 

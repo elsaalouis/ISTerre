@@ -1,3 +1,6 @@
+import os
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+
 import numpy as np
 import pandas as pd
 import scipy.signal
@@ -38,7 +41,10 @@ class Config:
     # noise_low = 1
     # noise_high = 5
     use_buffer = True
-    snr_threshold = 10
+    snr_threshold = 0   # Zhu default was 10 (calibrated for California broadband earthquakes).
+                        # Alpine ice quakes have median Zhu-SNR ~1.4 (energy concentrated at
+                        # 10-80 Hz, above broadband noise floor). Setting to 0 disables the
+                        # filter so all confirmed ice quake windows are used for training.
 
 
 # %%
@@ -261,9 +267,14 @@ class DataReader(object):
                 logging.error("Failed reading signal: {}".format(fname))
                 continue
             if meta_signal['snr'][j] > self.config.snr_threshold:
-                tmp_signal = np.zeros([self.X_shape[0], self.X_shape[1]], dtype=np.complex_)
-                shift = np.random.randint(-self.X_shape[1], 1, None, 'int')
-                tmp_signal[:, -shift:] = meta_signal['data_FT'][:, self.X_shape[1] : 2 * self.X_shape[1] + shift, j]
+                tmp_signal = np.zeros([self.X_shape[0], self.X_shape[1]], dtype=np.complex128)  # np.complex_ removed in NumPy 2.0
+                n_ft_bins = meta_signal['data_FT'].shape[1]
+                if n_ft_bins >= 2 * self.X_shape[1]:  # enough bins for random-shift augmentation
+                    shift = np.random.randint(-self.X_shape[1], 1, None, 'int')
+                    tmp_signal[:, -shift:] = meta_signal['data_FT'][:, self.X_shape[1] : 2 * self.X_shape[1] + shift, j]
+                else:  # short waveform (nt == X_shape[1] bins): use full STFT directly
+                    n = min(n_ft_bins, self.X_shape[1])
+                    tmp_signal[:, :n] = meta_signal['data_FT'][:, :n, j]
                 if np.isinf(tmp_signal).any() or np.isnan(tmp_signal).any() or (not np.any(tmp_signal)):
                     continue
                 tmp_signal = tmp_signal / np.std(tmp_signal)
@@ -349,10 +360,15 @@ class DataReader(object):
                     continue
                 tmp_noise = tmp_noise / np.std(tmp_noise)
 
-                tmp_signal = np.zeros([self.X_shape[0], self.X_shape[1]], dtype=np.complex_)
+                tmp_signal = np.zeros([self.X_shape[0], self.X_shape[1]], dtype=np.complex128)  # np.complex_ removed in NumPy 2.0
                 if np.random.random() < 0.9:
-                    shift = np.random.randint(-self.X_shape[1], 1, None, 'int')
-                    tmp_signal[:, -shift:] = meta_signal['data_FT'][:, self.X_shape[1] : 2 * self.X_shape[1] + shift, j]
+                    n_ft_bins = meta_signal['data_FT'].shape[1]
+                    if n_ft_bins >= 2 * self.X_shape[1]:  # enough bins for random-shift augmentation
+                        shift = np.random.randint(-self.X_shape[1], 1, None, 'int')
+                        tmp_signal[:, -shift:] = meta_signal['data_FT'][:, self.X_shape[1] : 2 * self.X_shape[1] + shift, j]
+                    else:  # short waveform: use full STFT directly
+                        n = min(n_ft_bins, self.X_shape[1])
+                        tmp_signal[:, :n] = meta_signal['data_FT'][:, :n, j]
                     if np.isinf(tmp_signal).any() or np.isnan(tmp_signal).any() or (not np.any(tmp_signal)):
                         continue
                     tmp_signal = tmp_signal / np.std(tmp_signal)
@@ -376,7 +392,10 @@ class DataReader(object):
                 mask = np.zeros([tmp_mask.shape[0], tmp_mask.shape[1], self.n_class])
                 mask[:, :, 0] = tmp_mask
                 mask[:, :, 1] = 1 - tmp_mask
-                sess.run(self.enqueue, feed_dict={self.sample_placeholder: noisy_signal, self.target_placeholder: mask})
+                try:
+                    sess.run(self.enqueue, feed_dict={self.sample_placeholder: noisy_signal, self.target_placeholder: mask})
+                except tf.errors.CancelledError:
+                    return  # Session closed after training — exit thread cleanly, no traceback
 
     def start_threads(self, sess, n_threads=8):
         for i in range(n_threads):
@@ -509,10 +528,15 @@ class DataReader_test(DataReader):
                 continue
             tmp_noise = tmp_noise / np.std(tmp_noise)
 
-            tmp_signal = np.zeros([self.X_shape[0], self.X_shape[1]], dtype=np.complex_)
+            tmp_signal = np.zeros([self.X_shape[0], self.X_shape[1]], dtype=np.complex128)  # np.complex_ removed in NumPy 2.0
             if np.random.random() < 0.9:
-                shift = np.random.randint(-self.X_shape[1], 1, None, 'int')
-                tmp_signal[:, -shift:] = meta_signal['data_FT'][:, self.X_shape[1] : 2 * self.X_shape[1] + shift, j]
+                n_ft_bins = meta_signal['data_FT'].shape[1]
+                if n_ft_bins >= 2 * self.X_shape[1]:  # enough bins for random-shift augmentation
+                    shift = np.random.randint(-self.X_shape[1], 1, None, 'int')
+                    tmp_signal[:, -shift:] = meta_signal['data_FT'][:, self.X_shape[1] : 2 * self.X_shape[1] + shift, j]
+                else:  # short waveform: use full STFT directly
+                    n = min(n_ft_bins, self.X_shape[1])
+                    tmp_signal[:, :n] = meta_signal['data_FT'][:, :n, j]
                 if np.isinf(tmp_signal).any() or np.isnan(tmp_signal).any() or (not np.any(tmp_signal)):
                     continue
                 tmp_signal = tmp_signal / np.std(tmp_signal)
@@ -789,28 +813,3 @@ class DataReader_pred:
         # return noisy_signal.astype(self.dtype), std_noisy_signal.astype(self.dtype), fname
 
         return noisy_signal.astype(self.dtype), base_name, t0
-
-    def dataset(self, batch_size, num_parallel_calls=4):
-        dataset = dataset_map(
-            self,
-            output_types=(self.dtype, "string", "string"),
-            output_shapes=(self.X_shape, None, None),
-            num_parallel_calls=num_parallel_calls,
-        )
-        dataset = tf.compat.v1.data.make_one_shot_iterator(
-            dataset.batch(batch_size).prefetch(batch_size * 3)
-        ).get_next()
-        return dataset
-
-
-if __name__ == "__main__":
-
-    # %%
-    data_reader = DataReader_pred(signal_dir="./Dataset/yixiao/", signal_list="./Dataset/yixiao.csv")
-    noisy_signal, std_noisy_signal, fname = data_reader[0]
-    print(noisy_signal.shape, std_noisy_signal.shape, fname)
-    batch = data_reader.dataset(10)
-    init = tf.compat.v1.initialize_all_variables()
-    sess = tf.compat.v1.Session()
-    sess.run(init)
-    print(sess.run(batch))

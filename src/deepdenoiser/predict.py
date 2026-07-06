@@ -1,7 +1,12 @@
+import os
+# Force legacy Keras 2 backend — required for tf.compat.v1.layers API used in model.py.
+# Must be set before any tensorflow import. TF 2.16+ defaults to Keras 3 which
+# removes tf.compat.v1.layers; this reverts to the same behavior used during training.
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
 import argparse
 import logging
 import multiprocessing
-import os
 import time
 from functools import partial
 
@@ -42,7 +47,6 @@ def pred_fn(args, data_reader, figure_dir=None, result_dir=None, log_dir=None):
     if log_dir is None:
         log_dir = os.path.join(args.log_dir, "pred", current_time)
     logging.info("Pred log: %s" % log_dir)
-    # logging.info("Dataset size: {}".format(data_reader.num_data))
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
     if args.plot_figure:
@@ -52,14 +56,9 @@ def pred_fn(args, data_reader, figure_dir=None, result_dir=None, log_dir=None):
         result_dir = os.path.join(log_dir, 'results')
         os.makedirs(result_dir, exist_ok=True)
 
-    with tf.compat.v1.name_scope('Input_Batch'):
-        data_batch = data_reader.dataset(args.batch_size)
-
-    # model = UNet(input_batch=data_batch, mode='pred')
     model = UNet(mode='pred')
     sess_config = tf.compat.v1.ConfigProto()
     sess_config.gpu_options.allow_growth = True
-    # sess_config.log_device_placement = False
 
     with tf.compat.v1.Session(config=sess_config) as sess:
 
@@ -75,10 +74,27 @@ def pred_fn(args, data_reader, figure_dir=None, result_dir=None, log_dir=None):
             num_pool = multiprocessing.cpu_count()
         else:
             num_pool = 2
-        multiprocessing.set_start_method('spawn')
+        try:
+            multiprocessing.set_start_method('spawn')
+        except RuntimeError:
+            pass  # start method already set
         pool = multiprocessing.Pool(num_pool)
-        for _ in tqdm(range(0, data_reader.n_signal, args.batch_size), desc="Pred"):
-            X_batch, fname_batch, t0_batch = sess.run(data_batch)
+
+        for batch_start in tqdm(range(0, data_reader.n_signal, args.batch_size), desc="Pred"):
+            batch_idx = range(batch_start, min(batch_start + args.batch_size, data_reader.n_signal))
+
+            X_list, fname_list, t0_list = [], [], []
+            for i in batch_idx:
+                x, fname, t0 = data_reader[i]
+                X_list.append(x)
+                fname_list.append(fname.encode('utf-8') if isinstance(fname, str) else fname)
+                t0_str = t0 if isinstance(t0, str) else str(t0)
+                t0_list.append(t0_str.encode('utf-8'))
+
+            X_batch = np.stack(X_list, axis=0)  # [nbt, nch, nst, nf, nt, 2]
+            fname_batch = np.array(fname_list)
+            t0_batch = np.array(t0_list)
+
             nbt, nch, nst, nf, nt, nimg = X_batch.shape
             X_batch_ = np.reshape(X_batch, [nbt * nch * nst, nf, nt, nimg])
             X_batch_ = normalize_batch(X_batch_)
@@ -87,10 +103,6 @@ def pred_fn(args, data_reader, figure_dir=None, result_dir=None, log_dir=None):
                 feed_dict={model.X: X_batch_, model.drop_rate: 0, model.is_training: False},
             )
             preds_batch = np.reshape(preds_batch, [nbt, nch, nst, nf, nt, preds_batch.shape[-1]])
-            # preds_batch, X_batch, ratio_batch, fname_batch = sess.run(
-            #     [model.preds, data_batch[0], data_batch[1], data_batch[2]],
-            #     feed_dict={model.drop_rate: 0, model.is_training: False},
-            # )
 
             if args.save_signal or args.save_noise:
                 save_results(

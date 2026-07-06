@@ -38,13 +38,9 @@ Output layout
 
 .npz file (required by DeepDenoiser data_reader.py)
 ---------------------------------------------------
-  data      float32  shape (3000, 3)  — 30 s at 100 Hz, 3 components (E, N, Z).
-                     If only Z is available on the station, it is replicated into
-                     all three slots so the existing DeepDenoiser code needs no edit.
-  itp       int      — sample index of the signal onset within the 30 s window.
-                     = PRE_PAD_S × TARGET_FS  (e.g. 10 s × 100 = sample 1000)
-  channels  str      — station key "NET.STA" used to match signal ↔ noise files
-                     from the same station during training.
+  data      float32  shape (3000, 3)  — 30 s at 100 Hz, 3 components (E, N, Z). If only Z is available on the station, it is replicated into all three slots so the existing DeepDenoiser code needs no edit.
+  itp       int      — sample index of the signal onset within the 30 s window = PRE_PAD_S × TARGET_FS  (e.g. 10 s × 100 = sample 1000)
+  channels  str      — station key "NET.STA" used to match signal ↔ noise files from the same station during training.
 """
 
 
@@ -67,12 +63,17 @@ SNR_FULL_MEAN_MIN  = 2.70
 SNR_S2N_MEDIAN_MIN = 20.99
 
 # -- DeepDenoiser directory (where predict.py lives) --------------------------
-DEEPDENOISER_DIR = "/data/failles/louisels/project/src/deepdenoiser"
+DEEPDENOISER_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\src\deepdenoiser"
 
 # -- Trained model checkpoint for inference -----------------------------------
 # Set to the path of a trained checkpoint folder, e.g.: MODEL_DIR = "/data/failles/louisels/project/results/deepdenoiser/log/260601-120000"
 # Set to None to SKIP inference and prepare data only
-MODEL_DIR = None
+MODEL_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_icequake_data\model-260706-130450"
+
+# -- Existing run directory (inference-only shortcut) -------------------------
+# When BOTH MODEL_DIR and EXISTING_RUN_DIR are set, the script skips ALL extraction steps (Sections 3–6b: SDS, signal, noise, rescue) and runs
+# predict.py directly on the rescue files from that previous run. Set to None to run the full pipeline (extract everything from SDS).
+EXISTING_RUN_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_icequake_data\run_20260605_102106"
 
 # -- Waveform extraction parameters ------------------------------------------
 TARGET_FS  = 100      # [Hz]  target sampling rate (DeepDenoiser default)
@@ -108,6 +109,51 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from run_setup import create_run_dir, setup_logging, connect_sds, set_matplotlib_defaults
 from preprocessing import load_3component
+
+
+if MODEL_DIR is not None and EXISTING_RUN_DIR is not None:
+    rescue_dir      = os.path.join(EXISTING_RUN_DIR, "rescue")
+    rescue_csv_path = os.path.join(EXISTING_RUN_DIR, "rescue_list.csv")
+    denoised_dir    = os.path.join(EXISTING_RUN_DIR, "denoised")
+    os.makedirs(denoised_dir, exist_ok=True)
+
+    _rc_df     = pd.read_csv(rescue_csv_path)
+    n_rescue   = len(_rc_df)
+    predict_script = os.path.join(DEEPDENOISER_DIR, "predict.py")
+
+    print(f"\n{'='*65}")
+    print("  INFERENCE-ONLY MODE — skipping SDS extraction")
+    print(f"{'='*65}")
+    print(f"  Existing run : {EXISTING_RUN_DIR}")
+    print(f"  Rescue dir   : {rescue_dir}  ({n_rescue} files)")
+    print(f"  Model        : {MODEL_DIR}")
+    print(f"  Output       : {denoised_dir}")
+
+    if n_rescue == 0:
+        print("  [WARN] rescue_list.csv is empty — nothing to denoise.")
+    elif not os.path.isfile(predict_script):
+        print(f"  [ERROR] predict.py not found at {predict_script}")
+    else:
+        cmd = [
+            sys.executable, predict_script,
+            "--format",        "numpy",
+            "--data_dir",      rescue_dir,
+            "--data_list",     rescue_csv_path,
+            "--model_dir",     MODEL_DIR,
+            "--output_dir",    denoised_dir,
+            "--save_signal",
+            "--sampling_rate", str(TARGET_FS),
+        ]
+        print(f"  Command : {' '.join(cmd)}\n")
+        try:
+            subprocess.run(cmd, check=True)
+            print(f"\n  [OK] DeepDenoiser inference completed.")
+            print(f"       Denoised files → {denoised_dir}/results/")
+        except subprocess.CalledProcessError as e:
+            print(f"\n  [ERROR] predict.py exited with code {e.returncode}")
+            traceback.print_exc()
+
+    sys.exit(0)
 
 
 RUN_DIR, STAMP = create_run_dir(OUTPUT_DIR)
@@ -215,7 +261,7 @@ for idx, row in df_iq_good.iterrows():
             n_signal_skip += 1
             continue
 
-        np.savez(fpath_sig, data=data3, itp=np.int32(ITP), channels=np.bytes_(channel_id))
+        np.savez(fpath_sig, data=data3, itp=np.int32(ITP), channels=channel_id)
 
         signal_records.append({"fname": fname_sig, "channels": channel_id})
         n_signal_ok += 1
@@ -273,7 +319,7 @@ for idx, row in df_iq_good.iterrows():
             n_noise_skip += 1
             continue
 
-        np.savez(fpath_noise, data=data3, channels=np.bytes_(channel_id))
+        np.savez(fpath_noise, data=data3, channels=channel_id)
 
         noise_records.append({"fname": fname_noise, "channels": channel_id})
         n_noise_ok += 1
@@ -350,7 +396,7 @@ for idx, row in df_iq_rescue.iterrows():
             continue
 
         np.savez(fpath_rescue, data=data3, itp=np.int32(ITP),
-                 channels=np.bytes_(channel_id))
+                 channels=channel_id)
         rescue_records.append({"fname": fname_rescue})
         n_rescue_ok += 1
 
