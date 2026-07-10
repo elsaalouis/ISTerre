@@ -40,10 +40,10 @@ Output
 # =============================================================================
 
 # -- Input CSV (output of script 04a) -----------------------------------------
-CSV_PATH = "/data/failles/louisels/project/results/outputs_04a/groult/run_20260531_104936/catalog_windows_20260531_104936.csv"
+CSV_PATH = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent\catalog_windows_20260707_165719.csv"
 
 # -- Output directory ----------------------------------------------------------
-OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_03b"
+OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03b_feature_selection"
 
 # -- Classes to keep -----------------------------------------------------------
 TARGET_CLASSES = ["earthquake", "rockslide", "ice quake"]
@@ -52,8 +52,7 @@ TARGET_CLASSES = ["earthquake", "rockslide", "ice quake"]
 FILTER_QUALITY = True   # True → keep only quality_ok == True rows
 
 # -- Correlation clustering ----------------------------------------------------
-# Features whose pairwise |r| > CORR_THRESHOLD are placed in the same cluster
-# lower value = finer clusters (more features considered distinct)
+# Features whose pairwise |r| > CORR_THRESHOLD are placed in the same cluster lower value = finer clusters (more features considered distinct)
 CORR_THRESHOLD = 0.70   # |Pearson r| above which two features are "redundant"
 
 # -- HGB training (same config as 06b, now the reference classifier) ----------
@@ -71,12 +70,12 @@ HGB_LEARNING_RATE = 0.1
 N_PERMUTATION_REPEATS = 10
 
 # -- Feature subsets to test ---------------------------------------------------
-SUBSET_CONFIGS = [        # each entry is (label_for_plot, n_features_or_None)
+SUBSET_CONFIGS = [        # each entry is (label_for_plot, n_features_or_sentinel)
     ("Top 20",   20),
     ("Top 40",   40),
     ("Top 60",   60),
-    ("All 99",   99),
-    ("Clusters", None),   # None = "use cluster representatives" (one best feature per correlation cluster)
+    ("All",      "all"),  # "all" → auto-resolved to n_features after the CSV is loaded (99 or 103)
+    ("Clusters", None),   # None  → cluster representatives (one best feature per correlation cluster)
 ]
 
 # -- Top-N importances to display in the bar chart ----------------------------
@@ -109,6 +108,7 @@ from scipy.stats import spearmanr
 
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.inspection import permutation_importance
+from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, f1_score
 from sklearn.preprocessing import label_binarize, StandardScaler
@@ -124,8 +124,8 @@ import joblib
 
 sys.path.insert(0, os.path.dirname(__file__))
 from features import (
-    FEATURE_NAMES, FEATURE_GROUPS, feature_group_array,
-    get_feature_group, rename_legacy_columns,
+    FEATURE_NAMES, FEATURE_NAMES_3C, FEATURE_GROUPS, FEATURE_GROUPS_3C,
+    POLARIZATION_NAMES, feature_group_array, get_feature_group, rename_legacy_columns,
 )
 from run_setup import create_run_dir, setup_logging, set_matplotlib_defaults
 
@@ -136,14 +136,9 @@ log_file, _    = setup_logging(RUN_DIR, "03b_feature_selection.py",
                                extra_info=f"CSV: {CSV_PATH}")
 set_matplotlib_defaults()
 
-# Group colour palette, one colour per FEATURE_GROUP, used in all figures
-GROUP_NAMES   = list(FEATURE_GROUPS.keys())
+# Group colour palette — built after the feature set is auto-detected from the CSV
+# (GROUP_NAMES, GROUP_COLORS, FEAT_GROUP_ARRAY are finalised in Section 3)
 GROUP_PALETTE = plt.cm.tab10.colors          # up to 10 distinct colours
-GROUP_COLORS  = {g: GROUP_PALETTE[i % 10] for i, g in enumerate(GROUP_NAMES)}
-
-# Per-feature group colour array (length 99), used for bar/scatter colouring
-FEAT_GROUP_ARRAY  = feature_group_array()
-FEAT_COLORS_ARRAY = [GROUP_COLORS[g] for g in FEAT_GROUP_ARRAY]
 
 
 
@@ -176,7 +171,7 @@ if FILTER_QUALITY and "quality_ok" in df_raw.columns:
           f"({n_before - len(df_raw):,} dropped).")
 elif FILTER_QUALITY:
     # Fall back to SNR thresholds if quality_ok column is absent
-    snr_cols = {"SNR_full_mean": 2.70, "SNR_s2n_median": 20.99}
+    snr_cols = {"SNR_full_mean": 1.856, "SNR_s2n_median": 10.503}
     available = {c: t for c, t in snr_cols.items() if c in df_raw.columns}
     if available:
         n_before = len(df_raw)
@@ -189,14 +184,31 @@ elif FILTER_QUALITY:
     else:
         print("[WARN] No quality column found — skipping quality filter.")
 
-# -- Drop rows missing any feature --------------------------------------------
+# -- Auto-detect feature set (99 Z-only or 103 Z + polarization) --------------
+_has_3c     = all(f in df_raw.columns for f in POLARIZATION_NAMES)
+_feat_names = FEATURE_NAMES_3C if _has_3c else FEATURE_NAMES
+n_features  = len(_feat_names)
+_feat_groups = FEATURE_GROUPS_3C if _has_3c else FEATURE_GROUPS
+print(f"\n  Feature set : {n_features} features  "
+      f"({'Z + polarization (3C)' if _has_3c else 'Z only (1C)'})")
+
+# -- Require all Z-component features -----------------------------------------
 missing = [f for f in FEATURE_NAMES if f not in df_raw.columns]
 if missing:
-    print(f"[ERROR] {len(missing)} feature columns not found (e.g. {missing[:3]}). Exiting.")
+    print(f"[ERROR] {len(missing)} Z-feature columns not found (e.g. {missing[:3]}). Exiting.")
     sys.exit(1)
 
-df_raw = df_raw.dropna(subset=FEATURE_NAMES).copy()
+# Drop rows with NaN in Z-component features only
+# Polarization NaN rows (~3-5 % of rows when LOAD_3C=True) are kept; they will be median-imputed in Section 4 before SMOTE and classifier training
+z_feat_cols = [f for f in FEATURE_NAMES if f in df_raw.columns]
+df_raw = df_raw.dropna(subset=z_feat_cols).copy()
 print(f"After dropping NaN-feature rows: {len(df_raw):,} rows.")
+
+# -- Group colour setup (depends on whether 3C features are present) ----------
+GROUP_NAMES       = list(_feat_groups.keys())
+GROUP_COLORS      = {g: GROUP_PALETTE[i % 10] for i, g in enumerate(GROUP_NAMES)}
+FEAT_GROUP_ARRAY  = feature_group_array(use_3c=_has_3c)
+FEAT_COLORS_ARRAY = [GROUP_COLORS[g] for g in FEAT_GROUP_ARRAY]
 
 # Print class distribution
 print(f"\n{'─'*45}")
@@ -206,7 +218,6 @@ for cls, n in df_raw["event_type"].value_counts().items():
     print(f"  {cls:<20s}  {n:6,}  ({100*n/len(df_raw):.1f} %)")
 
 # -- Feature matrix and labels ------------------------------------------------
-X_all = df_raw[FEATURE_NAMES].values.astype(np.float32)
 y_all = df_raw["event_type"].values
 
 
@@ -240,15 +251,19 @@ df_test  = df_raw[df_raw["event_time"].isin(test_evt)].copy()
 print(f"Train : {len(train_evt):4d} events  →  {len(df_train):6,} rows")
 print(f"Test  : {len(test_evt):4d}  events  →  {len(df_test):6,} rows")
 
-X_train_full = df_train[FEATURE_NAMES].values.astype(np.float32)
+X_train_full = df_train[_feat_names].values.astype(np.float32)
 y_train      = df_train["event_type"].values
-X_test_full  = df_test[FEATURE_NAMES].values.astype(np.float32)
+X_test_full  = df_test[_feat_names].values.astype(np.float32)
 y_test       = df_test["event_type"].values
 
-# SMOTE on the full 99-feature training set — used ONLY for the baseline HGB
-# (permutation importance in Section 6).  Subset experiments (Section 7) each
-# apply SMOTE on their own feature columns so the interpolation happens in the
-# same feature space as 06b does. This makes results directly comparable.
+# Impute NaN with training-set median (fits on train only — no leakage)
+# Only affects polarization features when _has_3c=True and some rows lacked horizontal channels.  SMOTE and classifiers need NaN-free arrays.
+_imputer     = SimpleImputer(strategy="median")
+X_train_full = _imputer.fit_transform(X_train_full)
+X_test_full  = _imputer.transform(X_test_full)
+
+# SMOTE on the full feature training set — used ONLY for the baseline HGB (permutation importance in Section 6) 
+# Subset experiments (Section 7) each apply SMOTE on their own feature columns so the interpolation happens in the same feature space as 06b does
 if USE_SMOTE:
     k_nb = min(SMOTE_K, pd.Series(y_train).value_counts().min() - 1)
     if k_nb >= 1:
@@ -276,17 +291,17 @@ print(f"\n{'='*65}")
 print(f"  STEP 3 — Correlation analysis")
 print(f"{'='*65}")
 
-# Compute Pearson and Spearman on the full (pre-SMOTE, quality-filtered) dataset
-df_feats = df_train[FEATURE_NAMES]
+df_feats = df_train[_feat_names]
 
 print("  Computing Pearson correlation matrix ...")
-corr_pearson  = df_feats.corr(method='pearson').values   # (99, 99) dataframe -> df.corr() pandas method that computes the pairwise correlation between all columns
-                                                         # corr_pearson[i, j] is the Pearson r between feature i and feature j
+corr_pearson  = np.clip(
+    np.nan_to_num(df_feats.corr(method='pearson').values,  nan=0.0), -1, 1
+)
 print("  Computing Spearman correlation matrix ...")
-corr_spearman, _ = spearmanr(df_feats.values)      # (99, 99)
-corr_spearman = np.array(corr_spearman)            # spearmanr can return a special scipy object so forces it to numpy array
-
-print(f"  Correlation matrices computed ({len(FEATURE_NAMES)} × {len(FEATURE_NAMES)}).")
+corr_spearman = np.clip(
+    np.nan_to_num(df_feats.corr(method='spearman').values, nan=0.0), -1, 1
+)
+print(f"  Correlation matrices computed ({n_features} × {n_features}).")
 
 # -- Hierarchical clustering on Pearson |r| -----------------------------------
 print(f"\n  Clustering features  (threshold |r| > {CORR_THRESHOLD} = same cluster) ...")
@@ -304,7 +319,7 @@ print(f"  → {n_clusters} clusters found at |r| threshold = {CORR_THRESHOLD}")
 
 # Feature cluster table: one row per feature, three columns: its name, its semantic group (waveform shape, spectral, ...), and its cluster ID
 cluster_df = pd.DataFrame({
-    "feature"    : FEATURE_NAMES,
+    "feature"    : _feat_names,
     "group"      : FEAT_GROUP_ARRAY,
     "cluster_id" : cluster_labels,
 }).sort_values(["cluster_id", "group"])
@@ -329,17 +344,18 @@ def _leaf_order(Z, n):
     from scipy.cluster.hierarchy import leaves_list
     return leaves_list(Z)
 
-leaf_idx = _leaf_order(Z, len(FEATURE_NAMES))
-feat_ordered = [FEATURE_NAMES[i] for i in leaf_idx]
+leaf_idx     = _leaf_order(Z, n_features)
+feat_ordered = [_feat_names[i] for i in leaf_idx]
 
 
 # ---- Plot helper: draw heatmap with group boundary rectangles ---------------
 def _plot_corr_heatmap(corr_matrix, title, out_path, vmin=-1, vmax=1):
     """
-    Plot a 99×99 correlation heatmap reordered by hierarchical clustering.
+    Plot a correlation heatmap reordered by hierarchical clustering.
+    Works for both 99 (1C) and 103 (3C) feature sets.
     Feature names are shown (small font); coloured rectangles mark FEATURE_GROUP boundaries.
     """
-    n = len(FEATURE_NAMES)
+    n = len(feat_ordered)   # dynamic — 99 or 103 depending on catalog
     # Reorder matrix rows + columns by dendrogram leaf order
     C = corr_matrix[np.ix_(leaf_idx, leaf_idx)]   # C[i, j] gives the correlation between the i-th and j-th features in dendrogram order
 
@@ -356,7 +372,7 @@ def _plot_corr_heatmap(corr_matrix, title, out_path, vmin=-1, vmax=1):
     # Compute positions of group boundaries in the reordered axis
     group_positions = {}
     for i, fname in enumerate(feat_ordered):
-        grp = get_feature_group(fname)
+        grp = get_feature_group(fname, use_3c=_has_3c)
         group_positions.setdefault(grp, []).append(i)
 
     prev_end = -0.5
@@ -388,7 +404,7 @@ def _plot_corr_heatmap(corr_matrix, title, out_path, vmin=-1, vmax=1):
 print("\n  Plotting Pearson heatmap ...")
 _plot_corr_heatmap(
     corr_pearson,
-    title    = (f"Pearson correlation — {len(FEATURE_NAMES)} features  "
+    title    = (f"Pearson correlation — {n_features} features  "
                 f"(reordered by hierarchical clustering)\n"
                 f"Red=positive  Blue=negative  |  "
                 f"Black lines = feature groups"),
@@ -398,7 +414,7 @@ _plot_corr_heatmap(
 print("  Plotting Spearman heatmap ...")
 _plot_corr_heatmap(
     corr_spearman,
-    title    = (f"Spearman correlation — {len(FEATURE_NAMES)} features  "
+    title    = (f"Spearman correlation — {n_features} features  "
                 f"(reordered by hierarchical clustering)\n"
                 f"Captures non-linear monotonic relationships"),
     out_path = os.path.join(RUN_DIR, f"fig_correlation_spearman_{STAMP}.png"),
@@ -438,7 +454,7 @@ acc_base    = accuracy_score(y_test, y_pred_base)
 rep_base    = classification_report(y_test, y_pred_base,
                                     labels=classes, target_names=classes,
                                     output_dict=True, zero_division=0)
-print(f"  Baseline (all 99 features) — "
+print(f"  Baseline (all {n_features} features) — "
       f"Accuracy={acc_base:.3f}  Macro F1={rep_base['macro avg']['f1-score']:.3f}")
 
 # -- Permutation importance on the TEST set -----------------------------------
@@ -460,7 +476,7 @@ importances_std  = perm_result.importances_std    # std across repeats (measure 
 
 # Build importance DataFrame
 imp_df = pd.DataFrame({
-    "feature"         : FEATURE_NAMES,
+    "feature"         : _feat_names,
     "importance"      : importances,
     "importance_std"  : importances_std,
     "group"           : FEAT_GROUP_ARRAY,
@@ -577,8 +593,8 @@ def _run_subset(label, feature_subset):
     SMOTE is applied on the subset columns (same feature space as 06b).
     Returns a dict with macro/per-class F1 and accuracy.
     """
-    idx = [FEATURE_NAMES.index(f) for f in feature_subset]
-    Xtr_raw = X_train_full[:, idx]   # pre-SMOTE, subset of columns
+    idx = [_feat_names.index(f) for f in feature_subset]
+    Xtr_raw = X_train_full[:, idx]   # pre-SMOTE (but already imputed), subset of columns
     Xte     = X_test_full[:, idx]
 
     # Apply SMOTE in the subset feature space — identical to 06b's approach
@@ -627,9 +643,13 @@ subset_results = []
 
 for label, n_feat in SUBSET_CONFIGS:
     if n_feat is None:
-        # Cluster representatives
-        feat_list = cluster_reps
+        # Cluster representatives — one best-importance feature per correlation cluster
+        feat_list    = cluster_reps
         actual_label = f"Clusters\n({len(feat_list)} feat.)"
+    elif n_feat == "all":
+        # All features from the catalog (n_features = 99 or 103 depending on LOAD_3C in 04a)
+        feat_list    = features_by_importance   # all ranked
+        actual_label = f"All {n_features}\n({n_features} feat.)"
     else:
         feat_list    = features_by_importance[:n_feat]
         actual_label = label
@@ -678,9 +698,10 @@ ax1.set_xticklabels(subset_labels, fontsize=9)
 ax1.set_ylabel("Macro F1-score")
 ax1.set_ylim(0, 1.0)
 ax1.set_title("Macro F1 by feature subset  (HGB)\n(equal weight to all classes)")
-ax1.axhline(macro_vals[-1 if SUBSET_CONFIGS[-1][1] == 99 else
-                        next(i for i,c in enumerate(SUBSET_CONFIGS) if c[1]==99)],
-             color='grey', lw=1.2, ls='--', label='All 99 features')
+_all_idx = next((i for i, c in enumerate(SUBSET_CONFIGS) if c[1] == "all"), None)
+if _all_idx is not None and _all_idx < len(macro_vals):
+    ax1.axhline(macro_vals[_all_idx], color='grey', lw=1.2, ls='--',
+                label=f'All {n_features} features')
 ax1.grid(axis='y', lw=0.4, alpha=0.4)
 ax1.legend(fontsize=8)
 
@@ -727,7 +748,7 @@ print(f"  SUMMARY")
 print(f"{'='*65}")
 
 print(f"\n  Correlation clusters (|Pearson r| > {CORR_THRESHOLD}):")
-print(f"    {n_clusters} clusters found from 99 features")
+print(f"    {n_clusters} clusters found from {n_features} features")
 sizes = cluster_df.groupby("cluster_id").size().value_counts().sort_index()
 for size, count in sizes.items():
     print(f"    {count:3d} cluster(s) of size {size}")

@@ -52,13 +52,13 @@ Output
 # All parameters to adapt are grouped here
 # =============================================================================
 
-# -- Input CSV (output of script 02) ------------------------------------------
-INPUT_CSV  = "/data/failles/louisels/project/results/outputs_02/run_20260429_154458/catalog_windows_20260429_154458.csv"
+# -- Input CSV (output of script 04a) -----------------------------------------
+INPUT_CSV  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent\catalog_windows_20260707_165719.csv"
 
 # -- Paths --------------------------------------------------------------------
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
-OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_05a"
+OUTPUT_DIR  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\05a_snr_comparison\pick_inside_det"
 
 # -- Key diagnostic -----------------------------------------------------------
 GROUND_TRUTH = 'pick_inside_det'  # origin_inside_det or pick_inside_det

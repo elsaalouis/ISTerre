@@ -60,8 +60,8 @@ TARGET_TYPES = []    # ["earthquake", "rockslide", ...] — empty = all types in
 GROUND_TRUTH = 'pick_inside_det'   # or 'origin_inside_det'
 
 # -- Quality gate thresholds (must match 04a) ---------------------------------
-SNR_MEAN_MIN  = 2.70    # SNR_full_mean  >= this
-SNR_S2N_MIN   = 20.99   # SNR_s2n_median >= this
+SNR_MEAN_MIN  = 1.856    # SNR_full_mean  >= this  (05a ROC-optimal, AUC=0.700)
+SNR_S2N_MIN   = 10.503   # SNR_s2n_median >= this  (05a ROC-optimal, AUC=0.703)
 
 # -- Display labels -----------------------------------------------------------
 LABEL_A = "Groult\n(spectrogram STA/LTA)"

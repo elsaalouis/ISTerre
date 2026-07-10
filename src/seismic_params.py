@@ -4,8 +4,7 @@
           C. Hibert after 22/05/2017 > Original code from Matlab and addition of spectrogram attributes and other stuffs + comments 
           2021+ E. Pirot, C. Groult, C. Hibert
           
-This function computes the attributes of a seismic signal later used to perform identification through machine
-learning algorithms.
+This function computes the attributes of a seismic signal later used to perform identification through machine learning algorithms
 
 - Example: from ComputeAttributes_CH_V1 import calculate_all_attributes 
         
@@ -15,7 +14,8 @@ learning algorithms.
 - Inputs: "Data" is the raw seismic signal of the event (cutted at the onset and at the end of the signal)
           "sps" is the sampling rate of the seismic signal (in samples per second)
           "flag" is used to indicate if the input signal is 3C (flag==1) or 1C (flag==0).
-          /!\ 3C PROCESSING NOT FULLY IMPLEMENTED YET /!\ 
+          flag=0: Data is a 1D numpy array of shape (n_samples,)  → returns 99 features
+          flag=1: Data is a 2D numpy array of shape (3, n_samples) with rows [Z, N, E]  → returns 62 features (58 Z-only + 4 polarization)
           
 - Output: "all_attributes" is an array of the attribute values for the input signal, ordered as detailed on lines 69-137
 
@@ -25,7 +25,6 @@ learning algorithms.
 
 - References: 
     
-        
         Provost, F., Hibert, C., & Malet, J. P. (2017). Automatic classification of endogenous landslide seismicity 
         using the Random Forest supervised classifier. Geophysical Research Letters, 44(1), 113-120.
         
@@ -62,54 +61,55 @@ def calculate_all_attributes(Data,sps,flag):
     sps=int(sps)
 
     # for 3C make sure is in right order (Z then horizontals)
-    
+    # When flag=1, Data must be a (3, n_samples) numpy array with rows [Z, N, E].
+    # All 1D processing functions operate on the Z component only (data_1c).
+    # When flag=0, Data is a plain 1D array and data_1c == Data.
     if flag==1:
         NATT = 62
-        
-    if flag==0:
+        data_1c = Data[0]   # Z component, shape (n_samples,)
+    else:
         NATT = 99
+        data_1c = Data      # already 1D
 
-
-        
     all_attributes = np.empty((1, NATT), dtype=float)
 
-    env = envelope(Data,sps)
-    
+    env = envelope(data_1c, sps)
+
     TesMEAN, TesMEDIAN, TesSTD, env_max = get_TesStuff(env)
-    
+
     RappMaxMean, RappMaxMedian = get_RappMaxStuff(TesMEAN, TesMEDIAN)
     # print('Get_MaxRappStuff done')
 
-    AsDec, DistDecAmpEnv = get_AsDec(Data, env, sps)
+    AsDec, DistDecAmpEnv = get_AsDec(data_1c, env, sps)
     # print('Get_AsDec done')
 
     KurtoEnv, KurtoSig, SkewnessEnv, SkewnessSig =\
-        get_KurtoSkewStuff(Data, env)
+        get_KurtoSkewStuff(data_1c, env)
     # print('Get_kurtoStuff done')
 
-    CorPeakNumber, INT1, INT2, INT_RATIO = get_CorrStuff(Data, sps)
+    CorPeakNumber, INT1, INT2, INT_RATIO = get_CorrStuff(data_1c, sps)
     # print('Get_CorrStuff done')
 
-    ES, KurtoF = get_freq_band_stuff(Data, sps)
+    ES, KurtoF = get_freq_band_stuff(data_1c, sps)
     # print('Get_FreqBandstuff done')
 
     MeanFFT, MaxFFT, FmaxFFT, MedianFFT, VarFFT, FCentroid, Fquart1, Fquart3,\
         NpeakFFT, MeanPeaksFFT, E1FFT, E2FFT, E3FFT, E4FFT, gamma1, gamma2,\
-        gammas = get_full_spectrum_stuff(Data, sps)
+        gammas = get_full_spectrum_stuff(data_1c, sps)
     # print('Get_SpectrumStuff done')
 
     if flag==1: #If signal is 3C then compute polarisation parameter
         rectilinP, azimuthP, dipP, Plani =\
-            get_polarization_stuff(Data, env)
+            get_polarization_stuff(Data, sps)
     
     SpecKurtoMaxEnv, SpecKurtoMedianEnv, RATIOENVSPECMAXMEAN, RATIOENVSPECMAXMEDIAN, \
     DISTMAXMEAN , DISTMAXMEDIAN, NBRPEAKMAX, NBRPEAKMEAN, NBRPEAKMEDIAN, RATIONBRPEAKMAXMEAN, \
     RATIONBRPEAKMAXMED, NBRPEAKFREQCENTER, NBRPEAKFREQMAX, RATIONBRFREQPEAKS, DISTQ2Q1, DISTQ3Q2, DISTQ3Q1 \
-    = get_pseudo_spectral_stuff(Data, sps)
+    = get_pseudo_spectral_stuff(data_1c, sps)
     # print('Get_pseudoSpectro done')
 
     # waveform
-    all_attributes[0, 0] = np.mean(duration(Data,sps))  # 1  Duration of the signal
+    all_attributes[0, 0] = np.mean(duration(data_1c,sps))  # 1  Duration of the signal
     all_attributes[0, 1] = np.mean(RappMaxMean)         # 2  Ratio of the Max and the Mean of the normalized envelope
     all_attributes[0, 2] = np.mean(RappMaxMedian)       # 3  Ratio of the Max and the Median of the normalized envelope
     all_attributes[0, 3] = np.mean(AsDec)               # 4  Ascending time/Decreasing time of the envelope
@@ -132,7 +132,7 @@ def calculate_all_attributes(Data,sps,flag):
     all_attributes[0, 20] = np.mean(KurtoF[3])          #21  Kurtosis of the signal in the 10-20Hz FBand
     all_attributes[0, 21] = np.mean(KurtoF[4])          #22  Kurtosis of the signal in the 20-Nyf Hz FBand
     all_attributes[0, 22] = np.mean(DistDecAmpEnv)      #23  Difference bewteen decreasing coda amplitude and straight line
-    all_attributes[0, 23] = np.mean(env_max/duration(Data,sps)) # 24  Ratio between max envlelope and duration
+    all_attributes[0, 23] = np.mean(env_max/duration(data_1c,sps)) # 24  Ratio between max envlelope and duration
 
     # spectral
     all_attributes[0, 24] = np.mean(MeanFFT)            #25  Mean FFT
@@ -172,59 +172,59 @@ def calculate_all_attributes(Data,sps,flag):
     all_attributes[0, 56] = np.mean(DISTQ3Q2)           #57  Distance Q3 curve to Q2 curve
     all_attributes[0, 57] = np.mean(DISTQ3Q1)           #58  Distance Q3 curve to Q1 curve
 
-# Add by Emilie (17/09/21)
+# Extended features — flag=0 (1C) only.
+    # When flag=1, indices 58-61 are reserved for polarization parameters (written below).
+    if flag == 0:
+        all_attributes[0, 58] = np.mean(ES[5])              #59  Energy of the seismic signal in the 0.01-0.05 Hz FBand
+        all_attributes[0, 59] = np.mean(ES[6])              #60  Energy of the seismic signal in the 0.05-0.1 Hz FBand
+        all_attributes[0, 60] = np.mean(ES[7])              #61  Energy of the seismic signal in the 0.01-0.1 Hz FBand  #Bande bruitée
+        all_attributes[0, 61] = np.mean(ES[8])              #62  Energy of the seismic signal in the 0.1-0.5 Hz FBand
 
-    all_attributes[0, 58] = np.mean(ES[5])              #59  Energy of the seismic signal in the 0.01-0.05 Hz FBand
-    all_attributes[0, 59] = np.mean(ES[6])              #60  Energy of the seismic signal in the 0.05-0.1 Hz FBand
-    all_attributes[0, 60] = np.mean(ES[7])              #61  Energy of the seismic signal in the 0.01-0.1 Hz FBand  #Bande bruitée
-    all_attributes[0, 61] = np.mean(ES[8])              #62  Energy of the seismic signal in the 0.1-0.5 Hz FBand 
+        all_attributes[0, 62] = np.mean(KurtoF[5])          #63  Kurtosis of the signal in the 0.01-0.05Hz FBand
+        all_attributes[0, 63] = np.mean(KurtoF[6])          #64  Kurtosis of the signal in the 0.05-0.1Hz FBand
+        all_attributes[0, 64] = np.mean(KurtoF[7])          #65  Kurtosis of the signal in the 0.01-0.1Hz FBand
+        all_attributes[0, 65] = np.mean(KurtoF[8])          #66  Kurtosis of the signal in the 0.1-0.5Hz FBand
 
-    all_attributes[0, 62] = np.mean(KurtoF[5])          #63  Kurtosis of the signal in the 0.01-0.05Hz FBand
-    all_attributes[0, 63] = np.mean(KurtoF[6])          #64  Kurtosis of the signal in the 0.05-0.1Hz FBand
-    all_attributes[0, 64] = np.mean(KurtoF[7])          #65  Kurtosis of the signal in the 0.01-0.1Hz FBand
-    all_attributes[0, 65] = np.mean(KurtoF[8])          #66  Kurtosis of the signal in the 0.1-0.5Hz FBand
+        all_attributes[0, 66] = np.mean(ES[0]) - np.mean(ES[1])         #67  Difference of energy 0.1-1Hz/1-3Hz
+        all_attributes[0, 67] = np.mean(ES[0]) - np.mean(ES[2])         #68  Difference of energy 0.1-1Hz/3-10Hz
+        all_attributes[0, 68] = np.mean(ES[0]) - np.mean(ES[3])         #69  Difference of energy 0.1-1Hz/10-20Hz
+        all_attributes[0, 69] = np.mean(ES[0]) - np.mean(ES[5])         #70  Difference of energy 0.1-1Hz/0.01-0.05Hz
+        all_attributes[0, 70] = np.mean(ES[0]) - np.mean(ES[6])         #71  Difference of energy 0.1-1Hz/0.05-0.1Hz
+        all_attributes[0, 71] = np.mean(ES[1]) - np.mean(ES[2])         #72  Difference of energy 1-3Hz/3-10Hz
+        all_attributes[0, 72] = np.mean(ES[1]) - np.mean(ES[3])         #73  Difference of energy 1-3Hz/10-20Hz
+        all_attributes[0, 73] = np.mean(ES[1]) - np.mean(ES[5])         #74  Difference of energy 1-3Hz/0.01-0.05Hz'
+        all_attributes[0, 74] = np.mean(ES[1]) - np.mean(ES[6])         #75  Difference of energy 1-3Hz/0.05-0.1Hz
+        all_attributes[0, 75] = np.mean(ES[2]) - np.mean(ES[3])         #76  Difference of energy 3-10Hz/10-20Hz
+        all_attributes[0, 76] = np.mean(ES[2]) - np.mean(ES[5])         #77  Difference of energy 3-10Hz/0.01-0.05Hz
+        all_attributes[0, 77] = np.mean(ES[2]) - np.mean(ES[6])         #78  Difference of energy 3-10Hz/0.05-0.1Hz
+        all_attributes[0, 78] = np.mean(ES[3]) - np.mean(ES[5])         #79  Difference of energy 10-20Hz/0.01-0.05Hz
+        all_attributes[0, 79] = np.mean(ES[3]) - np.mean(ES[6])         #80  Difference of energy 10-20Hz/0.05-0.1Hz
+        all_attributes[0, 80] = np.mean(ES[5]) - np.mean(ES[6])         #81  Difference of energy 0.01-0.05Hz/0.05-0.1Hz
 
-    all_attributes[0, 66] = np.mean(ES[0]) - np.mean(ES[1])         #67  Difference of energy 0.1-1Hz/1-3Hz
-    all_attributes[0, 67] = np.mean(ES[0]) - np.mean(ES[2])         #68  Difference of energy 0.1-1Hz/3-10Hz
-    all_attributes[0, 68] = np.mean(ES[0]) - np.mean(ES[3])         #69  Difference of energy 0.1-1Hz/10-20Hz
-    all_attributes[0, 69] = np.mean(ES[0]) - np.mean(ES[5])         #70  Difference of energy 0.1-1Hz/0.01-0.05Hz
-    all_attributes[0, 70] = np.mean(ES[0]) - np.mean(ES[6])         #71  Difference of energy 0.1-1Hz/0.05-0.1Hz
-    all_attributes[0, 71] = np.mean(ES[1]) - np.mean(ES[2])         #72  Difference of energy 1-3Hz/3-10Hz
-    all_attributes[0, 72] = np.mean(ES[1]) - np.mean(ES[3])         #73  Difference of energy 1-3Hz/10-20Hz
-    all_attributes[0, 73] = np.mean(ES[1]) - np.mean(ES[5])         #74  Difference of energy 1-3Hz/0.01-0.05Hz'
-    all_attributes[0, 74] = np.mean(ES[1]) - np.mean(ES[6])         #75  Difference of energy 1-3Hz/0.05-0.1Hz
-    all_attributes[0, 75] = np.mean(ES[2]) - np.mean(ES[3])         #76  Difference of energy 3-10Hz/10-20Hz
-    all_attributes[0, 76] = np.mean(ES[2]) - np.mean(ES[5])         #77  Difference of energy 3-10Hz/0.01-0.05Hz
-    all_attributes[0, 77] = np.mean(ES[2]) - np.mean(ES[6])         #78  Difference of energy 3-10Hz/0.05-0.1Hz
-    all_attributes[0, 78] = np.mean(ES[3]) - np.mean(ES[5])         #79  Difference of energy 10-20Hz/0.01-0.05Hz
-    all_attributes[0, 79] = np.mean(ES[3]) - np.mean(ES[6])         #80  Difference of energy 10-20Hz/0.05-0.1Hz
-    all_attributes[0, 80] = np.mean(ES[5]) - np.mean(ES[6])         #81  Difference of energy 0.01-0.05Hz/0.05-0.1Hz
-    
-    all_attributes[0, 81] = np.mean(ES[0]) / np.mean(ES[1])         #82  Ratio of energy 0.1-1Hz/1-3Hz
-    all_attributes[0, 82] = np.mean(ES[0]) / np.mean(ES[2])         #83  Ratio of energy 0.1-1Hz/3-10Hz
-    all_attributes[0, 83] = np.mean(ES[0]) / np.mean(ES[3])         #84  Ratio of energy 0.1-1Hz/10-20Hz
-    all_attributes[0, 84] = np.mean(ES[0]) / np.mean(ES[5])         #85  Ratio of energy 0.1-1Hz/0.01-0.05Hz
-    all_attributes[0, 85] = np.mean(ES[0]) / np.mean(ES[6])         #86  Ratio of energy 0.1-1Hz/0.05-0.1Hz
-    all_attributes[0, 86] = np.mean(ES[1]) / np.mean(ES[2])         #87  Ratio of energy 1-3Hz/3-10Hz
-    all_attributes[0, 87] = np.mean(ES[1]) / np.mean(ES[3])         #88  Ratio of energy 1-3Hz/10-20Hz
-    all_attributes[0, 88] = np.mean(ES[1]) / np.mean(ES[5])         #89  Ratio of energy 1-3Hz/0.01-0.05Hz'
-    all_attributes[0, 89] = np.mean(ES[1]) / np.mean(ES[6])         #90  Ratio of energy 1-3Hz/0.05-0.1Hz
-    all_attributes[0, 90] = np.mean(ES[2]) / np.mean(ES[3])         #91  Ratio of energy 3-10Hz/10-20Hz
-    all_attributes[0, 91] = np.mean(ES[2]) / np.mean(ES[5])         #92  Ratio of energy 3-10Hz/0.01-0.05Hz
-    all_attributes[0, 92] = np.mean(ES[2]) / np.mean(ES[6])         #93  Ratio of energy 3-10Hz/0.05-0.1Hz
-    all_attributes[0, 93] = np.mean(ES[3]) / np.mean(ES[5])         #94  Ratio of energy 10-20Hz/0.01-0.05Hz
-    all_attributes[0, 94] = np.mean(ES[3]) / np.mean(ES[6])         #95  Ratio of energy 10-20Hz/0.05-0.1Hz
-    all_attributes[0, 95] = np.mean(ES[5]) / np.mean(ES[6])         #96  Ratio of energy 0.01-0.05Hz/0.05-0.1Hz
-    
-    all_attributes[0, 96] = signaltonoise(Data)         #97  SNR
-    
-    # NEW
-    all_attributes[0, 97] = np.mean(ES[9])              #98  Energy of the seismic signal in the 1-8 Hz FBand
-    all_attributes[0, 98] = np.mean(KurtoF[9])          #99  Kutosis of the seismic signal in the 1-8 Hz FBand
+        all_attributes[0, 81] = np.mean(ES[0]) / np.mean(ES[1])         #82  Ratio of energy 0.1-1Hz/1-3Hz
+        all_attributes[0, 82] = np.mean(ES[0]) / np.mean(ES[2])         #83  Ratio of energy 0.1-1Hz/3-10Hz
+        all_attributes[0, 83] = np.mean(ES[0]) / np.mean(ES[3])         #84  Ratio of energy 0.1-1Hz/10-20Hz
+        all_attributes[0, 84] = np.mean(ES[0]) / np.mean(ES[5])         #85  Ratio of energy 0.1-1Hz/0.01-0.05Hz
+        all_attributes[0, 85] = np.mean(ES[0]) / np.mean(ES[6])         #86  Ratio of energy 0.1-1Hz/0.05-0.1Hz
+        all_attributes[0, 86] = np.mean(ES[1]) / np.mean(ES[2])         #87  Ratio of energy 1-3Hz/3-10Hz
+        all_attributes[0, 87] = np.mean(ES[1]) / np.mean(ES[3])         #88  Ratio of energy 1-3Hz/10-20Hz
+        all_attributes[0, 88] = np.mean(ES[1]) / np.mean(ES[5])         #89  Ratio of energy 1-3Hz/0.01-0.05Hz'
+        all_attributes[0, 89] = np.mean(ES[1]) / np.mean(ES[6])         #90  Ratio of energy 1-3Hz/0.05-0.1Hz
+        all_attributes[0, 90] = np.mean(ES[2]) / np.mean(ES[3])         #91  Ratio of energy 3-10Hz/10-20Hz
+        all_attributes[0, 91] = np.mean(ES[2]) / np.mean(ES[5])         #92  Ratio of energy 3-10Hz/0.01-0.05Hz
+        all_attributes[0, 92] = np.mean(ES[2]) / np.mean(ES[6])         #93  Ratio of energy 3-10Hz/0.05-0.1Hz
+        all_attributes[0, 93] = np.mean(ES[3]) / np.mean(ES[5])         #94  Ratio of energy 10-20Hz/0.01-0.05Hz
+        all_attributes[0, 94] = np.mean(ES[3]) / np.mean(ES[6])         #95  Ratio of energy 10-20Hz/0.05-0.1Hz
+        all_attributes[0, 95] = np.mean(ES[5]) / np.mean(ES[6])         #96  Ratio of energy 0.01-0.05Hz/0.05-0.1Hz
 
+        all_attributes[0, 96] = signaltonoise(data_1c)      #97  SNR
 
-   # all_attributes[0, 97] =        #98  Difference HF/BF normalised to energy globale
-   # all_attributes[0, 98] =        #99  Difference HF/BF normalised to 1-20s
+        # NEW
+        all_attributes[0, 97] = np.mean(ES[9])              #98  Energy of the seismic signal in the 1-8 Hz FBand
+        all_attributes[0, 98] = np.mean(KurtoF[9])          #99  Kutosis of the seismic signal in the 1-8 Hz FBand
+
+    # all_attributes[0, 97] =        #98  Difference HF/BF normalised to energy globale
+    # all_attributes[0, 98] =        #99  Difference HF/BF normalised to 1-20s
 
 
 
@@ -609,29 +609,51 @@ def get_full_spectrum_stuff(Data,sps):
         gamma2, gammas
 
 
-def get_polarization_stuff(st, env):
+def get_polarization_stuff(data_3c, sps):
+    """
+    Compute polarization parameters from a 3-component signal.
 
-    sps = st[0].stats.sampling_rate
+    Parameters
+    ----------
+    data_3c : np.ndarray, shape (3, n_samples)
+              Rows must be ordered [Z, N, E].
+              Called from calculate_all_attributes with Data when flag==1.
+    sps     : float — sampling rate in Hz (int-cast inside calculate_all_attributes)
+
+    Returns
+    -------
+    rectilinP : float — rectilinearity of the P-wave onset (0=planar, 1=linear)
+    azimuthP  : float — azimuth of the principal eigenvector [degrees]
+    dipP      : float — dip of the principal eigenvector [degrees]
+    Plani     : float — planarity (0=linear, 1=planar)
+    """
     strong_filter = np.ones(int(sps)) / float(sps)
-    smooth_env = lfilter(strong_filter, 1, env[0])
-    imax = np.argmax(smooth_env)
-    end_window = int(np.round(imax/3.))
 
-    xP = st[2].data[0:end_window]
-    yP = st[1].data[0:end_window]
-    zP = st[0].data[0:end_window]
+    # Build Z-component envelope and find the amplitude peak
+    env_z = np.abs(data_3c[0])
+    smooth_env = lfilter(strong_filter, 1, env_z)
+    imax = np.argmax(smooth_env)
+
+    # Analyse the P-wave onset: use the first third of the window up to the peak
+    end_window = max(int(np.round(imax / 3.)), 10)  # at least 10 samples
+
+    zP = data_3c[0][:end_window]   # Z component
+    yP = data_3c[1][:end_window]   # N component
+    xP = data_3c[2][:end_window]   # E component
 
     MP = np.cov(np.array([xP, yP, zP]))
     w, v = np.linalg.eig(MP)
 
+    # Sort eigenvalues in ascending order (smallest → largest)
     indexes = np.argsort(w)
-    DP = w[indexes]
+    DP = np.maximum(w[indexes], 0.0)   # guard against tiny negative values from numerical noise
     pP = v[:, indexes]
 
-    rectilinP = 1 - ((DP[0] + DP[1]) / (2*DP[2]))
-    azimuthP = np.arctan(pP[1, 2] / pP[0, 2]) * 180./np.pi
-    dipP = np.arctan(pP[2, 2] / np.sqrt(pP[1, 2]**2 + pP[0, 2]**2)) * 180/np.pi
-    Plani = 1 - (2 * DP[0]) / (DP[1] + DP[2])
+    eps = 1e-10   # avoid division by zero
+    rectilinP = 1 - ((DP[0] + DP[1]) / (2 * max(DP[2], eps)))
+    azimuthP  = np.arctan2(pP[1, 2], pP[0, 2] + eps) * 180. / np.pi
+    dipP      = np.arctan2(pP[2, 2], np.sqrt(pP[1, 2]**2 + pP[0, 2]**2) + eps) * 180. / np.pi
+    Plani     = 1 - (2 * DP[0]) / (DP[1] + DP[2] + eps)
 
     return rectilinP, azimuthP, dipP, Plani
 
@@ -720,11 +742,11 @@ def get_pseudo_spectral_stuff(Data, sps):
     NBRPEAKFREQMAX    = len(find_peaks(SpecMaxFreq / (SpecMaxFreq.max() or 1), height=0.75)[0])
 
     RATIONBRFREQPEAKS = NBRPEAKFREQMAX / NBRPEAKFREQCENTER if NBRPEAKFREQCENTER > 0 else 0
-        
+
     DISTQ2Q1 = np.mean(abs(CentoiX-CentoiX1))
     DISTQ3Q2 = np.mean(abs(CentoiX3-CentoiX))
     DISTQ3Q1 = np.mean(abs(CentoiX3-CentoiX1))
-                        
+
     return SpecKurtoMaxEnv, SpecKurtoMedianEnv, RATIOENVSPECMAXMEAN, RATIOENVSPECMAXMEDIAN, \
     DISTMAXMEAN , DISTMAXMEDIAN, NBRPEAKMAX, NBRPEAKMEAN, NBRPEAKMEDIAN, RATIONBRPEAKMAXMEAN, \
     RATIONBRPEAKMAXMED, NBRPEAKFREQCENTER, NBRPEAKFREQMAX, RATIONBRFREQPEAKS, DISTQ2Q1, DISTQ3Q2, DISTQ3Q1
@@ -736,6 +758,7 @@ def nextpow2(i):
         n *= 2
     return n
 
+
 def calculate_centroid_moments(frequencies, amplitudes):
     centroid = np.sum(frequencies * amplitudes) / np.sum(amplitudes)
     bandwidth = np.sqrt(np.sum((frequencies - centroid) ** 2 * amplitudes) / np.sum(amplitudes))
@@ -744,12 +767,11 @@ def calculate_centroid_moments(frequencies, amplitudes):
 
 
 def l2filter(b, a, x):
-
     # explicit two-pass filtering with no bells or whistles
-
     x_01 = lfilter(b, a, x)
     x_02 = lfilter(b, a, x_01[::-1])
     x_02 = x_02[::-1]
+
 
 def centeroidnpX(arr):
     length = np.arange(1, len(arr)+1)

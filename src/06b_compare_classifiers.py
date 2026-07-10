@@ -30,18 +30,22 @@ Outputs
 # =============================================================================
 
 # -- Input CSV (output of script 04a) -----------------------------------------
-CSV_PATH   = "/data/failles/louisels/project/results/outputs_04a/groult/run_20260531_104936/catalog_windows_20260531_104936.csv"
+CSV_PATH   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent\catalog_windows_20260707_165719.csv"
 
 # -- Output directory ----------------------------------------------------------
-OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_06b"
+OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\06b_compare_classifiers"
 
 # -- Classes -------------------------------------------------------------------
 TARGET_CLASSES = ["earthquake", "rockslide", "ice quake"]
 CLASS_ORDER    = ["earthquake", "rockslide", "ice quake"]   # table / figure order
 
 # -- Feature set ---------------------------------------------------------------
-FEATURE_IMPORTANCES_CSV = "/data/failles/louisels/project/results/outputs_03b/run_20260527_181745/feature_importances_20260527_181745.csv"   # or None -> falls back to FALLBACK_TOP20
-TOP_N_FEATURES          = 20
+# TOP_N_FEATURES = None  → use ALL feature columns present in the catalog CSV
+# TOP_N_FEATURES = int   → use only the top-N features, ranked by:
+#                            · FEATURE_IMPORTANCES_CSV if provided
+#                            · FALLBACK_TOP20 otherwise (hardcoded list below)
+FEATURE_IMPORTANCES_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03b_feature_selection\run_20260709_145058\feature_importances_20260709_145058.csv"   # or None
+TOP_N_FEATURES          = 60   # None → all features; int → top-N
 
 # Hardcoded Top-20 fallback (from 03b run_20260527_181745)
 FALLBACK_TOP20 = [
@@ -55,8 +59,8 @@ FALLBACK_TOP20 = [
 ]
 
 # -- Quality gate (same thresholds from 05a) -----------------------------------
-SNR_FULL_MEAN_MIN  = 2.70
-SNR_S2N_MEDIAN_MIN = 20.99
+SNR_FULL_MEAN_MIN  = 1.856    # 05a ROC-optimal  (AUC=0.700, TPR=0.673, FPR=0.392)
+SNR_S2N_MEDIAN_MIN = 10.503   # 05a ROC-optimal  (AUC=0.703, TPR=0.749, FPR=0.445)
 
 # -- Train / test split --------------------------------------------------------
 TEST_SIZE    = 0.20
@@ -112,11 +116,12 @@ from sklearn.metrics import (
     confusion_matrix, ConfusionMatrixDisplay,
 )
 from sklearn.model_selection import train_test_split
+from sklearn.impute import SimpleImputer
 from imblearn.over_sampling import SMOTE
 
 # Add project src directory to the Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from features import FEATURE_NAMES, rename_legacy_columns
+from features import FEATURE_NAMES, FEATURE_NAMES_3C, rename_legacy_columns
 from run_setup import create_run_dir, setup_logging
 
 warnings.filterwarnings("ignore")
@@ -160,9 +165,12 @@ else:
     df = df[mask_quality].copy()
 print(f"After quality filter: {len(df):,} rows kept.")
 
-# Drop rows with NaN in any feature
-df = df.dropna(subset=FEATURE_NAMES).copy()
-print(f"After NaN drop: {len(df):,} rows.")
+# Drop rows where any Z-component feature is NaN (these should never be NaN;
+# polarization feature NaN values — ~3-5 % of rows when LOAD_3C=True — are kept
+# and handled by the imputer in Section 5 before SMOTE and classifier training.
+z_feat_cols = [f for f in FEATURE_NAMES if f in df.columns]
+df = df.dropna(subset=z_feat_cols).copy()
+print(f"After NaN drop (Z features): {len(df):,} rows.")
 
 print("\n  CLASS DISTRIBUTION")
 print("  " + "─" * 45)
@@ -180,13 +188,22 @@ print(f"\n{'='*65}")
 print("  STEP 2 — Feature selection")
 print(f"{'='*65}")
 
-if FEATURE_IMPORTANCES_CSV is not None:
+if TOP_N_FEATURES is None:
+    # Use every feature column present in the catalog.
+    # FEATURE_NAMES_3C is the ordered superset (103 names: 99 Z + 4 polarization).
+    # Intersect with df.columns to handle both 99-feature and 103-feature catalogs.
+    features = [f for f in FEATURE_NAMES_3C if f in df.columns]
+    if not features:
+        # Fallback: catalog may only have the 99 Z features
+        features = [f for f in FEATURE_NAMES if f in df.columns]
+    print(f"  TOP_N_FEATURES=None → using all {len(features)} feature columns found in catalog.")
+elif FEATURE_IMPORTANCES_CSV is not None:
     imp_df   = pd.read_csv(FEATURE_IMPORTANCES_CSV)
     features = imp_df["feature"].head(TOP_N_FEATURES).tolist()
     print(f"  Loaded Top-{TOP_N_FEATURES} features from: {FEATURE_IMPORTANCES_CSV}")
 else:
     features = list(FALLBACK_TOP20[:TOP_N_FEATURES])
-    print(f"  Using hardcoded Top-{TOP_N_FEATURES} fallback list.")
+    print(f"  Using hardcoded Top-{TOP_N_FEATURES} fallback list ({len(features)} features).")
 
 # Sanity check
 missing = [f for f in features if f not in df.columns]
@@ -225,6 +242,19 @@ y_test      = df.loc[test_mask,  "event_type"].values
 
 print(f"Train : {train_mask.sum():,} rows  ({len(train_events):,} events)")
 print(f"Test  : {test_mask.sum():,} rows  ({len(test_events):,} events)")
+
+# Impute NaN with column median (fit on training data only — no leakage).
+# This handles polarization features that are NaN when horizontal channels were
+# unavailable (~3-5 % of rows with LOAD_3C=True). SMOTE and most classifiers
+# cannot accept NaN; HGB tolerates it natively but works equally well on imputed data.
+nan_cols = [f for i, f in enumerate(features) if np.isnan(X_train_raw[:, i]).any()]
+if nan_cols:
+    print(f"\n  [NaN] {len(nan_cols)} feature(s) contain NaN → imputing with training-set median:")
+    for c in nan_cols:
+        print(f"    · {c}")
+imputer = SimpleImputer(strategy="median")
+X_train_raw = imputer.fit_transform(X_train_raw)
+X_test      = imputer.transform(X_test)
 
 print(f"\nApplying SMOTE (k_neighbors={SMOTE_K}) on training set ...")
 sm = SMOTE(k_neighbors=SMOTE_K, random_state=RANDOM_STATE)
@@ -511,8 +541,13 @@ x = np.arange(n)
 
 # ── Figure: unified 3-panel comparison ──────────────────────────────────────
 fig, axes = plt.subplots(1, 3, figsize=(17, 5))
+_feat_label = (
+    f"All {len(features)} features"
+    if TOP_N_FEATURES is None
+    else f"Top-{len(features)} features"
+)
 fig.suptitle(
-    f"Classifier comparison — Top-{len(features)} features  "
+    f"Classifier comparison — {_feat_label}  "
     f"({len(X_test):,} test rows, "
     f"{sum(y_test == 'earthquake'):,} EQ  "
     f"{sum(y_test == 'rockslide'):,} RS  "
@@ -602,7 +637,12 @@ print(f"[SAVED] {csv_path}")
 # ── Print summary table ───────────────────────────────────────────────────────
 COL = 19
 print(f"\n  {'='*85}")
-print(f"  SUMMARY — {len(features)}-feature set  (Top-{TOP_N_FEATURES} from 03b)")
+_feat_src = (
+    "all features from catalog"
+    if TOP_N_FEATURES is None
+    else f"Top-{TOP_N_FEATURES} from 03b"
+)
+print(f"  SUMMARY — {len(features)}-feature set  ({_feat_src})")
 print(f"  {'='*85}")
 print(f"  {'Classifier':{COL}} {'Acc':>6} {'MacroF1':>8} "
       f"{'EQ F1':>7} {'RS F1':>7} {'IQ F1':>7} {'Time':>8}")

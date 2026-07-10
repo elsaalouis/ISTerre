@@ -6,10 +6,14 @@ Author : Elsa Louis
 Date   : April 2026
 
 All figure-generating functions used across the pipeline scripts:
-  - plot_event_waveforms()    : waveform + PSD panels per station  (script 01)
-  - plot_station_coverage()   : histogram + bar chart + box plot    (script 01)
-  - plot_windowing()          : waveform + STA/LTA ratio panels     (script 02)
-  - plot_station_map()        : geographic station map, colored by SNR (script 05a)
+  - plot_event_waveforms()       : waveform + PSD panels per station  (script 01)
+  - plot_station_coverage()      : histogram + bar chart + box plot    (script 01)
+  - plot_windowing()             : waveform + STA/LTA ratio panels     (script 02)
+  - plot_station_map()           : geographic station map, colored by SNR (script 05a)
+  - plot_snr_before_after()      : paired raw-vs-denoised SNR scatter  (script 03d)
+  - plot_delta_snr_distribution(): log-ratio SNR change histogram      (script 03d)
+  - plot_rescue_funnel()         : sequential-stage funnel bar chart   (script 03d)
+  - plot_denoise_fidelity()      : waveform correlation vs SNR gain    (script 03d)
 """
 
 import os
@@ -616,3 +620,299 @@ def plot_station_map(ax, snr_series, sta_coords, title, vmin, vmax, map_extent, 
         n_plotted += 1
 
     return n_plotted
+
+
+
+# =============================================================================
+# DENOISER RESCUE QUALITY DIAGNOSTICS (script 03d)
+# =============================================================================
+# Signal-quality plots only — did DeepDenoiser genuinely help, and is it recovering
+# real signal rather than inventing structure? Classification impact is script 06c.
+
+def plot_snr_before_after(df, metric_pairs, thresholds, rescued_col, run_dir, stamp, event_type=""):
+    """
+    Paired before/after SNR scatter — one panel per metric
+
+    For each (before_col, after_col) pair: one point per rescue candidate,
+    x = SNR computed on the raw (pre-denoiser) waveform, y = SNR computed on the
+    DeepDenoiser output. The y=x diagonal marks "no change"; points above it improved.
+    Threshold lines mark the quality gate on both axes, splitting each panel into four
+    zones (still fails / newly passes / already passed / regressed). Points are colored
+    by whether the *overall* quality gate (all metrics together) passes after denoising.
+
+    Parameters
+    ----------
+    df           : pd.DataFrame — one row per rescue candidate
+    metric_pairs : list of (before_col, after_col, label) — label is used for the
+                   panel title and to look up the threshold in `thresholds`
+    thresholds   : dict {label: float} — quality-gate threshold for that metric
+    rescued_col  : str — boolean column in df, True if the candidate passes the full
+                   gate after denoising
+    run_dir      : str — output directory
+    stamp        : str — run timestamp, used in the output filename
+    event_type   : str — event class label, shown in the figure title
+
+    Returns
+    -------
+    out_path : str — path to the saved figure
+    """
+    n_panels = len(metric_pairs)
+    fig, axes = plt.subplots(1, n_panels, figsize=(6.5 * n_panels, 6))
+    if n_panels == 1:
+        axes = [axes]
+
+    rescued_all = df[rescued_col].astype(bool).to_numpy()
+
+    for ax, (before_col, after_col, label) in zip(axes, metric_pairs):
+        x = df[before_col].to_numpy(dtype=float)
+        y = df[after_col].to_numpy(dtype=float)
+        valid = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+        x, y, resc = x[valid], y[valid], rescued_all[valid]
+
+        if len(x) == 0:
+            ax.text(0.5, 0.5, "No valid data", ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(label, fontsize=13, fontweight='bold')
+            continue
+
+        ax.scatter(x[~resc], y[~resc], s=22, color='lightgrey', edgecolors='grey',
+                   linewidths=0.4, alpha=0.7, label='Still fails gate', zorder=2)
+        ax.scatter(x[resc], y[resc], s=28, color='#2ca02c', edgecolors='black',
+                   linewidths=0.4, alpha=0.85, label='Passes gate (rescued)', zorder=3)
+
+        lims = [min(x.min(), y.min()) * 0.7, max(x.max(), y.max()) * 1.3]
+        ax.plot(lims, lims, color='k', linestyle='--', linewidth=1.0, alpha=0.6, zorder=1,
+                label='No change (y = x)')
+
+        thr = thresholds.get(label)
+        if thr is not None:
+            ax.axhline(thr, color='red', linestyle=':', linewidth=1.3, zorder=1)
+            ax.axvline(thr, color='red', linestyle=':', linewidth=1.3, zorder=1,
+                       label=f'Quality gate ({thr:g})')
+
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.set_xlim(lims)
+        ax.set_ylim(lims)
+        ax.set_xlabel(f"{label} — raw (pre-denoiser)", fontsize=12, fontweight='bold')
+        ax.set_ylabel(f"{label} — denoised", fontsize=12, fontweight='bold')
+        ax.set_title(label, fontsize=13, fontweight='bold')
+        ax.grid(True, which='both', alpha=0.25)
+
+        n_above = int((y > x).sum())
+        ax.text(0.02, 0.98, f"{n_above}/{len(x)} improved ({100*n_above/len(x):.0f}%)",
+                transform=ax.transAxes, fontsize=10, va='top', ha='left',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.85, edgecolor='lightgrey'))
+
+    # Guard: if every panel hit the "no valid data" branch, axes[0] has no labeled
+    # artists and .legend() would raise a harmless-but-noisy UserWarning.
+    if axes[0].get_legend_handles_labels()[0]:
+        axes[0].legend(loc='lower right', fontsize=9, framealpha=0.9)
+    fig.suptitle(f"SNR before vs. after DeepDenoiser — {event_type}".strip(" —"),
+                 fontsize=15, fontweight='bold', y=1.03)
+    plt.tight_layout()
+
+    fname = f"snr_before_after_{stamp}.png"
+    out_path = os.path.join(run_dir, fname)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  [SAVED] {fname}")
+    return out_path
+
+
+def plot_delta_snr_distribution(df, metric_pairs, run_dir, stamp, event_type=""):
+    """
+    Histogram of the log10 SNR ratio (after / before) for each metric
+
+    Summarizes the population-level effect of denoising in one number per event:
+    0 = no change, positive = improved, negative = degraded. Log scale because SNR
+    is a ratio quantity spanning orders of magnitude — an arithmetic difference would
+    be dominated by whichever events happen to have the largest raw SNR.
+
+    Parameters
+    ----------
+    df           : pd.DataFrame — one row per rescue candidate
+    metric_pairs : list of (before_col, after_col, label)
+    run_dir, stamp, event_type : see plot_snr_before_after
+
+    Returns
+    -------
+    out_path : str
+    """
+    n_panels = len(metric_pairs)
+    fig, axes = plt.subplots(1, n_panels, figsize=(6.5 * n_panels, 5))
+    if n_panels == 1:
+        axes = [axes]
+
+    for ax, (before_col, after_col, label) in zip(axes, metric_pairs):
+        x = df[before_col].to_numpy(dtype=float)
+        y = df[after_col].to_numpy(dtype=float)
+        valid = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+        ratio = np.log10(y[valid] / x[valid])
+
+        if len(ratio) == 0:
+            ax.text(0.5, 0.5, "No valid data", ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(label, fontsize=13, fontweight='bold')
+            continue
+
+        ax.hist(ratio, bins=40, color='steelblue', edgecolor='white', alpha=0.85)
+        ax.axvline(0, color='k', linestyle='--', linewidth=1.2, label='No change')
+        med = float(np.median(ratio))
+        ax.axvline(med, color='#d62728', linestyle='-', linewidth=1.5,
+                   label=f'Median = {med:+.2f}')
+        ax.set_xlabel(f"log$_{{10}}$({label} after / before)", fontsize=11, fontweight='bold')
+        ax.set_ylabel("Number of events", fontsize=12, fontweight='bold')
+        ax.set_title(label, fontsize=13, fontweight='bold')
+        ax.legend(fontsize=9)
+        ax.tick_params(labelsize=10)
+
+    fig.suptitle(f"Distribution of SNR change after DeepDenoiser — {event_type}".strip(" —"),
+                 fontsize=15, fontweight='bold', y=1.03)
+    plt.tight_layout()
+
+    fname = f"snr_delta_distribution_{stamp}.png"
+    out_path = os.path.join(run_dir, fname)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  [SAVED] {fname}")
+    return out_path
+
+
+def plot_rescue_funnel(counts, run_dir, stamp, title="Rescue funnel", fname=None):
+    """
+    Horizontal bar chart showing how a population narrows through sequential stages
+     -> e.g. denoised candidates -> passed quality gate
+
+    Generic on purpose (any ordered dict of stage -> count), so it can be reused for
+    other sequential-narrowing summaries, not just the 03d rescue funnel.
+
+    Parameters
+    ----------
+    counts  : dict — ordered {stage_label: count}, first entry should be the largest
+                     (starting) population
+    run_dir : str  — output directory
+    stamp   : str  — run timestamp, used in the default output filename
+    title   : str  — figure title
+    fname   : str or None — output filename; defaults to f"rescue_funnel_{stamp}.png"
+
+    Returns
+    -------
+    out_path : str
+    """
+    labels = list(counts.keys())
+    values = list(counts.values())
+    total  = values[0] if values else 0
+    colors = plt.cm.Blues(np.linspace(0.85, 0.4, max(len(values), 1)))
+
+    fig, ax = plt.subplots(figsize=(9, 1.2 + 1.1 * max(len(values), 1)))
+    bars = ax.barh(range(len(values)), values, color=colors, edgecolor='white', height=0.6)
+    ax.set_yticks(range(len(values)))
+    ax.set_yticklabels(labels, fontsize=12, fontweight='bold')
+    ax.invert_yaxis()
+    ax.set_xlabel("Count", fontsize=12, fontweight='bold')
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.tick_params(axis='x', labelsize=11)
+
+    for bar, val in zip(bars, values):
+        pct = 100 * val / total if total > 0 else 0
+        ax.text(val + max(values, default=0) * 0.015, bar.get_y() + bar.get_height() / 2,
+                f"{val:,}  ({pct:.1f}%)", va='center', fontsize=11, color='navy')
+
+    ax.set_xlim(0, max(values, default=1) * 1.22)
+    plt.tight_layout()
+
+    fname = fname or f"rescue_funnel_{stamp}.png"
+    out_path = os.path.join(run_dir, fname)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  [SAVED] {os.path.basename(out_path)}")
+    return out_path
+
+
+def plot_denoise_fidelity(df, corr_col, snr_before_col, snr_after_col, rescued_col,
+                          run_dir, stamp, event_type="", noise_corr_col=None):
+    """
+    Two-panel sanity check on whether DeepDenoiser recovered genuine signal structure
+    or just invented smooth-looking content while boosting SNR
+
+    Left panel  : scatter of waveform correlation (raw vs. denoised, signal window)
+                  against log10 SNR gain — a real improvement should sit in the
+                  upper-right (high correlation AND higher SNR); high SNR gain with
+                  near-zero correlation is the signature of hallucinated structure
+                  rather than recovered signal.
+    Right panel : histograms of the signal-window correlation vs. the noise-window
+                  correlation across all candidates — a well-behaved denoiser keeps
+                  the signal-window correlation noticeably higher than the noise-window
+                  one (noise successfully suppressed, not reproduced).
+
+    Parameters
+    ----------
+    df              : pd.DataFrame — one row per rescue candidate
+    corr_col        : str — column with the signal-window correlation
+                      (see detection.compute_denoise_correlation)
+    snr_before_col, snr_after_col : str — SNR columns used for the x-axis SNR gain
+    rescued_col     : str — boolean column, True if the candidate passes the gate
+                      after denoising
+    run_dir, stamp, event_type : see plot_snr_before_after
+    noise_corr_col  : str or None — column with the noise-window correlation; if
+                      given, overlaid on the right panel
+
+    Returns
+    -------
+    out_path : str
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5.5))
+
+    x_before = df[snr_before_col].to_numpy(dtype=float)
+    x_after  = df[snr_after_col].to_numpy(dtype=float)
+    corr     = df[corr_col].to_numpy(dtype=float)
+    rescued  = df[rescued_col].astype(bool).to_numpy()
+
+    valid  = np.isfinite(x_before) & np.isfinite(x_after) & np.isfinite(corr) & (x_before > 0) & (x_after > 0)
+    gain   = np.log10(x_after[valid] / x_before[valid])
+    corr_v = corr[valid]
+    resc_v = rescued[valid]
+
+    if len(gain) == 0:
+        ax1.text(0.5, 0.5, "No valid data", ha='center', va='center', transform=ax1.transAxes)
+    else:
+        ax1.scatter(corr_v[~resc_v], gain[~resc_v], s=22, color='lightgrey', edgecolors='grey',
+                   linewidths=0.4, alpha=0.7, label='Still fails gate')
+        ax1.scatter(corr_v[resc_v], gain[resc_v], s=28, color='#2ca02c', edgecolors='black',
+                   linewidths=0.4, alpha=0.85, label='Passes gate (rescued)')
+        ax1.axhline(0, color='k', linestyle='--', linewidth=1.0, alpha=0.6)
+        ax1.axvspan(-1.05, 0.15, color='red', alpha=0.06, zorder=0)
+        ax1.text(0.02, 0.02, "low-correlation zone\n(possible hallucination)",
+                 transform=ax1.transAxes, fontsize=8.5, color='#a33', va='bottom', ha='left')
+        ax1.legend(fontsize=9, loc='upper left')
+    ax1.set_xlim(-1.05, 1.05)
+    ax1.set_xlabel("Correlation (raw vs. denoised, signal window)", fontsize=11, fontweight='bold')
+    ax1.set_ylabel("log$_{10}$(SNR after / before)", fontsize=11, fontweight='bold')
+    ax1.set_title("Waveform fidelity vs. SNR gain", fontsize=13, fontweight='bold')
+    ax1.grid(True, alpha=0.25)
+
+    corr_sig_all = corr[np.isfinite(corr)]
+    if len(corr_sig_all) > 0:
+        ax2.hist(corr_sig_all, bins=30, range=(-1, 1), color='#2ca02c', alpha=0.6,
+                edgecolor='white', label='Signal window')
+    if noise_corr_col is not None and noise_corr_col in df.columns:
+        noise_corr = df[noise_corr_col].to_numpy(dtype=float)
+        noise_corr = noise_corr[np.isfinite(noise_corr)]
+        if len(noise_corr) > 0:
+            ax2.hist(noise_corr, bins=30, range=(-1, 1), color='grey', alpha=0.5,
+                    edgecolor='white', label='Noise window')
+    ax2.set_xlabel("Correlation (raw vs. denoised)", fontsize=11, fontweight='bold')
+    ax2.set_ylabel("Number of events", fontsize=12, fontweight='bold')
+    ax2.set_title("Signal vs. noise window correlation", fontsize=13, fontweight='bold')
+    ax2.legend(fontsize=9)
+    ax2.grid(True, alpha=0.25)
+
+    fig.suptitle(f"DeepDenoiser fidelity check — {event_type}".strip(" —"),
+                fontsize=15, fontweight='bold', y=1.03)
+    plt.tight_layout()
+
+    fname = f"denoise_fidelity_{stamp}.png"
+    out_path = os.path.join(run_dir, fname)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  [SAVED] {fname}")
+    return out_path

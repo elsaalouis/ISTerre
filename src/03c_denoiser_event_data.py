@@ -1,17 +1,28 @@
 """
-03c_denoiser_icequake_data.py
-==============================
+03c_denoiser_event_data.py
+===========================
 ISTerre internship — Environmental seismology in glaciology
 Author : Elsa Louis
-Date   : June 2026
+Date   : June 2026 (generalized July 2026)
 
-Prepare data for fine-tuning DeepDenoiser (Zhu et al., 2019) on ice quake signals, and run DeepDenoiser inference to produce denoised waveforms
+Prepare data for fine-tuning DeepDenoiser (Zhu et al., 2019) on a chosen event class's
+signals, and run DeepDenoiser inference to produce denoised waveforms for the events of
+that class that currently fail the SNR quality gate.
 
 Why?
 ----
-The ice quake class only has 894 quality-filtered windows (3 % of the training set)
-Many more ice quake events exist in the catalog but fail the SNR quality gate
- -> denoising those low-SNR signals may boost their SNR enough to pass the gate, growing the training set for scripts 06a/06b
+Any event class can be under-represented in the quality-filtered training set because
+many of its catalog rows fail the SNR gate (weak/noisy detections). Denoising those
+low-SNR signals may boost their SNR enough to pass the gate, growing the training set
+for scripts 06b/06c.
+
+  e.g. ice quake (2026-06 run): 2,753 GOOD / 2,669 RESCUE out of 5,422 rows
+       rockslide (2026-07 catalog): 12,533 GOOD / 14,148 RESCUE out of 26,681 rows
+
+Which event class this run targets is set by EVENT_TYPE below — nothing else in this
+script is class-specific. Re-running with a different EVENT_TYPE (any value present in
+the catalog's `event_type` column: "ice quake", "rockslide", "earthquake", ...) fine-tunes
+a DeepDenoiser model on that class's own signal/noise characteristics.
 
 Reference
 ---------
@@ -19,7 +30,7 @@ Reference
 
 Pipeline
 --------
-  STEP 1 — Load catalog CSV, keep quality ice quake rows
+  STEP 1 — Load catalog CSV, keep quality EVENT_TYPE rows
   STEP 2 — Extract 30 s signal windows from SDS (one .npz per event × station)
   STEP 3 — Extract 30 s pre-event noise windows from the same stations
   STEP 4 — Write signal_list.csv and noise_list.csv (DeepDenoiser index files)
@@ -27,7 +38,7 @@ Pipeline
 
 Output layout
 -------------
-  outputs_03c/run_YYYYMMDD_HHMMSS/
+  outputs_03c/<event_slug>/run_YYYYMMDD_HHMMSS/
       signal/              ← signal .npz files
       noise/               ← noise  .npz files
       signal_list.csv      ← fname + channels, for DeepDenoiser training/inference
@@ -41,6 +52,13 @@ Output layout
   data      float32  shape (3000, 3)  — 30 s at 100 Hz, 3 components (E, N, Z). If only Z is available on the station, it is replicated into all three slots so the existing DeepDenoiser code needs no edit.
   itp       int      — sample index of the signal onset within the 30 s window = PRE_PAD_S × TARGET_FS  (e.g. 10 s × 100 = sample 1000)
   channels  str      — station key "NET.STA" used to match signal ↔ noise files from the same station during training.
+
+Important — keep CSV_PATH in sync with 03d
+--------------------------------------------
+  03d_rescue_feature_extraction.py looks up per-row metadata (event_time, det_duration_s, ...)
+  by the row index embedded in each rescue_*.npz filename (`row_idx`), read straight back out
+  of the SAME catalog CSV. If CSV_PATH here changes, 03d's CATALOG_CSV must be updated to match,
+  or the row_idx lookup will silently return the wrong event's metadata.
 """
 
 
@@ -49,18 +67,28 @@ Output layout
 # SECTION 1 — CONFIGURATION
 # =============================================================================
 
+# -- Target event class ---------------------------------------------------------
+# Any value present in the catalog's `event_type` column: "ice quake", "rockslide",
+# "earthquake", or whatever future classes get added. Everything below adapts to it.
+EVENT_TYPE = "rockslide"
+EVENT_SLUG = EVENT_TYPE.lower().replace(" ", "_")   # used in output folder names
+
 # -- Inputs -------------------------------------------------------------------
 CSV_PATH = (
-    "/data/failles/louisels/project/results/outputs_04a/groult/"
-    "run_20260531_104936/catalog_windows_20260531_104936.csv"
+    r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog"
+    r"\all-99-features-recent\catalog_windows_20260707_165719.csv"
 )
 
 SDS_ROOT    = "/data/sig/SDS"
 OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_03c"
 
-# -- Quality gate (same thresholds as 03b / 06b) ------------------------------
-SNR_FULL_MEAN_MIN  = 2.70
-SNR_S2N_MEDIAN_MIN = 20.99
+# -- Quality gate (same thresholds as 03b / 05a / 06b / 06c) ------------------
+# NOTE: these are GLOBAL thresholds — 05a's ROC/Youden analysis pooled all event
+# classes together (no per-class calibration). They are reused as-is for any
+# EVENT_TYPE; if a class's rescue rate looks off, that's a reason to revisit 05a
+# per-class, not to hand-tune a value here.
+SNR_FULL_MEAN_MIN  = 1.856    # 05a ROC-optimal  (AUC=0.700, TPR=0.673, FPR=0.392)
+SNR_S2N_MEDIAN_MIN = 10.503   # 05a ROC-optimal  (AUC=0.703, TPR=0.749, FPR=0.445)
 
 # -- DeepDenoiser directory (where predict.py lives) --------------------------
 DEEPDENOISER_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\src\deepdenoiser"
@@ -68,12 +96,12 @@ DEEPDENOISER_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\pr
 # -- Trained model checkpoint for inference -----------------------------------
 # Set to the path of a trained checkpoint folder, e.g.: MODEL_DIR = "/data/failles/louisels/project/results/deepdenoiser/log/260601-120000"
 # Set to None to SKIP inference and prepare data only
-MODEL_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_icequake_data\model-260706-130450"
+MODEL_DIR = None
 
 # -- Existing run directory (inference-only shortcut) -------------------------
 # When BOTH MODEL_DIR and EXISTING_RUN_DIR are set, the script skips ALL extraction steps (Sections 3–6b: SDS, signal, noise, rescue) and runs
 # predict.py directly on the rescue files from that previous run. Set to None to run the full pipeline (extract everything from SDS).
-EXISTING_RUN_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_icequake_data\run_20260605_102106"
+EXISTING_RUN_DIR = None
 
 # -- Waveform extraction parameters ------------------------------------------
 TARGET_FS  = 100      # [Hz]  target sampling rate (DeepDenoiser default)
@@ -95,6 +123,7 @@ HORIZONTAL_SUFFIXES = [("N", "E"), ("2", "1")]
 # =============================================================================
 
 import os
+import re
 import sys
 import subprocess
 import traceback
@@ -111,6 +140,47 @@ from run_setup import create_run_dir, setup_logging, connect_sds, set_matplotlib
 from preprocessing import load_3component
 
 
+def fix_checkpoint_paths(model_dir):
+    """
+    Rewrite the TF 'checkpoint' file in model_dir so model_checkpoint_path /
+    all_model_checkpoint_paths use just the basename instead of the absolute
+    path recorded at save time (e.g. a Colab Drive path like
+    /content/drive/MyDrive/.../log/<run>/model_49.ckpt).
+
+    TF resolves relative paths in this file relative to the file's own
+    directory, so this makes a checkpoint trained on Colab and downloaded
+    locally work with tf.train.latest_checkpoint() again. Without this fix,
+    latest_checkpoint() silently returns None and saver.restore() crashes
+    with "Can't load save_path when it is None."
+
+    Safe to call every time — no-op if paths are already relative.
+    """
+    ckpt_path = os.path.join(model_dir, "checkpoint")
+    if not os.path.isfile(ckpt_path):
+        return
+
+    with open(ckpt_path, "r") as f:
+        lines = f.readlines()
+
+    fixed_lines = []
+    changed = False
+    for line in lines:
+        m = re.match(r'^(model_checkpoint_path|all_model_checkpoint_paths):\s*"(.*)"\s*$', line)
+        if m:
+            key, path = m.group(1), m.group(2)
+            base = os.path.basename(path)
+            if base != path:
+                changed = True
+            fixed_lines.append(f'{key}: "{base}"\n')
+        else:
+            fixed_lines.append(line)
+
+    if changed:
+        with open(ckpt_path, "w") as f:
+            f.writelines(fixed_lines)
+        print(f"  [FIXED] Rewrote checkpoint to relative paths: {ckpt_path}")
+
+
 if MODEL_DIR is not None and EXISTING_RUN_DIR is not None:
     rescue_dir      = os.path.join(EXISTING_RUN_DIR, "rescue")
     rescue_csv_path = os.path.join(EXISTING_RUN_DIR, "rescue_list.csv")
@@ -124,10 +194,13 @@ if MODEL_DIR is not None and EXISTING_RUN_DIR is not None:
     print(f"\n{'='*65}")
     print("  INFERENCE-ONLY MODE — skipping SDS extraction")
     print(f"{'='*65}")
+    print(f"  Event type   : {EVENT_TYPE}")
     print(f"  Existing run : {EXISTING_RUN_DIR}")
     print(f"  Rescue dir   : {rescue_dir}  ({n_rescue} files)")
     print(f"  Model        : {MODEL_DIR}")
     print(f"  Output       : {denoised_dir}")
+
+    fix_checkpoint_paths(MODEL_DIR)
 
     if n_rescue == 0:
         print("  [WARN] rescue_list.csv is empty — nothing to denoise.")
@@ -156,11 +229,11 @@ if MODEL_DIR is not None and EXISTING_RUN_DIR is not None:
     sys.exit(0)
 
 
-RUN_DIR, STAMP = create_run_dir(OUTPUT_DIR)
+RUN_DIR, STAMP = create_run_dir(os.path.join(OUTPUT_DIR, EVENT_SLUG))
 log_file, log_path = setup_logging(
     RUN_DIR,
-    script_name="03c_denoiser_icequake_data.py",
-    extra_info=f"CSV: {CSV_PATH}",
+    script_name="03c_denoiser_event_data.py",
+    extra_info=f"EVENT_TYPE: {EVENT_TYPE}  |  CSV: {CSV_PATH}",
 )
 set_matplotlib_defaults()
 
@@ -187,7 +260,7 @@ NT  = int(WINDOW_S  * TARGET_FS)          # total number of samples
 # =============================================================================
 
 print(f"\n{'='*65}")
-print("  STEP 1 — Load catalog and split ice quakes into good / rescue")
+print(f"  STEP 1 — Load catalog and split '{EVENT_TYPE}' into good / rescue")
 print(f"{'='*65}")
 print(f"  Quality gate : SNR_full_mean >= {SNR_FULL_MEAN_MIN}  "
       f"AND  SNR_s2n_median >= {SNR_S2N_MEDIAN_MIN}")
@@ -195,26 +268,26 @@ print(f"  Quality gate : SNR_full_mean >= {SNR_FULL_MEAN_MIN}  "
 df = pd.read_csv(CSV_PATH, low_memory=False)
 print(f"Loaded {len(df):,} rows × {len(df.columns)} columns.")
 
-# Keep only ice quake rows
-df_iq = df[df["event_type"] == "ice quake"].copy()
-print(f"After event_type filter: {len(df_iq):,} ice quake rows.")
+# Keep only rows of the target event class
+df_event = df[df["event_type"] == EVENT_TYPE].copy()
+print(f"After event_type filter: {len(df_event):,} '{EVENT_TYPE}' rows.")
 
 # Split into two populations — quality gate is the boundary
 mask_q = (
-    (df_iq["SNR_full_mean"]  >= SNR_FULL_MEAN_MIN) &
-    (df_iq["SNR_s2n_median"] >= SNR_S2N_MEDIAN_MIN)
+    (df_event["SNR_full_mean"]  >= SNR_FULL_MEAN_MIN) &
+    (df_event["SNR_s2n_median"] >= SNR_S2N_MEDIAN_MIN)
 )
 
 # Good: already pass the gate → used as clean training examples for train.py
-df_iq_good = df_iq[mask_q].copy()
+df_good = df_event[mask_q].copy()
 
 # Rescue targets: fail the gate → what we actually want to denoise
-df_iq_rescue = df_iq[~mask_q].copy()
+df_rescue = df_event[~mask_q].copy()
 
 print(f"\n  GOOD (pass gate, used for training data) : "
-      f"{len(df_iq_good):,} rows  ({df_iq_good['event_time'].nunique():,} events)")
+      f"{len(df_good):,} rows  ({df_good['event_time'].nunique():,} events)")
 print(f"  RESCUE (fail gate, targets for denoising): "
-      f"{len(df_iq_rescue):,} rows  ({df_iq_rescue['event_time'].nunique():,} events)")
+      f"{len(df_rescue):,} rows  ({df_rescue['event_time'].nunique():,} events)")
 print(f"\n  → Training data extracted from GOOD rows (clean signal examples).")
 print(f"  → predict.py will be run on RESCUE rows (low-SNR → denoise → re-check gate).")
 
@@ -236,7 +309,7 @@ n_signal_ok    = 0
 n_signal_skip  = 0
 signal_records = []   # list of {"fname": ..., "channels": ..., "net_sta": ...}
 
-for idx, row in df_iq_good.iterrows():
+for idx, row in df_good.iterrows():
     net   = row["network"]
     sta   = row["station"]
     chan  = row["channel"]          # e.g. "HHZ"
@@ -294,7 +367,7 @@ n_noise_ok    = 0
 n_noise_skip  = 0
 noise_records = []
 
-for idx, row in df_iq_good.iterrows():
+for idx, row in df_good.iterrows():
     net   = row["network"]
     sta   = row["station"]
     chan  = row["channel"]
@@ -355,13 +428,15 @@ print(f"  [SAVED] {noise_csv_path}   ({len(noise_records)} entries — training 
 
 # =============================================================================
 # SECTION 6b — EXTRACT RESCUE TARGETS  →  rescue/*.npz
-# IQ that FAIL the quality gate: extract their raw waveforms so DeepDenoiser can denoise them
+# Rows of EVENT_TYPE that FAIL the quality gate: extract their raw waveforms so
+# DeepDenoiser can denoise them
 # =============================================================================
 
 print(f"\n{'='*65}")
-print("  STEP 4b — Extract rescue targets from SDS  (low-SNR ice quakes)")
+print("  STEP 4b — Extract rescue targets from SDS  "
+      f"(low-SNR '{EVENT_TYPE}' rows)")
 print(f"{'='*65}")
-print(f"  Source: {len(df_iq_rescue):,} rows that failed the quality gate")
+print(f"  Source: {len(df_rescue):,} rows that failed the quality gate")
 
 rescue_dir = os.path.join(RUN_DIR, "rescue")
 os.makedirs(rescue_dir, exist_ok=True)
@@ -370,7 +445,7 @@ n_rescue_ok    = 0
 n_rescue_skip  = 0
 rescue_records = []
 
-for idx, row in df_iq_rescue.iterrows():
+for idx, row in df_rescue.iterrows():
     net  = row["network"]
     sta  = row["station"]
     chan = row["channel"]
@@ -418,7 +493,7 @@ print(f"  [SAVED] {rescue_csv_path}  ({len(rescue_records)} entries — rescue t
 
 # How to use these files for DeepDenoiser training:
 print(f"""
-  ── Training DeepDenoiser on your ice quake data ──────────────────────
+  ── Training DeepDenoiser on your '{EVENT_TYPE}' data ─────────────────
   Once having a validated dataset, run from {DEEPDENOISER_DIR}:
 
     python train.py \\
@@ -452,12 +527,14 @@ else:
     os.makedirs(denoised_dir, exist_ok=True)
     predict_script = os.path.join(DEEPDENOISER_DIR, "predict.py")
 
+    fix_checkpoint_paths(MODEL_DIR)
+
     if not os.path.isfile(predict_script):
         print(f"  [ERROR] predict.py not found at {predict_script}")
         print("  Make sure DEEPDENOISER_DIR points to the deepdenoiser source folder.")
     else:
         print(f"  Running predict.py on {len(rescue_records)} rescue targets ...")
-        print(f"  Input  : low-SNR ice quake waveforms (failed quality gate)")
+        print(f"  Input  : low-SNR '{EVENT_TYPE}' waveforms (failed quality gate)")
         print(f"  Model  : {MODEL_DIR}")
         print(f"  Output : {denoised_dir}")
         print(f"  After denoising, recompute SNR and re-apply the quality gate")
@@ -492,9 +569,10 @@ else:
 print(f"\n{'='*65}")
 print("  SUMMARY")
 print(f"{'='*65}")
-print(f"  Ice quake rows total              : {len(df_iq):>6,}")
-print(f"  ├─ GOOD  (pass gate, training)    : {len(df_iq_good):>6,}")
-print(f"  └─ RESCUE (fail gate, to denoise) : {len(df_iq_rescue):>6,}")
+print(f"  Event type                        : {EVENT_TYPE}")
+print(f"  '{EVENT_TYPE}' rows total{'':<{max(1, 18-len(EVENT_TYPE))}}: {len(df_event):>6,}")
+print(f"  ├─ GOOD  (pass gate, training)    : {len(df_good):>6,}")
+print(f"  └─ RESCUE (fail gate, to denoise) : {len(df_rescue):>6,}")
 print(f"  Signal .npz  (training, clean)    : {n_signal_ok:>6,}  → {signal_dir}/")
 print(f"  Noise  .npz  (training)           : {n_noise_ok:>6,}  → {noise_dir}/")
 print(f"  Rescue .npz  (inference targets)  : {n_rescue_ok:>6,}  → {rescue_dir}/")
@@ -506,9 +584,9 @@ if MODEL_DIR is not None:
 print(f"\n  Next steps:")
 print(f"    1. Visually inspect a few signal/noise pairs to check quality")
 print(f"    2. Train DeepDenoiser (see training command printed above)")
-print(f"    3. Set MODEL_DIR and re-run this script to denoise all ice quakes")
-print(f"    4. Recompute SNR on denoised waveforms → rescue low-SNR events")
-print(f"    5. Recompute 99 features on rescued events → grow training set for 06b")
+print(f"    3. Set MODEL_DIR and re-run this script to denoise all '{EVENT_TYPE}' rescue rows")
+print(f"    4. Recompute SNR on denoised waveforms → rescue low-SNR events (03d)")
+print(f"    5. Recompute 99 features on rescued events → grow training set for 06c")
 
 print(f"\n{'='*70}")
 print(f"  Run finished  : {__import__('time').strftime('%Y-%m-%d %H:%M:%S')}")

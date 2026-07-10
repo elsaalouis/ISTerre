@@ -8,6 +8,7 @@ Date   : April 2026
 Detection algorithms and associated helpers:
   - classic STA/LTA (scripts 01/02)
   - SNR computation for detected windows (script 04)
+  - denoiser fidelity metrics — raw vs. denoised correlation/energy ratio (script 03d)
   - window merging for the spectrogram-based detector (script 04)
   - kurtosis-based onset refiner for rockslides (Fuchs et al. 2018)
 """
@@ -181,6 +182,156 @@ def compute_snr(tr_filt, t_on, t_off):
         snr_dict['SNR_s2n_median']  = np.nan
 
     return snr_dict
+
+
+def compute_snr_numpy(full_signal, itp, det_duration_s, sps):
+    """
+    Numpy-only version of compute_snr — same metrics, no ObsPy required.
+
+    Used by scripts that work with raw numpy arrays (e.g. 03d post-denoiser
+    processing) where an ObsPy Trace is not available.
+
+    The window layout mirrors the DeepDenoiser 30 s NPZ convention:
+      noise_window  = full_signal[    0 : itp]              (pre-onset)
+      signal_window = full_signal[  itp : itp + dur_samp]   (post-onset)
+    where dur_samp = min(int(det_duration_s * sps), len(full_signal) - itp).
+
+    Parameters
+    ----------
+    full_signal    : 1D numpy array — waveform (e.g. 3000 samples at 100 Hz)
+    itp            : int   — onset sample index (noise/signal split point)
+    det_duration_s : float — event duration in seconds (from catalog)
+    sps            : float — sampling rate in Hz
+
+    Returns
+    -------
+    dict with keys: SNR, SNR_picking_5_5, SNR_picking_3_3, SNR_picking_1_3,
+                    SNR_full_mean, SNR_full_median, SNR_s2n_median
+    """
+    _NAN_DICT = {k: np.nan for k in ('SNR', 'SNR_picking_5_5', 'SNR_picking_3_3',
+                                      'SNR_picking_1_3', 'SNR_full_mean',
+                                      'SNR_full_median', 'SNR_s2n_median')}
+    n = len(full_signal)
+
+    # Noise window: everything before the onset
+    noise_win = full_signal[:itp]
+
+    # Signal window: onset to onset + duration (capped at array length)
+    dur_samp = max(int(det_duration_s * sps), 200)   # at least 200 samples
+    sig_end  = min(n, itp + dur_samp)
+    sig_win  = full_signal[itp:sig_end]
+
+    if len(noise_win) == 0 or len(sig_win) == 0:
+        return _NAN_DICT
+
+    env_s    = np.abs(sig_win)
+    env_n    = np.abs(noise_win)
+    mean_n   = float(np.mean(env_n))   or 1.0
+    median_n = float(np.median(env_n)) or 1.0
+
+    snr = {}
+
+    # Full-window mean / median  (primary quality-gate metrics)
+    snr['SNR_full_mean']   = float(np.mean(env_s))   / mean_n
+    snr['SNR_full_median'] = float(np.median(env_s)) / median_n
+    snr['SNR_s2n_median']  = signal2noise_median(noise_win, sig_win)
+
+    # Peak-centred SNR (5 s half-window around the amplitude maximum)
+    i_max    = int(env_s.argmax())
+    hw       = int(2.5 * sps)
+    peak_env = env_s[max(0, i_max - hw) : min(len(env_s), i_max + hw)]
+    snr['SNR'] = float(np.mean(peak_env)) / mean_n if len(peak_env) else np.nan
+
+    # Picking-window SNRs (signal N s after onset vs noise M s before onset)
+    for sig_sec, noi_sec, key in [(5, 5, 'SNR_picking_5_5'),
+                                   (3, 3, 'SNR_picking_3_3'),
+                                   (1, 3, 'SNR_picking_1_3')]:
+        s_w = full_signal[itp : min(n, itp + int(sig_sec * sps))]
+        n_w = full_signal[max(0, itp - int(noi_sec * sps)) : itp]
+        if len(s_w) == 0 or len(n_w) == 0:
+            snr[key] = np.nan
+        else:
+            snr[key] = float(np.mean(np.abs(s_w))) / (float(np.mean(np.abs(n_w))) or 1.0)
+
+    return snr
+
+
+
+# =============================================================================
+# DENOISER FIDELITY METRICS (script 03d)
+# =============================================================================
+
+def compute_denoise_correlation(raw_signal, denoised_signal, itp, det_duration_s, sps):
+    """
+    Compare a denoised waveform against its own raw (pre-denoiser) input to check
+    whether DeepDenoiser preserved genuine signal structure or is hallucinating it.
+
+    SNR alone can go up even when a denoiser just invents smooth-looking structure
+    rather than recovering the real event, so 03d_rescue_feature_extraction.py uses
+    this alongside the before/after SNR comparison as a sanity check: it reports how
+    well the denoised trace still resembles the raw input, separately in the noise
+    window and the signal window.
+
+    Window layout matches compute_snr_numpy:
+      noise_window  = full_signal[    0 : itp]              (pre-onset)
+      signal_window = full_signal[  itp : itp + dur_samp]   (post-onset)
+
+    Parameters
+    ----------
+    raw_signal      : 1D numpy array — original waveform before denoising
+    denoised_signal : 1D numpy array — DeepDenoiser output, aligned with raw_signal
+    itp             : int   — onset sample index (noise/signal split point)
+    det_duration_s  : float — event duration in seconds (from catalog)
+    sps             : float — sampling rate in Hz
+
+    Returns
+    -------
+    dict with keys:
+      corr_signal          — Pearson r between raw and denoised, signal window.
+                              Expect moderate-to-high if real structure was recovered;
+                              near-zero despite a large SNR gain is a red flag for
+                              hallucination.
+      corr_noise            — Pearson r between raw and denoised, noise window.
+                              Expect low — a well-behaved denoiser should not reproduce
+                              the noise it removed.
+      energy_ratio_signal   — std(denoised) / std(raw) in the signal window.
+                              Expect close to 1 — signal energy preserved, not erased.
+      energy_ratio_noise    — std(denoised) / std(raw) in the noise window.
+                              Expect << 1 — noise energy suppressed.
+    """
+    _NAN_DICT = {k: np.nan for k in ('corr_signal', 'corr_noise',
+                                      'energy_ratio_signal', 'energy_ratio_noise')}
+
+    n = min(len(raw_signal), len(denoised_signal))
+    raw_signal      = raw_signal[:n]
+    denoised_signal = denoised_signal[:n]
+
+    noise_raw = raw_signal[:itp]
+    noise_den = denoised_signal[:itp]
+
+    dur_samp = max(int(det_duration_s * sps), 200)
+    sig_end  = min(n, itp + dur_samp)
+    sig_raw  = raw_signal[itp:sig_end]
+    sig_den  = denoised_signal[itp:sig_end]
+
+    if len(noise_raw) < 2 or len(sig_raw) < 2:
+        return _NAN_DICT
+
+    def _safe_corr(a, b):
+        if np.std(a) == 0 or np.std(b) == 0:
+            return np.nan
+        return float(np.corrcoef(a, b)[0, 1])
+
+    def _safe_ratio(raw_win, den_win):
+        std_raw = np.std(raw_win)
+        return float(np.std(den_win) / std_raw) if std_raw > 0 else np.nan
+
+    return {
+        'corr_signal'        : _safe_corr(sig_raw, sig_den),
+        'corr_noise'         : _safe_corr(noise_raw, noise_den),
+        'energy_ratio_signal': _safe_ratio(sig_raw, sig_den),
+        'energy_ratio_noise' : _safe_ratio(noise_raw, noise_den),
+    }
 
 
 

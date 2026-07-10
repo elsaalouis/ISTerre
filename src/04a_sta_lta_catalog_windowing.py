@@ -13,7 +13,7 @@ For each seismic event in the ISTerre FDSN catalog:
   3. Detect the precise start and end of the event using the chosen method (classical or Groult 2026)
   4. Flag: does the station's P-wave pick fall inside the detected window?
   5. Optionally refine the onset with the kurtosis picker (rockslides, Fuchs 2018)
-  6. Extract 99 seismic features (Maggi/Hibert) from the detected window
+  6. Extract 99–103 seismic features (Maggi/Hibert + optional 3C polarization) from the detected window
   7. Compute 7 SNR metrics
   8. Save results to CSV and produce one diagnostic plot per event
 
@@ -34,7 +34,7 @@ Data sources
 Output
 ------
   catalog_windows_<stamp>.csv: one row per (event × station × detection)
-  event metadata  |  station  |  det_starttime / det_endtime / det_duration_s | origin_inside_det  |  origin_lag_s  |  pick_inside_det  |  pick_lag_s  |  quality_ok | 7 SNR cols  |  99 feature cols
+  event metadata  |  station  |  det_starttime / det_endtime / det_duration_s | origin_inside_det  |  origin_lag_s  |  pick_inside_det  |  pick_lag_s  |  quality_ok | 7 SNR cols  |  99 or 103 feature cols
 
   window_<etype>_<time>.png: diagnostic figure per event: waveform + characteristic function with detected windows
 """
@@ -100,10 +100,10 @@ MIN_DURAT_S = 2.0
 PAD_SEC = 5        # seconds added before t_on and after t_off for feature extraction only
 
 # -- Quality flag thresholds — from ROC analysis (script 05a) -----------------
-# SNR_full_mean  : AUC=0.653, ROC-optimal threshold=2.70  (TPR=0.507, FPR=0.271)
-# SNR_s2n_median : AUC=0.663, ROC-optimal threshold=20.99 (TPR=0.517, FPR=0.272)
-SNR_MEAN_MIN  = 2.70    # SNR_full_mean  >= this
-SNR_S2N_MIN   = 20.99   # SNR_s2n_median >= this
+# SNR_full_mean  : AUC=0.700, ROC-optimal threshold=1.856  (TPR=0.673, FPR=0.392)
+# SNR_s2n_median : AUC=0.703, ROC-optimal threshold=10.503 (TPR=0.749, FPR=0.445)
+SNR_MEAN_MIN  = 1.856    # SNR_full_mean  >= this
+SNR_S2N_MIN   = 10.503   # SNR_s2n_median >= this
 
 # -- Kurtosis onset refiner (Fuchs 2018) — rockslides only --------------------
 KURTOSIS_REFINE        = True
@@ -115,8 +115,13 @@ KURTOSIS_SEARCH_AFTER  = 1.0
 KURTOSIS_ETYPES        = ('rockslide', 'landslide')
 
 # -- Feature extraction -------------------------------------------------------
-FEATURE_FLAG = 0   # 0 = 99 features, vertical component only
-N_FEATURES   = 99
+# LOAD_3C = True : fetch N and E channels alongside Z and compute 4 polarization
+#                  parameters (rectilinP, azimuthP, dipP, Plani) in addition to the
+#                  99 Maggi/Hibert Z features → 103 features total.
+#                  Rows where horizontals are unavailable get NaN for the 4
+#                  polarization columns — HGB handles NaN natively.
+# LOAD_3C = False: Z-component only, 99 features (backward compatible).
+LOAD_3C = True
 
 # -- Checkpoint ---------------------------------------------------------------
 CHECKPOINT_EVERY = 20   # save a partial CSV every N successfully processed events (0 = disabled)
@@ -184,7 +189,12 @@ from run_setup import (
     fetch_inventory,
     set_matplotlib_defaults,
 )
-from features import FEATURE_NAMES, extract_features
+from features import (
+    FEATURE_NAMES, FEATURE_NAMES_3C, N_FEATURES_1C, N_FEATURES_3C,
+    extract_features,
+)
+_FEAT_NAMES = FEATURE_NAMES_3C if LOAD_3C else FEATURE_NAMES
+N_FEATURES  = N_FEATURES_3C    if LOAD_3C else N_FEATURES_1C
 from detection import compute_snr, refine_onset_kurtosis
 if DETECTION_METHOD == 'sta_lta':
     from detection import run_sta_lta
@@ -352,6 +362,71 @@ def detect_event(tr_vel, tr_filt, fs):
 
 
 # =============================================================================
+# SECTION 3b — 3-COMPONENT FETCH HELPER
+# =============================================================================
+
+def _fetch_3c_array(client_sds, net, sta, chan_z, t0, t1, z_data, fs):
+    """
+    Fetch horizontal (N and E) channels from SDS for a given window and combine
+    them with the already-loaded Z data into a (3, n_samples) array [Z, N, E].
+
+    Returns None if either N or E channel cannot be fetched — the caller will
+    leave polarization features as NaN for that row.
+
+    Parameters
+    ----------
+    client_sds : ObsPy SDS_Client
+    net, sta   : str — network and station codes
+    chan_z     : str — vertical channel code, e.g. "HHZ"
+    t0, t1     : UTCDateTime — start and end of the window
+    z_data     : 1D numpy array — already-loaded Z signal (n_samples,)
+    fs         : float — sampling rate of z_data [Hz]
+
+    Returns
+    -------
+    arr : np.ndarray, shape (3, n_samples), rows [Z, N, E]  or  None
+    """
+    base    = chan_z[:-1]               # e.g. "HH" from "HHZ"
+    n       = len(z_data)
+    h_pairs = [("N", "E"), ("1", "2")]  # suffix pairs to try in order
+
+    data_n = data_e = None
+
+    for suf_n, suf_e in h_pairs:
+        for suf, which in [(suf_n, "N"), (suf_e, "E")]:
+            if which == "N" and data_n is not None:
+                continue
+            if which == "E" and data_e is not None:
+                continue
+            try:
+                st_h = client_sds.get_waveforms(net, sta, "*", base + suf, t0, t1)
+                if not st_h or len(st_h[0].data) == 0:
+                    continue
+                tr_h = st_h[0].copy()
+                tr_h.detrend("demean")
+                # Resample to match Z if sampling rate differs
+                if abs(tr_h.stats.sampling_rate - fs) > 1:
+                    tr_h.resample(fs)
+                d = tr_h.data[:n].astype(float)
+                if len(d) < n:
+                    d = np.pad(d, (0, n - len(d)))
+                if which == "N":
+                    data_n = d
+                else:
+                    data_e = d
+            except Exception:
+                continue
+        if data_n is not None and data_e is not None:
+            break
+
+    if data_n is None or data_e is None:
+        return None   # horizontals unavailable → caller will use NaN polarization
+
+    return np.stack([z_data.astype(float), data_n, data_e])   # (3, n)
+
+
+
+# =============================================================================
 # SECTION 4 — MAIN PROCESSING LOOP
 # For each catalog event × station: load → detect → flag → features + SNR → row + plot
 # =============================================================================
@@ -499,11 +574,16 @@ for i, ev in enumerate(batch):
             if tr_cut.stats.npts < 10:
                 continue
 
-            feats = extract_features(
-                tr_cut.data, fs,
-                n_features   = N_FEATURES,
-                feature_flag = FEATURE_FLAG,
-            )
+            # 3C: fetch horizontal channels for polarization features
+            data_3c = None
+            if LOAD_3C:
+                data_3c = _fetch_3c_array(
+                    client_sds, net, sta, chan,
+                    t_cut_on, t_cut_off,
+                    tr_cut.data, fs,
+                )
+
+            feats = extract_features(tr_cut.data, fs, data_3c=data_3c)
 
             snr = compute_snr(tr_filt, t_on, t_off)
 
@@ -540,7 +620,7 @@ for i, ev in enumerate(batch):
                 # 7 SNR metrics
                 **snr,
             }
-            for fname, fval in zip(FEATURE_NAMES, feats):
+            for fname, fval in zip(_FEAT_NAMES, feats):
                 row[fname] = fval
 
             all_rows.append(row)
@@ -574,7 +654,7 @@ for i, ev in enumerate(batch):
             'SNR', 'SNR_picking_5_5', 'SNR_picking_3_3',
             'SNR_picking_1_3', 'SNR_full_mean', 'SNR_full_median', 'SNR_s2n_median',
         ]
-        ordered_chk = meta_cols_chk + FEATURE_NAMES
+        ordered_chk = meta_cols_chk + _FEAT_NAMES
         df_chk = df_chk[[c for c in ordered_chk if c in df_chk.columns]]
         chk_path = os.path.join(RUN_DIR, f"catalog_windows_checkpoint_{n_ev_ok}ev.csv")
         df_chk.to_csv(chk_path, index=False)
@@ -603,14 +683,15 @@ else:
         'SNR', 'SNR_picking_5_5', 'SNR_picking_3_3',
         'SNR_picking_1_3', 'SNR_full_mean', 'SNR_full_median', 'SNR_s2n_median',
     ]
-    ordered_cols = meta_cols + FEATURE_NAMES
+    ordered_cols = meta_cols + _FEAT_NAMES
     df = df[[c for c in ordered_cols if c in df.columns]]
 
     csv_path = os.path.join(RUN_DIR, f"catalog_windows_{_RUN_STAMP}.csv")
     df.to_csv(csv_path, index=False)
 
     print(f"\n[SAVED] {csv_path}")
-    print(f"        {df.shape[0]} rows × {df.shape[1]} columns  [{DETECTION_METHOD}]")
+    print(f"        {df.shape[0]} rows × {df.shape[1]} columns  "
+          f"[{DETECTION_METHOD}]  [{N_FEATURES} features, 3C={'on' if LOAD_3C else 'off'}]")
 
     print(f"\n  {'Event type':<22} {'n_rows':>7}  "
           f"{'origin_inside':>14}  {'pick_inside':>12}  {'quality_ok':>10}")

@@ -3,12 +3,32 @@ features.py
 ===========
 ISTerre internship — Environmental seismology in glaciology
 Author : Elsa Louis
-Date   : April 2026
+Date   : April 2026 (3C extension: July 2026)
 
-The 99-feature set defined in seismic_params.py (Maggi / Hibert):
-  - FEATURE_NAMES: column names for the output CSV
-  - FEATURE_DESCRIPTIONS: description of each feature
-  - extract_features(): safe wrapper around calculate_all_attributes()
+Two feature sets are defined here:
+
+  1C mode (default, backward compatible)
+  ----------------------------------------
+  FEATURE_NAMES / N_FEATURES_1C = 99
+  Z-component only: waveform shape, spectral, pseudo-spectrogram,
+  extended frequency bands, energy differences/ratios, misc.
+
+  3C mode (new, option 2e)
+  ----------------------------------------
+  FEATURE_NAMES_3C / N_FEATURES_3C = 103
+  All 99 Z features PLUS 4 polarization parameters computed from
+  the [Z, N, E] particle-motion trajectory at the P-wave onset:
+    rectilinP  — rectilinearity (0=spherical, 1=linear)
+    azimuthP   — azimuth of principal motion axis [degrees]
+    dipP       — dip (vertical incidence angle) of principal axis [degrees]
+    Plani      — planarity (0=linear, 1=planar)
+
+  Caller API:
+    feats = extract_features(signal_z, sps)              # → (99,)  1C
+    feats = extract_features(signal_z, sps, data_3c=X)  # → (103,) 3C
+    where X is a (3, n_samples) array with rows [Z, N, E].
+    Polarization features are set to NaN when X is None or computation fails;
+    HGB handles NaN natively so no imputation is needed.
 """
 
 import numpy as np
@@ -18,8 +38,7 @@ import numpy as np
 # FEATURE NAMES AND DESCRIPTIONS
 # =============================================================================
 
-# Feature names — used as CSV column headers and in all scripts
-# order matches the numbered comments in seismic_params.py (feat_01 → index 0, etc.)
+# 99 Z-only feature names — CSV column headers, in order matching seismic_params.py
 FEATURE_NAMES = [
     # Waveform shape (1–24)
     "duration",                      # 1
@@ -132,12 +151,24 @@ FEATURE_NAMES = [
 # Sanity check — catches accidental edits that break the 99-feature contract
 assert len(FEATURE_NAMES) == 99, f"FEATURE_NAMES must have 99 entries, got {len(FEATURE_NAMES)}"
 
+# ── 3C extension: 4 polarization features appended after the 99 Z features ───
+POLARIZATION_NAMES = [
+    "rectilinP",   # 100 — rectilinearity at P-onset (0=spherical, 1=linear)
+    "azimuthP",    # 101 — azimuth of principal motion eigenvector [degrees]
+    "dipP",        # 102 — dip (vertical incidence angle) [degrees]
+    "Plani",       # 103 — planarity (0=linear, 1=planar)
+]
+
+FEATURE_NAMES_3C = FEATURE_NAMES + POLARIZATION_NAMES   # length 103
+
+# Convenience constants
+N_FEATURES_1C = 99    # 1C mode: Z only
+N_FEATURES_3C = 103   # 3C mode: Z + polarization
+
 
 # =============================================================================
-# FEATURE GROUPS — semantic grouping of the 99 features
+# FEATURE GROUPS — semantic grouping
 # =============================================================================
-# Maps a readable group label to the list of feature names in that group
-# Used by script 03b for correlation heatmap axis annotations and grouped importance plots
 
 FEATURE_GROUPS = {
     "Waveform shape":          FEATURE_NAMES[0:24],
@@ -149,22 +180,27 @@ FEATURE_GROUPS = {
     "Misc":                   FEATURE_NAMES[96:99],
 }
 
-# Flat mapping: feature_name → group label  (used by get_feature_group())
-_FEAT_TO_GROUP = {
-    feat: grp
-    for grp, feats in FEATURE_GROUPS.items()
-    for feat in feats
+FEATURE_GROUPS_3C = {
+    **FEATURE_GROUPS,
+    "Polarization":           POLARIZATION_NAMES,
 }
 
+# Flat feature → group mappings
+_FEAT_TO_GROUP    = {f: g for g, fs in FEATURE_GROUPS.items()    for f in fs}
+_FEAT_TO_GROUP_3C = {f: g for g, fs in FEATURE_GROUPS_3C.items() for f in fs}
 
-def get_feature_group(feature_name):
+
+def get_feature_group(feature_name, use_3c=False):
     """ Return the group label for a given feature name """
-    return _FEAT_TO_GROUP.get(feature_name, "Unknown")
+    mapping = _FEAT_TO_GROUP_3C if use_3c else _FEAT_TO_GROUP
+    return mapping.get(feature_name, "Unknown")
 
 
-def feature_group_array():
-    """ Return a numpy array of group labels, one per feature, in FEATURE_NAMES order """
-    return [_FEAT_TO_GROUP[f] for f in FEATURE_NAMES]
+def feature_group_array(use_3c=False):
+    """ Return a list of group labels, one per feature, in FEATURE_NAMES order """
+    names = FEATURE_NAMES_3C if use_3c else FEATURE_NAMES
+    mapping = _FEAT_TO_GROUP_3C if use_3c else _FEAT_TO_GROUP
+    return [mapping[f] for f in names]
 
 
 # =============================================================================
@@ -189,31 +225,54 @@ def rename_legacy_columns(df):
 # FEATURE EXTRACTION
 # =============================================================================
 
-def extract_features(data, sps, n_features=99, feature_flag=0):
+def extract_features(data, sps, data_3c=None):
     """
-    Safe wrapper around calculate_all_attributes() from seismic_params.py
-    
-    Calculate_all_attributes() returns shape (1, N), a 2D array
-     -> .flatten() is needed every time to get the expected 1D (N,) array
-    
-    try/except: if one trace is corrupted, the whole pipeline (24h of data) must not crash 
-     -> the trace gets a row of NaNs that can be filtered out later
+    Extract seismic features from a Z-component signal.
+
+    Always computes the 99 Z-only features (Maggi/Hibert) from seismic_params.py.
+    When data_3c is provided, appends 4 polarization parameters computed from
+    the [Z, N, E] particle-motion trajectory → 103 features total.
 
     Parameters
     ----------
-    data         : numpy array — signal samples (from a preprocessed Trace)
-    sps          : float — sampling rate in Hz
-    n_features   : int — expected number of features (default 99)
-    feature_flag : int — 0 = 99 features (vertical only), 1 = 62 features (3-component)
+    data    : 1D numpy array — Z-component signal (detection window, onset to end)
+              This is the same signal passed to calculate_all_attributes().
+    sps     : float — sampling rate in Hz
+    data_3c : (3, n_samples) numpy array  or  None
+              3-component aligned window with rows [Z, N, E].
+              When None → 99 features (backward compatible, same as before).
+              When provided → 103 features; polarization set to NaN if computation
+              fails (e.g. too few samples, degenerate covariance matrix).
+              HGB handles NaN natively — no imputation needed.
 
     Returns
     -------
-    feats : numpy array, shape (n_features,)
+    feats : 1D numpy array, shape (99,) or (103,)
+            NaN values indicate failed computation for that feature.
     """
+    n_out = N_FEATURES_3C if data_3c is not None else N_FEATURES_1C
+
     try:
-        from seismic_params import calculate_all_attributes
-        feats = calculate_all_attributes(data, sps, feature_flag)
-        return feats.flatten()   # (1, N) → (N,)
+        from seismic_params import calculate_all_attributes, get_polarization_stuff
+
+        # ── Step 1: always compute the 99 Z-only features ────────────────────
+        feats_99 = calculate_all_attributes(data, sps, flag=0).flatten()
+
+        if data_3c is None:
+            return feats_99   # backward-compatible 99-feature path
+
+        # ── Step 2: append 4 polarization features ────────────────────────────
+        try:
+            rectilinP, azimuthP, dipP, Plani = get_polarization_stuff(data_3c, sps)
+            pol = np.array([rectilinP, azimuthP, dipP, Plani], dtype=float)
+            if not np.all(np.isfinite(pol)):
+                pol = np.full(4, np.nan)
+        except Exception as e:
+            print(f"        [WARN] Polarization failed: {e}")
+            pol = np.full(4, np.nan)
+
+        return np.concatenate([feats_99, pol])   # (103,)
+
     except Exception as e:
         print(f"        [WARN] Feature extraction failed: {e}")
-        return np.full(n_features, np.nan)
+        return np.full(n_out, np.nan)
