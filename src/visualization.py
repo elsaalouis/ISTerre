@@ -16,6 +16,7 @@ All figure-generating functions used across the pipeline scripts:
   - plot_denoise_fidelity()      : waveform correlation vs SNR gain    (script 03d)
   - plot_threshold_by_type()     : Youden threshold per event type     (script 05a)
   - plot_roc_by_type()           : ROC curves faceted by event type    (script 05a)
+  - plot_waveform_comparison()   : raw vs denoised waveform, one event (script 03d)
 """
 
 import os
@@ -24,7 +25,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from obspy import UTCDateTime
-from scipy.signal import welch
+from scipy.signal import welch, butter, filtfilt
 
 
 # =============================================================================
@@ -1076,4 +1077,111 @@ def plot_roc_by_type(roc_results_by_type, metrics, metric_labels, run_dir, stamp
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"    [SAVED] {fname}")
+    return out_path
+
+
+
+# =============================================================================
+# SINGLE-EVENT WAVEFORM COMPARISON (script 03d)
+# =============================================================================
+# Spot-check individual rescue candidates — complements the aggregate QC plots
+# (plot_snr_before_after, plot_delta_snr_distribution, plot_denoise_fidelity),
+# which show population-level trends but never show what a single waveform
+# actually looks like before/after denoising.
+
+def _bandpass_for_display(sig, sps, freqmin=None, freqmax=None, order=4):
+    """
+    Zero-phase Butterworth filter — for VISUALIZATION only. Never used upstream
+    of SNR/feature computation, which must stay on the unfiltered signal.
+
+    freqmin/freqmax follow ObsPy's convention: both given -> bandpass, only one
+    given -> high-/low-pass, neither -> signal returned unchanged.
+    """
+    if not freqmin and not freqmax:
+        return sig
+    nyq = 0.5 * sps
+    if freqmin and freqmax:
+        b, a = butter(order, [freqmin / nyq, min(freqmax / nyq, 0.999)], btype='band')
+    elif freqmax:
+        b, a = butter(order, min(freqmax / nyq, 0.999), btype='low')
+    else:
+        b, a = butter(order, freqmin / nyq, btype='high')
+    return filtfilt(b, a, sig)
+
+
+def plot_waveform_comparison(raw_signal, denoised_signal, itp, sps, run_dir, stamp,
+                              fname_tag, event_type="", snr_before=None, snr_after=None,
+                              metric_label="", freqmin=None, freqmax=None):
+    """
+    Two-panel time-domain plot for one rescue candidate: raw (pre-denoiser) on
+    top, DeepDenoiser output below, sharing a time axis with the P-onset marked
+
+    Panels use independent y-scales (denoised amplitude is often much smaller
+    than raw once noise is suppressed) — read amplitude within each panel, not
+    across panels.
+
+    Parameters
+    ----------
+    raw_signal, denoised_signal : 1-D np.ndarray, same length, same sampling rate
+    itp            : int   — sample index of the P-wave onset within the window
+    sps            : float — sampling rate (Hz)
+    run_dir, stamp : str — output directory / run timestamp, used in the filename
+    fname_tag      : str — candidate identifier (e.g. the rescue .npz basename),
+                     used in the title and to make the output filename unique
+    event_type     : str — shown in the title
+    snr_before, snr_after : float or None — annotated in the title if both given
+    metric_label   : str — name of the SNR metric used for snr_before/after
+    freqmin, freqmax : float or None — optional display-only bandpass (Hz),
+                     applied to BOTH panels identically before plotting; SNR
+                     values passed in via snr_before/snr_after are untouched
+                     (they were computed upstream on the unfiltered signal)
+
+    Returns
+    -------
+    out_path : str
+    """
+    raw_plot      = _bandpass_for_display(raw_signal,      sps, freqmin, freqmax)
+    denoised_plot = _bandpass_for_display(denoised_signal, sps, freqmin, freqmax)
+
+    t       = np.arange(len(raw_signal)) / sps
+    t_onset = itp / sps
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 6.5), sharex=True)
+
+    panels = [
+        (ax1, raw_plot,      "Raw (pre-denoiser)",       '#d62728'),
+        (ax2, denoised_plot, "Denoised (DeepDenoiser)",  '#2ca02c'),
+    ]
+    for ax, sig, label, color in panels:
+        ax.plot(t, sig, lw=0.7, color=color)
+        ax.axvline(t_onset, color='k', linestyle='--', linewidth=1.2, alpha=0.8)
+        ax.set_ylabel("Amplitude", fontsize=10, fontweight='bold')
+        ax.set_title(label, fontsize=11, fontweight='bold', loc='left')
+        ax.grid(True, alpha=0.25)
+        ax.margins(x=0)
+
+    ax1.text(t_onset, ax1.get_ylim()[1] * 0.9, ' onset', fontsize=8, va='top')
+    ax2.set_xlabel("Time (s)", fontsize=10, fontweight='bold')
+
+    snr_str = ""
+    if (snr_before is not None and snr_after is not None
+            and np.isfinite(snr_before) and np.isfinite(snr_after)):
+        snr_str = f"   |   {metric_label}: {snr_before:.2f} → {snr_after:.2f}"
+
+    filt_str = ""
+    if freqmin or freqmax:
+        lo  = f"{freqmin:g}" if freqmin else "0"
+        hi  = f"{freqmax:g}" if freqmax else "Nyquist"
+        filt_str = f"   |   bandpass {lo}-{hi} Hz (display only)"
+
+    fig.suptitle(f"Waveform comparison — {event_type}   ({fname_tag}){snr_str}{filt_str}".strip(),
+                 fontsize=12, fontweight='bold')
+    plt.tight_layout()
+
+    safe_tag  = fname_tag.replace('/', '_').replace('\\', '_')
+    fname_out = f"waveform_compare_{safe_tag}_{stamp}.png"
+    out_path  = os.path.join(run_dir, fname_out)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"    [SAVED] {fname_out}")
     return out_path

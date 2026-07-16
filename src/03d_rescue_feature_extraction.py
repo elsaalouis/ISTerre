@@ -31,7 +31,7 @@ itp = 1000 is hardcoded by 03c (10 s of noise before the onset)
 SNR metrics (same definitions as detection.py):
   SNR_full_mean   = mean(|sig|)   / mean(|noise|)
   SNR_full_median = median(|sig|) / median(|noise|)
-  SNR_s2n_median  = 99.5th pct(|sig|) / MAD(noise)    ← tutor's robust metric
+  SNR_s2n_median  = 99.5th pct(|sig|) / MAD(noise)   
 
 Quality gate (per-event-type ROC-optimal thresholds from 05a — see snr_summary_by_type_*.csv)
   SNR_full_mean  >= SNR_FULL_MEAN_MIN
@@ -44,12 +44,12 @@ Outputs
 -------
   rescue_catalog_<stamp>.csv         — accepted (gate-passing) rows, schema matches 04a
   denoise_qc_<stamp>.csv             — one row per rescue candidate (before/after SNR + fidelity metrics)
-  snr_improvement_summary_<stamp>.csv — gate-INDEPENDENT summary: how much SNR improved overall,
-                                        across every denoised candidate regardless of pass/fail
+  snr_improvement_summary_<stamp>.csv — gate-INDEPENDENT summary: how much SNR improved overall, across every denoised candidate regardless of pass/fail
   snr_before_after_<stamp>.png       — paired SNR scatter, raw vs denoised, per metric (all candidates)
   snr_delta_distribution_<stamp>.png — histogram of log10(SNR after/before), per metric (all candidates)
   rescue_funnel_<stamp>.png          — candidates -> passed gate, as a funnel bar chart
   denoise_fidelity_<stamp>.png       — waveform correlation (raw vs denoised) vs SNR gain
+  waveform_compare_<fname>_<stamp>.png — raw vs denoised waveform, one per selected event (see MAKE_WAVEFORM_PLOTS / WAVEFORM_SELECT_MODE)
 """
 
 
@@ -58,11 +58,11 @@ Outputs
 # =============================================================================
 
 # ── Input: denoised NPZ files from 03c ───────────────────────────────────────
-DENOISED_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\icequake\run_20260709_160443\denoised\results"
+DENOISED_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\run_20260709_180801\denoised\results"
 
 # ── Input: original (pre-denoising) rescue NPZ files — needed for itp ────────
 # Same run as DENOISED_DIR above — must always point at the matching run_.../rescue folder.
-RESCUE_DIR   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\icequake\run_20260709_160443\rescue"
+RESCUE_DIR   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\run_20260709_180801\rescue"
 
 # ── Input: master catalog from 04a — used for metadata lookup by row index ───
 CATALOG_CSV  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent\catalog_windows_20260707_165719.csv"
@@ -79,8 +79,8 @@ ITP    = 1000     # P-arrival sample index (10 s × 100 Hz, fixed by 03c windowi
 N_SAMP = 3000     # total samples in each NPZ window
 
 # ── Quality gate (same thresholds as 05a / 06b) ───────────────────────────────
-SNR_FULL_MEAN_MIN  = 3.62    # 05a ROC-optimal   
-SNR_S2N_MEDIAN_MIN = 24.19
+SNR_FULL_MEAN_MIN  = 1.91    # 05a ROC-optimal   
+SNR_FULL_MEDIAN_MIN = 1.60
 
 # ── Minimum signal samples for feature extraction ────────────────────────────
 MIN_SIGNAL_SAMPLES = 200   # < 2 s at 100 Hz → skip (too short for 99 features)
@@ -88,6 +88,29 @@ MIN_SIGNAL_SAMPLES = 200   # < 2 s at 100 Hz → skip (too short for 99 features
 # ── QC diagnostic plots ───────────────────────────────────────────────────────
 # Signal-quality plots only (before/after SNR, fidelity) — covers every rescue candidate, not just the ones that pass the gate
 MAKE_QC_PLOTS = True
+
+# ── Single-event waveform comparison plots (raw vs denoised) ─────────────────
+# Two selection modes:
+#   "top_delta" — auto-pick the N candidates with the biggest SNR change (see WAVEFORM_RANK_METRIC / WAVEFORM_RANK_ABS below)
+#   "manual"    — plot exactly the fnames listed in WAVEFORM_MANUAL_FNAMES
+MAKE_WAVEFORM_PLOTS   = True
+WAVEFORM_SELECT_MODE  = "top_delta"      # "top_delta" or "manual"
+
+# -- "top_delta" mode settings --
+WAVEFORM_TOP_N        = 10
+WAVEFORM_RANK_METRIC  = "SNR_full_median"  # which QC metric ranks "biggest delta"
+WAVEFORM_RANK_ABS     = False             # False = biggest IMPROVEMENT only (delta desc)
+                                          # True  = biggest change either direction (|delta| desc)
+
+# -- "manual" mode settings --
+# the rescue .npz basename without extension, e.g. "rescue_8D_AMID2_EHZ_20260709_180801_35284" 
+#  -> see denoise_qc_<stamp>.csv's 'fname' column for valid values from a given run
+WAVEFORM_MANUAL_FNAMES = []
+
+# Display-only bandpass applied to the plotted waveforms 
+#  -> set either to None to disable that side (e.g. FREQMIN=None, FREQMAX=20 -> lowpass)
+WAVEFORM_FILTER_FREQMIN = 1.0    # Hz
+WAVEFORM_FILTER_FREQMAX = 20.0   # Hz
 
 
 # =============================================================================
@@ -119,6 +142,7 @@ from visualization import (
     plot_delta_snr_distribution,
     plot_rescue_funnel,
     plot_denoise_fidelity,
+    plot_waveform_comparison,
 )
 
 RUN_DIR, STAMP = create_run_dir(OUTPUT_DIR)
@@ -169,7 +193,7 @@ print(f"\n{'='*65}")
 print("  STEP 3 — SNR + feature extraction")
 print(f"{'='*65}")
 print(f"  Quality gate: SNR_full_mean >= {SNR_FULL_MEAN_MIN}  "
-      f"AND  SNR_s2n_median >= {SNR_S2N_MEDIAN_MIN}")
+      f"AND  SNR_full_median >= {SNR_FULL_MEDIAN_MIN}")
 
 rescue_rows  = []    # list of dicts — one per accepted event
 qc_rows      = []    # list of dicts — one per EVERY evaluated candidate (pass or fail),
@@ -251,9 +275,9 @@ for fpath in tqdm(denoised_files, desc="Processing"):
 
     # ── Quality gate ──────────────────────────────────────────────────────────
     snr_mean   = snr_dict.get('SNR_full_mean',  0.0)
-    snr_median    = snr_dict.get('SNR_s2n_median', 0.0)
+    snr_median    = snr_dict.get('SNR_full_median', 0.0)
     passes     = (not np.isnan(snr_mean) and snr_mean  >= SNR_FULL_MEAN_MIN and
-                  not np.isnan(snr_median)  and snr_median   >= SNR_S2N_MEDIAN_MIN)
+                  not np.isnan(snr_median)  and snr_median   >= SNR_FULL_MEDIAN_MIN)
 
     qc_rows.append({
         'fname'               : fname,
@@ -388,7 +412,7 @@ if MAKE_QC_PLOTS and qc_rows:
     # for QC only and has no threshold line drawn on its panel.
     _thresholds = {
         'SNR_full_mean':  SNR_FULL_MEAN_MIN,
-        'SNR_s2n_median': SNR_S2N_MEDIAN_MIN,
+        'SNR_full_median': SNR_FULL_MEDIAN_MIN,
     }
 
     # ── Gate-INDEPENDENT summary: how much did the denoiser improve the SNR overall? ──
@@ -454,7 +478,81 @@ elif MAKE_QC_PLOTS:
 
 
 # =============================================================================
-# SECTION 6c — RESCUE CATALOG CSV (only rows that pass the quality gate)
+# SECTION 6c — WAVEFORM COMPARISON PLOTS (raw vs denoised, individual events)
+# =============================================================================
+
+if MAKE_WAVEFORM_PLOTS and qc_rows:
+    print(f"\n{'='*65}")
+    print("  STEP 6 — Waveform comparison plots (raw vs denoised)")
+    print(f"{'='*65}")
+
+    raw_col   = f"{WAVEFORM_RANK_METRIC}_raw"
+    after_col = WAVEFORM_RANK_METRIC
+
+    if raw_col not in qc_df.columns or after_col not in qc_df.columns:
+        print(f"  [WARN] WAVEFORM_RANK_METRIC={WAVEFORM_RANK_METRIC!r} not found in QC columns — skipping.")
+        selected = pd.DataFrame()
+    elif WAVEFORM_SELECT_MODE == "manual":
+        if not WAVEFORM_MANUAL_FNAMES:
+            print("  [WARN] WAVEFORM_SELECT_MODE='manual' but WAVEFORM_MANUAL_FNAMES is empty — skipping.")
+            selected = pd.DataFrame()
+        else:
+            selected = qc_df[qc_df['fname'].isin(WAVEFORM_MANUAL_FNAMES)]
+            missing  = set(WAVEFORM_MANUAL_FNAMES) - set(selected['fname'])
+            if missing:
+                print(f"  [WARN] {len(missing)} requested fname(s) not found in this run: "
+                      f"{sorted(missing)[:5]}")
+    elif WAVEFORM_SELECT_MODE == "top_delta":
+        valid = qc_df.dropna(subset=[raw_col, after_col]).copy()
+        valid = valid[(valid[raw_col] > 0) & (valid[after_col] > 0)]
+        if len(valid) == 0:
+            print(f"  [WARN] No valid before/after pairs for {WAVEFORM_RANK_METRIC} — skipping.")
+            selected = pd.DataFrame()
+        else:
+            valid['_delta'] = np.log10(valid[after_col] / valid[raw_col])
+            rank_col = valid['_delta'].abs() if WAVEFORM_RANK_ABS else valid['_delta']
+            top_idx  = rank_col.sort_values(ascending=False).index[:WAVEFORM_TOP_N]
+            selected = valid.loc[top_idx]
+            print(f"  Selecting top {len(selected)} candidates by "
+                  f"{'|delta|' if WAVEFORM_RANK_ABS else 'delta'} of {WAVEFORM_RANK_METRIC} "
+                  f"(log10 after/before)")
+    else:
+        print(f"  [WARN] Unknown WAVEFORM_SELECT_MODE={WAVEFORM_SELECT_MODE!r} — skipping.")
+        selected = pd.DataFrame()
+
+    if len(selected) == 0:
+        print("  No events selected for waveform comparison plots.")
+    else:
+        for _, wrow in selected.iterrows():
+            fname     = wrow['fname']
+            den_path  = os.path.join(DENOISED_DIR, fname + ".npz")
+            orig_path = os.path.join(RESCUE_DIR,   fname + ".npz")
+            try:
+                den   = np.load(den_path,  allow_pickle=True)
+                orig  = np.load(orig_path, allow_pickle=True)
+                w_denoised = den['data'][:, 0, 0].astype(np.float64)
+                w_raw      = orig['data'][:, 2].astype(np.float64)
+                w_itp      = int(orig['itp'])
+            except Exception as e:
+                print(f"  [WARN] Could not reload waveforms for {fname}: {e}")
+                continue
+
+            plot_waveform_comparison(
+                w_raw, w_denoised, w_itp, SPS,
+                run_dir=RUN_DIR, stamp=STAMP, fname_tag=fname,
+                event_type=wrow.get('event_type', '') or '',
+                snr_before=wrow.get(raw_col, np.nan),
+                snr_after=wrow.get(after_col, np.nan),
+                metric_label=WAVEFORM_RANK_METRIC,
+                freqmin=WAVEFORM_FILTER_FREQMIN,
+                freqmax=WAVEFORM_FILTER_FREQMAX,
+            )
+elif MAKE_WAVEFORM_PLOTS:
+    print("\n  [WARN] No candidates were evaluated — skipping waveform comparison plots.")
+
+
+# =============================================================================
+# SECTION 6d — RESCUE CATALOG CSV (only rows that pass the quality gate)
 # =============================================================================
 
 if not rescue_rows:
