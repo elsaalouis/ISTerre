@@ -5,16 +5,12 @@ ISTerre internship — Environmental seismology in glaciology
 Author : Elsa Louis
 Date   : July 2026
 
-Post-denoiser processing: load the DeepDenoiser-denoised waveforms produced by
-03c_denoiser_event_data.py (whichever event class it was pointed at — ice quake,
-rockslide, ...), recompute SNR metrics on the clean signal, re-apply the quality gate,
-extract the Maggi/Hibert features on events that pass, and save a rescue catalog CSV
-(rescue_catalog_<stamp>.csv) in the exact same column schema as the 04a output.
-This script itself has no notion of event class — it is entirely driven by whatever
-denoised .npz files are in DENOISED_DIR and the event_type recorded in the master
-catalog row each one points back to (via the row_idx embedded in its filename).
-If the master catalog was produced with LOAD_3C=True (103 features), the 4 polarization columns are written as NaN for rescued events — DeepDenoiser outputs
-Z-only data, so horizontal channels are not available. HGB handles NaN natively.
+Post-denoiser processing: 
+- load the DeepDenoiser-denoised waveforms produced by 03c_denoiser_event_data.py
+- recompute SNR metrics on the clean signal
+- re-apply the quality gate
+- extract the Maggi/Hibert features on events that pass
+- save a rescue catalog CSV (rescue_catalog_<stamp>.csv) in the exact same column schema as the 04a output
 
 Pipeline position
 -----------------
@@ -37,30 +33,23 @@ SNR metrics (same definitions as detection.py):
   SNR_full_median = median(|sig|) / median(|noise|)
   SNR_s2n_median  = 99.5th pct(|sig|) / MAD(noise)    ← tutor's robust metric
 
-Quality gate (same thresholds as 05a)
-  SNR_full_mean   >= SNR_FULL_MEAN_MIN   = 1.856
-  SNR_s2n_median  >= SNR_S2N_MEDIAN_MIN  = 10.503
+Quality gate (per-event-type ROC-optimal thresholds from 05a — see snr_summary_by_type_*.csv)
+  SNR_full_mean  >= SNR_FULL_MEAN_MIN
+  SNR_s2n_median >= SNR_S2N_MEDIAN_MIN
 
-Feature extraction
-------------------
-Uses extract_features(signal[itp:end], sps=100.0) from features.py, where end = min(itp + int(det_duration_s * sps), 3000)
-
-Denoiser quality diagnostics (independent of the 06c classification step)
----------------------------------------------------------------------------
-Every denoised file gets its raw (pre-denoiser) SNR computed too (from RESCUE_DIR),
-plus a waveform-fidelity check (detection.compute_denoise_correlation) — this is what
-lets the QC plots below tell "denoiser genuinely helped" apart from "SNR went up but
-the model just invented smooth structure". This QC data covers ALL rescue candidates,
-not just the ones that pass the gate.
+Note: SNR_full_median is tracked and plotted for QC purposes, but is NOT part of the
+accept/reject gate above.
 
 Outputs
 -------
-  rescue_catalog_<stamp>.csv   — accepted (gate-passing) rows, schema matches 04a
-  denoise_qc_<stamp>.csv       — one row per rescue candidate (before/after SNR + fidelity metrics)
-  snr_before_after_<stamp>.png — paired SNR scatter, raw vs denoised, per metric
-  snr_delta_distribution_<stamp>.png — histogram of log10(SNR after/before), per metric
-  rescue_funnel_<stamp>.png    — candidates -> passed gate, as a funnel bar chart
-  denoise_fidelity_<stamp>.png — waveform correlation (raw vs denoised) vs SNR gain
+  rescue_catalog_<stamp>.csv         — accepted (gate-passing) rows, schema matches 04a
+  denoise_qc_<stamp>.csv             — one row per rescue candidate (before/after SNR + fidelity metrics)
+  snr_improvement_summary_<stamp>.csv — gate-INDEPENDENT summary: how much SNR improved overall,
+                                        across every denoised candidate regardless of pass/fail
+  snr_before_after_<stamp>.png       — paired SNR scatter, raw vs denoised, per metric (all candidates)
+  snr_delta_distribution_<stamp>.png — histogram of log10(SNR after/before), per metric (all candidates)
+  rescue_funnel_<stamp>.png          — candidates -> passed gate, as a funnel bar chart
+  denoise_fidelity_<stamp>.png       — waveform correlation (raw vs denoised) vs SNR gain
 """
 
 
@@ -69,15 +58,11 @@ Outputs
 # =============================================================================
 
 # ── Input: denoised NPZ files from 03c ───────────────────────────────────────
-# NOTE: this still points at the ice-quake run (03c_denoiser_icequake_data.py, now
-# superseded by 03c_denoiser_event_data.py). Repoint to the new run's
-# outputs_03c/<event_slug>/run_.../denoised/results folder once a fresh run exists
-# (e.g. outputs_03c/rockslide/run_.../denoised/results for the rockslide pipeline).
-DENOISED_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_icequake_data\run_20260709_160443\denoised\results"
+DENOISED_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\icequake\run_20260709_160443\denoised\results"
 
 # ── Input: original (pre-denoising) rescue NPZ files — needed for itp ────────
 # Same run as DENOISED_DIR above — must always point at the matching run_.../rescue folder.
-RESCUE_DIR   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_icequake_data\run_20260709_160443\rescue"
+RESCUE_DIR   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\icequake\run_20260709_160443\rescue"
 
 # ── Input: master catalog from 04a — used for metadata lookup by row index ───
 CATALOG_CSV  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent\catalog_windows_20260707_165719.csv"
@@ -85,21 +70,23 @@ CATALOG_CSV  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\projec
 # ── Output directory ──────────────────────────────────────────────────────────
 OUTPUT_DIR   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03d_rescue_feature_extraction"
 
+# ── NPZ filename prefix ───────────────────────────────────────────────────────
+FILE_PREFIX  = "rescue"   
+
 # ── Signal parameters ─────────────────────────────────────────────────────────
 SPS    = 100.0    # sampling rate (Hz) — fixed by 03c --sampling_rate 100
 ITP    = 1000     # P-arrival sample index (10 s × 100 Hz, fixed by 03c windowing)
 N_SAMP = 3000     # total samples in each NPZ window
 
 # ── Quality gate (same thresholds as 05a / 06b) ───────────────────────────────
-SNR_FULL_MEAN_MIN  = 1.856    # 05a ROC-optimal  (AUC=0.700, TPR=0.673, FPR=0.392)
-SNR_S2N_MEDIAN_MIN = 10.503   # 05a ROC-optimal  (AUC=0.703, TPR=0.749, FPR=0.445)
+SNR_FULL_MEAN_MIN  = 3.62    # 05a ROC-optimal   
+SNR_S2N_MEDIAN_MIN = 24.19
 
 # ── Minimum signal samples for feature extraction ────────────────────────────
 MIN_SIGNAL_SAMPLES = 200   # < 2 s at 100 Hz → skip (too short for 99 features)
 
 # ── QC diagnostic plots ───────────────────────────────────────────────────────
-# Signal-quality plots only (before/after SNR, fidelity) — no classification here,
-# that's 06c. Covers every rescue candidate, not just the ones that pass the gate.
+# Signal-quality plots only (before/after SNR, fidelity) — covers every rescue candidate, not just the ones that pass the gate
 MAKE_QC_PLOTS = True
 
 
@@ -170,7 +157,7 @@ print(f"\n{'='*65}")
 print("  STEP 2 — Discovering denoised NPZ files")
 print(f"{'='*65}")
 
-denoised_files = sorted(glob.glob(os.path.join(DENOISED_DIR, "rescue_*.npz")))
+denoised_files = sorted(glob.glob(os.path.join(DENOISED_DIR, f"{FILE_PREFIX}_*.npz")))
 print(f"Found {len(denoised_files):,} denoised NPZ files.")
 
 
@@ -190,7 +177,9 @@ qc_rows      = []    # list of dicts — one per EVERY evaluated candidate (pass
 n_total      = len(denoised_files)
 n_snr_fail   = 0
 n_feat_fail  = 0
-n_missing_orig = 0
+n_missing_orig  = 0
+n_raw_load_fail = 0
+_raw_load_errs  = []   # first few exceptions, for diagnostics
 
 for fpath in tqdm(denoised_files, desc="Processing"):
     fname = os.path.basename(fpath)[:-4]   # strip .npz
@@ -223,8 +212,19 @@ for fpath in tqdm(denoised_files, desc="Processing"):
         try:
             orig       = np.load(orig_path, allow_pickle=True)
             itp        = int(orig['itp'])
-            raw_signal = orig['data'][:, 0, 0].astype(np.float64)
-        except Exception:
+            # Raw rescue NPZ stores data as (3000, 3) — E, N, Z components (03c line ~495);
+            # Z is index 2 (see 03c's own flat-trace check: `data3[:, 2]`). This is a
+            # different shape than the denoised NPZ (3000, 1, 1), which uses [:, 0, 0].
+            raw_signal = orig['data'][:, 2].astype(np.float64)
+        except Exception as e:
+            # File exists on disk (checked above) but failed to load — this is the
+            # OneDrive Files-On-Demand signature (placeholder present, content not
+            # actually downloaded yet), NOT a missing file. Count + log it distinctly
+            # from n_missing_orig so it's diagnosable instead of silently zeroing out
+            # every before/after SNR comparison.
+            n_raw_load_fail += 1
+            if len(_raw_load_errs) < 5:
+                _raw_load_errs.append((os.path.basename(orig_path), str(e)))
             itp = ITP
 
     # ── Metadata from master catalog ──────────────────────────────────────────
@@ -245,15 +245,15 @@ for fpath in tqdm(denoised_files, desc="Processing"):
         snr_dict_raw = compute_snr_numpy(raw_signal, itp, det_dur, SPS)
         fidelity     = compute_denoise_correlation(raw_signal, denoised_signal, itp, det_dur, SPS)
     else:
-        snr_dict_raw = {'SNR_full_mean': np.nan, 'SNR_s2n_median': np.nan}
+        snr_dict_raw = {'SNR_full_mean': np.nan, 'SNR_full_median': np.nan, 'SNR_s2n_median': np.nan}
         fidelity     = {'corr_signal': np.nan, 'corr_noise': np.nan,
                          'energy_ratio_signal': np.nan, 'energy_ratio_noise': np.nan}
 
     # ── Quality gate ──────────────────────────────────────────────────────────
     snr_mean   = snr_dict.get('SNR_full_mean',  0.0)
-    snr_s2n    = snr_dict.get('SNR_s2n_median', 0.0)
+    snr_median    = snr_dict.get('SNR_s2n_median', 0.0)
     passes     = (not np.isnan(snr_mean) and snr_mean  >= SNR_FULL_MEAN_MIN and
-                  not np.isnan(snr_s2n)  and snr_s2n   >= SNR_S2N_MEDIAN_MIN)
+                  not np.isnan(snr_median)  and snr_median   >= SNR_S2N_MEDIAN_MIN)
 
     qc_rows.append({
         'fname'               : fname,
@@ -263,8 +263,10 @@ for fpath in tqdm(denoised_files, desc="Processing"):
         'network'             : net, 'station': sta, 'channel': cha,
         'SNR_full_mean_raw'   : snr_dict_raw.get('SNR_full_mean',  np.nan),
         'SNR_full_mean'       : snr_dict.get('SNR_full_mean',      np.nan),
-        'SNR_s2n_median_raw'  : snr_dict_raw.get('SNR_s2n_median', np.nan),
-        'SNR_s2n_median'      : snr_dict.get('SNR_s2n_median',     np.nan),
+        'SNR_full_median_raw'  : snr_dict_raw.get('SNR_full_median', np.nan),
+        'SNR_full_median'      : snr_dict.get('SNR_full_median',     np.nan),
+        'SNR_s2n_median_raw'  : snr_dict_raw.get('SNR_s2n_median',  np.nan),
+        'SNR_s2n_median'      : snr_dict.get('SNR_s2n_median',      np.nan),
         'corr_signal'         : fidelity.get('corr_signal',         np.nan),
         'corr_noise'          : fidelity.get('corr_noise',          np.nan),
         'energy_ratio_signal' : fidelity.get('energy_ratio_signal', np.nan),
@@ -331,6 +333,25 @@ print(f"  Failed SNR gate        : {n_snr_fail:,}  "
       f"({100*n_snr_fail/max(n_total,1):.1f} %)")
 print(f"  Feature extraction err : {n_feat_fail:,}")
 print(f"  Missing original NPZ   : {n_missing_orig:,}")
+print(f"  Original NPZ load fail : {n_raw_load_fail:,}  "
+      f"({100*n_raw_load_fail/max(n_total,1):.1f} %)  "
+      f"[before/after SNR + fidelity QC unavailable for these]")
+if n_raw_load_fail > 0:
+    for fname_err, err in _raw_load_errs:
+        print(f"           {fname_err}: {err}")
+    if n_raw_load_fail > len(_raw_load_errs):
+        print(f"           ... and {n_raw_load_fail - len(_raw_load_errs)} more")
+if n_raw_load_fail / max(n_total, 1) > 0.3:
+    _err_text = " ".join(e for _, e in _raw_load_errs).lower()
+    if any(s in _err_text for s in ("no data left", "eof", "zip", "0 bytes", "not a zip file")):
+        print("  [WARN] Most/all original rescue files failed to load even though they exist on disk —")
+        print("         this is the OneDrive Files-On-Demand signature (placeholder present, content not")
+        print("         actually downloaded). In File Explorer, right-click the RESCUE_DIR folder ->")
+        print("         'Always keep on this device', then re-run once sync finishes.")
+    else:
+        print("  [WARN] Most/all original rescue files failed to load with a consistent error — this")
+        print("         looks like a data-format issue (e.g. array shape mismatch), not a sync problem.")
+        print("         Check the error text above against how RESCUE_DIR's NPZ files were written.")
 print(f"  ─────────────────────────────────────────")
 print(f"  Accepted (rescued)     : {len(rescue_rows):,}  "
       f"({100*len(rescue_rows)/max(n_total,1):.1f} %)")
@@ -359,13 +380,54 @@ if MAKE_QC_PLOTS and qc_rows:
     )
 
     _metric_pairs = [
-        ('SNR_full_mean_raw',  'SNR_full_mean',  'SNR_full_mean'),
-        ('SNR_s2n_median_raw', 'SNR_s2n_median', 'SNR_s2n_median'),
+        ('SNR_full_mean_raw',   'SNR_full_mean',   'SNR_full_mean'),
+        ('SNR_full_median_raw', 'SNR_full_median', 'SNR_full_median'),
+        ('SNR_s2n_median_raw',  'SNR_s2n_median',  'SNR_s2n_median'),
     ]
+    # Gate metrics are SNR_full_mean and SNR_s2n_median — SNR_full_median is tracked
+    # for QC only and has no threshold line drawn on its panel.
     _thresholds = {
         'SNR_full_mean':  SNR_FULL_MEAN_MIN,
         'SNR_s2n_median': SNR_S2N_MEDIAN_MIN,
     }
+
+    # ── Gate-INDEPENDENT summary: how much did the denoiser improve the SNR overall? ──
+    # This ignores passed_gate entirely (every evaluated candidate counts)
+    print("\n  SNR improvement summary — ALL denoised candidates, gate not considered:")
+    summary_rows = []
+    for before_col, after_col, label in _metric_pairs:
+        x = qc_df[before_col].to_numpy(dtype=float)
+        y = qc_df[after_col].to_numpy(dtype=float)
+        valid = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+        n_valid = int(valid.sum())
+        if n_valid == 0:
+            print(f"    {label:<16s}  no valid before/after pairs")
+            continue
+        xv, yv    = x[valid], y[valid]
+        log_ratio = np.log10(yv / xv)
+        n_improved = int((yv > xv).sum())
+        row = {
+            'metric'             : label,
+            'n_valid'            : n_valid,
+            'median_before'      : float(np.median(xv)),
+            'median_after'       : float(np.median(yv)),
+            'mean_before'        : float(np.mean(xv)),
+            'mean_after'         : float(np.mean(yv)),
+            'median_log10_ratio' : float(np.median(log_ratio)),
+            'mean_log10_ratio'   : float(np.mean(log_ratio)),
+            'median_gain_factor' : float(10 ** np.median(log_ratio)),
+            'pct_improved'       : 100.0 * n_improved / n_valid,
+        }
+        summary_rows.append(row)
+        print(f"    {label:<16s}  median {row['median_before']:.2f} -> {row['median_after']:.2f}  "
+              f"(x{row['median_gain_factor']:.2f} median gain)   "
+              f"{row['pct_improved']:.1f}% of candidates improved   (n={n_valid})")
+
+    if summary_rows:
+        summary_df = pd.DataFrame(summary_rows)
+        summary_csv_path = os.path.join(RUN_DIR, f"snr_improvement_summary_{STAMP}.csv")
+        summary_df.to_csv(summary_csv_path, index=False)
+        print(f"  [SAVED] {summary_csv_path}")
 
     plot_snr_before_after(
         qc_df, _metric_pairs, _thresholds, rescued_col='passed_gate',

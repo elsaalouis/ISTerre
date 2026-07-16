@@ -14,6 +14,8 @@ All figure-generating functions used across the pipeline scripts:
   - plot_delta_snr_distribution(): log-ratio SNR change histogram      (script 03d)
   - plot_rescue_funnel()         : sequential-stage funnel bar chart   (script 03d)
   - plot_denoise_fidelity()      : waveform correlation vs SNR gain    (script 03d)
+  - plot_threshold_by_type()     : Youden threshold per event type     (script 05a)
+  - plot_roc_by_type()           : ROC curves faceted by event type    (script 05a)
 """
 
 import os
@@ -915,4 +917,163 @@ def plot_denoise_fidelity(df, corr_col, snr_before_col, snr_after_col, rescued_c
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"  [SAVED] {fname}")
+    return out_path
+
+
+
+# =============================================================================
+# PER-EVENT-TYPE SNR THRESHOLDS (script 05a)
+# =============================================================================
+# Is one pooled/global SNR threshold a reasonable compromise across classes, or
+# does each event type really need its own?
+
+def plot_threshold_by_type(df_roc_by_type, metrics, metric_labels, run_dir, stamp):
+    """
+    Small-multiples bar chart — one panel per SNR metric, one bar per event type
+
+    Bar height = Youden-optimal threshold for that (metric, event_type) pair, from a
+    ROC analysis run separately on each event type's subset. A black dashed line marks
+    the pooled/global threshold (computed across all event types together — the value
+    the pipeline's quality gate currently uses everywhere), so it's immediately visible
+    whether one global threshold is a reasonable compromise or some classes are being
+    over/under-filtered by it. Each bar is annotated with its own AUC — a per-type
+    threshold computed on a poorly-discriminating subset (low AUC) shouldn't be trusted
+    the same as one from a well-separated class; see plot_roc_by_type() for that check.
+
+    Parameters
+    ----------
+    df_roc_by_type : pd.DataFrame — tidy table, one row per (event_type, metric), with
+                     columns: event_type, metric, best_threshold, auc, pooled_threshold
+                     (see 05a Section 3.3b)
+    metrics        : list of str — metric names, in display order
+    metric_labels  : dict {metric: label} — used for panel titles
+    run_dir        : str — output directory
+    stamp          : str — run timestamp, used in the output filename
+
+    Returns
+    -------
+    out_path : str
+    """
+    event_types = sorted(df_roc_by_type['event_type'].dropna().unique())
+    n_types     = len(event_types)
+    n_m         = len(metrics)
+    colors      = plt.cm.tab10.colors
+
+    ncols = min(4, n_m)
+    nrows = int(np.ceil(n_m / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.3 * ncols, 4.3 * nrows))
+    axes = np.array(axes).reshape(-1)
+
+    for k, metric in enumerate(metrics):
+        ax  = axes[k]
+        sub = df_roc_by_type[df_roc_by_type['metric'] == metric].set_index('event_type')
+
+        heights = [sub['best_threshold'].get(et, np.nan) for et in event_types]
+        aucs    = [sub['auc'].get(et, np.nan) for et in event_types]
+        ax.bar(range(n_types), heights,
+               color=[colors[i % 10] for i in range(n_types)], edgecolor='white')
+
+        for i, (h, a) in enumerate(zip(heights, aucs)):
+            if np.isnan(h):
+                continue
+            label = f"{h:.2f}" + (f"\nAUC={a:.2f}" if not np.isnan(a) else "")
+            ax.text(i, h, label, ha='center', va='bottom', fontsize=7.5)
+
+        pooled_vals = sub['pooled_threshold'].dropna()
+        if len(pooled_vals) > 0:
+            pooled_thr = float(pooled_vals.iloc[0])
+            ax.axhline(pooled_thr, color='black', linestyle='--', linewidth=1.3,
+                       label=f'pooled threshold = {pooled_thr:.2f}')
+
+        ax.set_xticks(range(n_types))
+        ax.set_xticklabels(event_types, rotation=30, ha='right', fontsize=8)
+        ax.set_ylabel('Youden-optimal threshold', fontsize=8)
+        ax.set_title(metric_labels.get(metric, metric).replace('\n', ' '), fontsize=9, fontweight='bold')
+        ax.legend(fontsize=7)
+        ax.tick_params(axis='y', labelsize=8)
+        # headroom so bar-top annotations don't clip
+        finite_h = [h for h in heights if not np.isnan(h)]
+        if finite_h:
+            ax.set_ylim(0, max(finite_h + [pooled_thr if len(pooled_vals) > 0 else 0]) * 1.35)
+
+    for idx in range(n_m, len(axes)):
+        axes[idx].set_visible(False)
+
+    fig.suptitle(
+        'Best SNR threshold per event type (Youden J on a per-type ROC)\n'
+        'Dashed line = current pooled/global threshold   |   bar label = threshold (AUC below it)',
+        fontsize=11, fontweight='bold', y=1.02,
+    )
+    plt.tight_layout()
+
+    fname = f"fig_threshold_by_type_{stamp}.png"
+    out_path = os.path.join(run_dir, fname)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"    [SAVED] {fname}")
+    return out_path
+
+
+def plot_roc_by_type(roc_results_by_type, metrics, metric_labels, run_dir, stamp):
+    """
+    ROC curves faceted by event type — one panel per event type, one curve per metric
+
+    Complements plot_threshold_by_type(): a per-type threshold is only meaningful if
+    that type's ROC curve actually rises well above the diagonal (AUC well above 0.5).
+    Lets you see at a glance whether a class has enough separable signal for its own
+    threshold to be trustworthy, rather than just reading off a number.
+
+    Parameters
+    ----------
+    roc_results_by_type : dict {event_type: {metric: {fpr, tpr, auc, youden_fpr,
+                           youden_tpr, ...}}}  (see 05a Section 3.3b)
+    metrics       : list of str — metric names, in display order
+    metric_labels : dict {metric: label} — used in the legend
+    run_dir       : str — output directory
+    stamp         : str — run timestamp, used in the output filename
+
+    Returns
+    -------
+    out_path : str
+    """
+    event_types = sorted(roc_results_by_type.keys())
+    n_types     = len(event_types)
+    colors      = plt.cm.tab10.colors
+
+    ncols = min(3, max(n_types, 1))
+    nrows = int(np.ceil(n_types / ncols)) if n_types else 1
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 5.5 * nrows))
+    axes = np.array(axes).reshape(-1)
+
+    for i, et in enumerate(event_types):
+        ax = axes[i]
+        ax.plot([0, 1], [0, 1], 'k--', lw=0.8, label='Random (AUC=0.50)')
+        results = roc_results_by_type[et]
+        for k, metric in enumerate(metrics):
+            r = results.get(metric)
+            if r is None:
+                continue
+            lbl = f"{metric_labels.get(metric, metric).replace(chr(10), ' ')}  (AUC={r['auc']:.3f})"
+            ax.plot(r['fpr'], r['tpr'], lw=1.8, color=colors[k % 10], label=lbl)
+            ax.scatter(r['youden_fpr'], r['youden_tpr'], color=colors[k % 10],
+                       s=55, zorder=5, marker='D', edgecolors='black', linewidths=0.4)
+        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+        ax.set_xlabel('False Positive Rate', fontsize=9)
+        ax.set_ylabel('True Positive Rate', fontsize=9)
+        ax.set_title(et, fontsize=11, fontweight='bold')
+        ax.legend(fontsize=6.5, loc='lower right')
+        ax.grid(True, lw=0.4, alpha=0.4)
+
+    for idx in range(n_types, len(axes)):
+        axes[idx].set_visible(False)
+
+    fig.suptitle('ROC curves per event type — diamond = Youden-optimal threshold',
+                fontsize=12, fontweight='bold')
+    plt.tight_layout()
+
+    fname = f"fig_roc_by_type_{stamp}.png"
+    out_path = os.path.join(run_dir, fname)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"    [SAVED] {fname}")
     return out_path

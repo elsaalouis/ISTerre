@@ -21,11 +21,15 @@ Analyses
 --------
   3.1  Basic distribution statistics per metric (mean, median, std, IQR) + mean for good vs bad detections separately
   3.2  Pearson correlation matrix between the 7 metrics (are some metrics redundant?)
-  3.3  ROC curves + AUC for each metric (which metric best discriminates good from bad detections?)
-  3.4  Youden J optimal threshold per metric
-  3.5  Threshold sensitivity: pass rate, TPR, FPR vs threshold value
-  3.6  Per-station and per-event-type summary
-  3.7  Save summary CSV
+  3.3  ROC curves + AUC for each metric, POOLED across all event types (which metric
+       best discriminates good from bad detections? Youden J optimal threshold per metric)
+  3.3b Same ROC + Youden analysis, but run SEPARATELY per event type — is the pooled
+       threshold above a reasonable compromise, or does e.g. rockslide need a different
+       threshold than ice quake? (motivated by 05a/06c only ever using one pooled
+       threshold for every class so far)
+  3.4  Threshold sensitivity: pass rate, TPR, FPR vs threshold value
+  3.5  Per-station and per-event-type summary
+  3.6  Save summary CSV
 
 Input
 -----
@@ -34,10 +38,13 @@ Input
 
 Output
 ------
-  snr_summary_<stamp>.csv               : per-metric table (AUC, best threshold, ...)
+  snr_summary_<stamp>.csv               : per-metric table (AUC, best threshold, ...), pooled across types
+  snr_summary_by_type_<stamp>.csv       : same, but one row per (event_type, metric), + delta vs the pooled threshold
   fig_distributions_<stamp>.png         : histograms per metric, blue=good / red=bad
   fig_correlation_<stamp>.png           : Pearson correlation heatmap
-  fig_roc_<stamp>.png                   : ROC curves for all 7 metrics
+  fig_roc_<stamp>.png                   : ROC curves for all 7 metrics, pooled
+  fig_threshold_by_type_<stamp>.png     : Youden-optimal threshold per event type, one panel per metric
+  fig_roc_by_type_<stamp>.png           : ROC curves faceted by event type (sanity check for the plot above)
   fig_threshold_sensitivity_<stamp>.png : pass rate / TPR / FPR vs threshold
   fig_station_heatmap_<stamp>.png              : global per-station mean SNR heatmap
   fig_station_heatmap_<etype>_<stamp>.png     : one heatmap per event type
@@ -133,7 +140,7 @@ from run_setup import (
     fetch_inventory,
     set_matplotlib_defaults,
 )
-from visualization import plot_station_map
+from visualization import plot_station_map, plot_threshold_by_type, plot_roc_by_type
 
 
 # ----------- Run setup ---------------
@@ -332,6 +339,81 @@ for metric in SNR_METRICS:
     print(f"  {metric:<22s}  AUC={r['auc']:.3f}  "
             f"best threshold={r['youden_threshold']:.2f}  "
             f"-> TPR={r['youden_tpr']:.2f}  FPR={r['youden_fpr']:.2f}")
+
+
+# --- 3.3b  ROC curves and AUC, per event type ---------------------------------
+#
+# Pools every event type together to find one threshold
+# Repeats the exact same analysis, but separately on each event type's own subset
+#
+# A per-type threshold is only trustworthy if that type's own AUC is decent — see fig_roc_by_type for the curve shape, not just the number
+
+print("\n--- 3.3b  ROC AUC per metric, per event type ---")
+
+event_types_roc     = sorted(df['event_type'].dropna().unique())
+roc_results_by_type = {et: {} for et in event_types_roc}
+
+for et in event_types_roc:
+    df_et = df[df['event_type'] == et]
+    print(f"\n  [{et}]  ({len(df_et)} rows)")
+    for metric in SNR_METRICS:
+        valid = df_et[['label', metric]].dropna()
+        if valid['label'].nunique() < 2:
+            print(f"    {metric:<22s}  SKIP — only one class in this subset")
+            continue
+
+        fpr, tpr, thresholds = roc_curve(valid['label'].astype(int), valid[metric])
+        auc_val  = sklearn_auc(fpr, tpr)
+        j_scores = tpr - fpr
+        best_idx = np.argmax(j_scores)
+
+        roc_results_by_type[et][metric] = {
+            'fpr'             : fpr,
+            'tpr'             : tpr,
+            'auc'             : float(auc_val),
+            'youden_threshold': float(thresholds[best_idx]),
+            'youden_tpr'      : float(tpr[best_idx]),
+            'youden_fpr'      : float(fpr[best_idx]),
+            'youden_j'        : float(j_scores[best_idx]),
+            'n_valid'         : int(len(valid)),
+            'n_pos'           : int(valid['label'].sum()),
+            'n_neg'           : int((~valid['label']).sum()),
+        }
+        r = roc_results_by_type[et][metric]
+        print(f"    {metric:<22s}  AUC={r['auc']:.3f}  "
+              f"best threshold={r['youden_threshold']:.2f}  "
+              f"-> TPR={r['youden_tpr']:.2f}  FPR={r['youden_fpr']:.2f}  (n={r['n_valid']})")
+
+# Tidy table: one row per (event_type, metric), with the pooled threshold alongside
+# for direct comparison
+by_type_rows = []
+for et in event_types_roc:
+    for metric in SNR_METRICS:
+        r      = roc_results_by_type[et].get(metric)
+        pooled = roc_results.get(metric, {})
+        pooled_thr = pooled.get('youden_threshold', np.nan)
+        by_type_rows.append({
+            'event_type'      : et,
+            'metric'          : metric,
+            'n_valid'         : r['n_valid'] if r else 0,
+            'n_pos'           : r['n_pos']   if r else 0,
+            'n_neg'           : r['n_neg']   if r else 0,
+            'auc'             : round(r['auc'], 4)              if r else np.nan,
+            'best_threshold'  : round(r['youden_threshold'], 3) if r else np.nan,
+            'tpr_at_best_thr' : round(r['youden_tpr'], 3)       if r else np.nan,
+            'fpr_at_best_thr' : round(r['youden_fpr'], 3)       if r else np.nan,
+            'pooled_threshold': round(pooled_thr, 3) if not np.isnan(pooled_thr) else np.nan,
+            'delta_vs_pooled' : (round(r['youden_threshold'] - pooled_thr, 3)
+                                  if r and not np.isnan(pooled_thr) else np.nan),
+        })
+df_roc_by_type = pd.DataFrame(by_type_rows)
+
+print("\n--- 3.3b  Per-event-type threshold summary ---")
+print(df_roc_by_type.to_string(index=False))
+
+by_type_path = os.path.join(RUN_DIR, f"snr_summary_by_type_{_RUN_STAMP}.csv")
+df_roc_by_type.to_csv(by_type_path, index=False)
+print(f"\n[SAVED] {by_type_path}")
 
 
 # --- 3.4  Threshold sensitivity ----------------------------------------------
@@ -536,6 +618,31 @@ else:
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"    [SAVED] {path}")
+
+
+# ---- Figure 3b: Best threshold per event type -------------------------------
+# plot_threshold_by_type() is defined in visualization.py.
+print("  Fig 3b: Threshold per event type ...")
+
+if df_roc_by_type['best_threshold'].notna().any():
+    plot_threshold_by_type(
+        df_roc_by_type, SNR_METRICS, SNR_LONG, RUN_DIR, _RUN_STAMP,
+    )
+else:
+    print("    [SKIP] No per-type ROC results (every subset had a single class).")
+
+
+# ---- Figure 3c: ROC curves faceted by event type -----------------------------
+# plot_roc_by_type() is defined in visualization.py — sanity check for Fig 3b:
+# a per-type threshold is only meaningful if that type's own curve clears the diagonal.
+print("  Fig 3c: ROC curves per event type ...")
+
+if any(roc_results_by_type[et] for et in event_types_roc):
+    plot_roc_by_type(
+        roc_results_by_type, SNR_METRICS, SNR_SHORT, RUN_DIR, _RUN_STAMP,
+    )
+else:
+    print("    [SKIP] No per-type ROC results (every subset had a single class).")
 
 
 # ---- Figure 4: Threshold sensitivity ----------------------------------------
