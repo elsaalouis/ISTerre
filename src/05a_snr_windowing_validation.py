@@ -1,32 +1,36 @@
 """
-SNR COMPARISON DIAGNOSTIC
-==========================
+05a_snr_windowing_validation.py
+================================
 ISTerre internship — Environmental seismology in glaciology
 Author : Elsa Louis
-Date   : April 2026
+Date   : April 2026 (renamed + scoped July 2026)
+
+Scope — read this before reusing any threshold from this script
+-----------------------------------------------------------------
+This script answers ONE question: does SNR predict whether the automatic STA/LTA-style detector correctly bracketed the true event onset in its detection window? 
+It does NOT answer "is this signal clean/strong enough to be useful for feature extraction, classification, or DeepDenoiser training
+
+Why the distinction matters: an event can have a perfectly time-aligned window and still be a noisy, low-amplitude signal; conversely an event can
+have imprecise pick/origin alignment while still containing a strong, usable waveform within the window
 
 Goal
 ----
-Compare the 7 SNR metrics computed by script 02 to identify which one best separates high-quality detections from poor ones
+Compare the 7 SNR metrics computed by script 04 to identify which one best separates well-aligned detections from misaligned ones
 
 Ground truth: origin_inside_det
-  True  -> catalog origin time falls inside the detected window (good detection)
+  True  -> catalog origin time falls inside the detected window (well-aligned)
   False -> origin time is outside the window (missed onset)
 
 Ground truth: pick_inside_det
   True  -> P-wave pick time falls inside the detected window
-  False -> P-wave pick time is outside the window 
+  False -> P-wave pick time is outside the window
 
 Analyses
 --------
-  3.1  Basic distribution statistics per metric (mean, median, std, IQR) + mean for good vs bad detections separately
+  3.1  Basic distribution statistics per metric (mean, median, std, IQR) + mean for aligned vs misaligned detections separately
   3.2  Pearson correlation matrix between the 7 metrics (are some metrics redundant?)
-  3.3  ROC curves + AUC for each metric, POOLED across all event types (which metric
-       best discriminates good from bad detections? Youden J optimal threshold per metric)
-  3.3b Same ROC + Youden analysis, but run SEPARATELY per event type — is the pooled
-       threshold above a reasonable compromise, or does e.g. rockslide need a different
-       threshold than ice quake? (motivated by 05a/06c only ever using one pooled
-       threshold for every class so far)
+  3.3  ROC curves + AUC for each metric, POOLED across all event types (which metric best discriminates aligned from misaligned detections? Youden J optimal threshold per metric)
+  3.3b Same ROC + Youden analysis, but run SEPARATELY per event type
   3.4  Threshold sensitivity: pass rate, TPR, FPR vs threshold value
   3.5  Per-station and per-event-type summary
   3.6  Save summary CSV
@@ -40,7 +44,7 @@ Output
 ------
   snr_summary_<stamp>.csv               : per-metric table (AUC, best threshold, ...), pooled across types
   snr_summary_by_type_<stamp>.csv       : same, but one row per (event_type, metric), + delta vs the pooled threshold
-  fig_distributions_<stamp>.png         : histograms per metric, blue=good / red=bad
+  fig_distributions_<stamp>.png         : histograms per metric, blue=aligned / red=misaligned
   fig_correlation_<stamp>.png           : Pearson correlation heatmap
   fig_roc_<stamp>.png                   : ROC curves for all 7 metrics, pooled
   fig_threshold_by_type_<stamp>.png     : Youden-optimal threshold per event type, one panel per metric
@@ -65,7 +69,7 @@ INPUT_CSV  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\
 # -- Paths --------------------------------------------------------------------
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
-OUTPUT_DIR  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\05a_snr_comparison\pick_inside_det"
+OUTPUT_DIR  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\05a_snr_windowing_validation\pick_inside_det"
 
 # -- Key diagnostic -----------------------------------------------------------
 GROUND_TRUTH = 'pick_inside_det'  # origin_inside_det or pick_inside_det
@@ -108,8 +112,8 @@ THRESHOLD_RANGE = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5, 10.0, 15.0, 20.0
 # One dot per station on a geographic map, colored by mean SNR of MAP_METRIC
 MAP_METRIC      = 'SNR_s2n_median'   # metric displayed on the geographic map
 MAP_EXTENT_PAD  = 0.5                # degrees of padding added around the event bounding box
-MONT_BLANC_LON  = 6.865              
-MONT_BLANC_LAT  = 45.832             
+MONT_BLANC_LON  = 6.865
+MONT_BLANC_LAT  = 45.832
 
 
 
@@ -146,7 +150,7 @@ from visualization import plot_station_map, plot_threshold_by_type, plot_roc_by_
 # ----------- Run setup ---------------
 RUN_DIR, _RUN_STAMP = create_run_dir(OUTPUT_DIR)
 _log_file, _log_filename = setup_logging(
-    RUN_DIR, "05a_snr_comparison.py",
+    RUN_DIR, "05a_snr_windowing_validation.py",
     extra_info=f"Ground truth: {GROUND_TRUTH} | Metrics: {SNR_METRICS}"
 )
 set_matplotlib_defaults()
@@ -173,14 +177,14 @@ print(f"  SNR metrics found : {SNR_METRICS}")
 df = df_all.dropna(subset=SNR_METRICS, how='all').copy()
 print(f"  {len(df)} rows kept  ({len(df_all) - len(df)} dropped — all SNR values were NaN)")
 
-# Create the ground truth column: True = good detection, False = missed onset
+# Create the ground truth column: True = well-aligned window, False = missed onset
 if 'origin_inside_det' not in df.columns:
     print("[ERROR] 'origin_inside_det' column not found. Exiting.")
     sys.exit(1)
 df['label'] = df[GROUND_TRUTH].astype(bool)
 
-n_pos = df['label'].sum()          # number of good detections
-n_neg = (~df['label']).sum()       # number of bad detections
+n_pos = df['label'].sum()          # number of well-aligned detections
+n_neg = (~df['label']).sum()       # number of misaligned detections
 print(f"\n  Ground truth ({GROUND_TRUTH}):")
 print(f"    True  — inside window  : {n_pos}  ({100*n_pos/len(df):.1f}%)")
 print(f"    False — outside window : {n_neg}  ({100*n_neg/len(df):.1f}%)")
@@ -229,8 +233,8 @@ else:
 
 
 # ----------- Color scheme used in all figures --------------------------------
-C_POS  = '#2166ac'       # blue  — origin inside (good detection)
-C_NEG  = '#d6604d'       # red   — origin outside (bad detection)
+C_POS  = '#2166ac'       # blue  — origin inside (well-aligned)
+C_NEG  = '#d6604d'       # red   — origin outside (misaligned)
 CMAP10 = plt.cm.tab10.colors   # 10 distinct colors, one per metric
 
 
@@ -248,18 +252,18 @@ print("=" * 70)
 #
 # For each SNR metric we compute:
 #   - overall stats: mean, median, std, IQR (Q3-Q1)
-#   - mean and median split by ground truth: good (label=True) vs bad (label=False)
+#   - mean and median split by ground truth: aligned (label=True) vs misaligned (label=False)
 #
 # Key: difference between mean_inside and mean_outside
-# if good detections have clearly higher SNR than bad ones
+# if well-aligned detections have clearly higher SNR than misaligned ones
 
 print("\n--- 3.1  Distribution statistics ---")
 
 dist_rows = []
 for metric in SNR_METRICS:
     col     = df[metric].dropna()       # .loc[condition, column] keeps only the rows where the condition is True
-    col_pos = df.loc[ df['label'], metric].dropna()   # SNR values for good detections
-    col_neg = df.loc[~df['label'], metric].dropna()   # SNR values for bad detections
+    col_pos = df.loc[ df['label'], metric].dropna()   # SNR values for well-aligned detections
+    col_neg = df.loc[~df['label'], metric].dropna()   # SNR values for misaligned detections
 
     row = {
         'metric'         : metric,
@@ -271,8 +275,8 @@ for metric in SNR_METRICS:
         'Q1'             : round(col.quantile(0.25), 2),   # 25th percentile (returns the value below which 25% of the data falls)
         'Q3'             : round(col.quantile(0.75), 2),   # 75th percentile
         'IQR'            : round(col.quantile(0.75) - col.quantile(0.25), 2), # range of the middle 50% of values
-        'mean_inside'    : round(col_pos.mean(), 2),       # good detections
-        'mean_outside'   : round(col_neg.mean(), 2),       # bad detections
+        'mean_inside'    : round(col_pos.mean(), 2),       # well-aligned detections
+        'mean_outside'   : round(col_neg.mean(), 2),       # misaligned detections
         'median_inside'  : round(col_pos.median(), 2),
         'median_outside' : round(col_neg.median(), 2),
     }
@@ -281,8 +285,8 @@ for metric in SNR_METRICS:
     print(f"\n  {metric}")
     print(f"    All   :  mean={row['mean']}  median={row['median']}  "
           f"std={row['std']}  IQR=[{row['Q1']}, {row['Q3']}]")
-    print(f"    Inside  (good) :  mean={row['mean_inside']}   median={row['median_inside']}")
-    print(f"    Outside (bad)  :  mean={row['mean_outside']}  median={row['median_outside']}")
+    print(f"    Inside  (aligned)   :  mean={row['mean_inside']}   median={row['median_inside']}")
+    print(f"    Outside (misaligned):  mean={row['mean_outside']}  median={row['median_outside']}")
 
 df_dist = pd.DataFrame(dist_rows)  # converts the list of 7 dictionaries into a table
 
@@ -301,8 +305,8 @@ print(corr.round(2).to_string())
 # --- 3.3  ROC curves and AUC -------------------------------------------------
 #
 # For each metric we sweep all possible threshold values and compute:
-#   TPR (True Positive Rate)  = fraction of good detections that pass the threshold
-#   FPR (False Positive Rate) = fraction of bad  detections that also pass
+#   TPR (True Positive Rate)  = fraction of well-aligned detections that pass the threshold
+#   FPR (False Positive Rate) = fraction of misaligned detections that also pass
 #
 # The ROC curve plots TPR vs FPR as the threshold moves from -inf to +inf
 # AUC (Area Under Curve) summarises the whole curve in one number:
@@ -420,8 +424,8 @@ print(f"\n[SAVED] {by_type_path}")
 #
 # For each metric and each threshold value in THRESHOLD_RANGE, we compute:
 #   pass_rate = fraction of ALL detections that pass (practical data retention)
-#   TPR       = fraction of GOOD detections that pass (we want this high)
-#   FPR       = fraction of BAD  detections that pass (we want this low)
+#   TPR       = fraction of well-aligned detections that pass (we want this high)
+#   FPR       = fraction of misaligned detections that pass (we want this low)
 #
 # This is the practical complement to the ROC curve: instead of all possible
 # thresholds, we look at specific round numbers (1, 2, 3 ...) that you might
@@ -432,14 +436,14 @@ print("\n--- 3.4  Threshold sensitivity ---")
 sens_rows = []
 for metric in SNR_METRICS:
     valid   = df[['label', metric]].dropna()
-    n_pos_v = int(valid['label'].sum())    # how many good detections exist for this metric
-    n_neg_v = int((~valid['label']).sum()) # bad detections
+    n_pos_v = int(valid['label'].sum())    # how many well-aligned detections exist for this metric
+    n_neg_v = int((~valid['label']).sum()) # misaligned detections
     for thr in THRESHOLD_RANGE:
         passing   = valid[metric] >= thr   # true for every detection whose SNR is above the threshold
         n_pass    = int(passing.sum())     # counts the trues
         pass_rate = n_pass / len(valid) if len(valid) > 0 else np.nan  # fraction of all detections that would survive this threshold
-        tpr_val   = (passing &  valid['label']).sum() / n_pos_v if n_pos_v > 0 else np.nan  # detections that pass the threshold AND are good
-        fpr_val   = (passing & ~valid['label']).sum() / n_neg_v if n_neg_v > 0 else np.nan  # detections that pass the threshold AND are bad
+        tpr_val   = (passing &  valid['label']).sum() / n_pos_v if n_pos_v > 0 else np.nan  # detections that pass the threshold AND are well-aligned
+        fpr_val   = (passing & ~valid['label']).sum() / n_neg_v if n_neg_v > 0 else np.nan  # detections that pass the threshold AND are misaligned
         sens_rows.append({
             'metric': metric, 'threshold': thr,
             'n_pass': n_pass, 'pass_rate': pass_rate,
@@ -472,8 +476,8 @@ for metric in SNR_METRICS:
         'median'           : base['median'],
         'std'              : base['std'],
         'IQR'              : base['IQR'],
-        'mean_inside'      : base['mean_inside'],    # good detections
-        'mean_outside'     : base['mean_outside'],   # bad detections
+        'mean_inside'      : base['mean_inside'],    # well-aligned detections
+        'mean_outside'     : base['mean_outside'],   # misaligned detections
         'auc'              : round(roc.get('auc', np.nan), 4),
         'best_threshold'   : round(roc.get('youden_threshold', np.nan), 3),
         'tpr_at_best_thr'  : round(roc.get('youden_tpr', np.nan), 3),
@@ -553,8 +557,8 @@ for idx in range(N_M, len(axes)):
     axes[idx].set_visible(False)
 
 fig.suptitle(
-    'SNR distributions — blue: origin inside window (good)  |  red: origin outside (bad)\n'
-    'The more separated the two colors, the more useful the metric',
+    'SNR distributions — blue: origin inside window (aligned)  |  red: origin outside (misaligned)\n'
+    'The more separated the two colors, the more useful the metric for detector/window validation',
     fontsize=10
 )
 plt.tight_layout(rect=[0, 0, 1, 0.96])
@@ -606,9 +610,9 @@ else:
                    color=CMAP10[k % 10], s=70, zorder=5, marker='D',
                    edgecolors='black', linewidths=0.5)
 
-    ax.set_xlabel('False Positive Rate  (fraction of bad detections kept)', fontsize=10)
-    ax.set_ylabel('True Positive Rate  (fraction of good detections kept)', fontsize=10)
-    ax.set_title('ROC curves — higher AUC = better metric\n'
+    ax.set_xlabel('False Positive Rate  (fraction of misaligned detections kept)', fontsize=10)
+    ax.set_ylabel('True Positive Rate  (fraction of well-aligned detections kept)', fontsize=10)
+    ax.set_title('ROC curves — higher AUC = better metric for detector/window validation\n'
                  'Diamond = best threshold (Youden J)', fontsize=10)
     ax.legend(fontsize=9, loc='lower right')
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
@@ -651,8 +655,8 @@ print("  Fig 4: Threshold sensitivity ...")
 fig, axes = plt.subplots(1, 3, figsize=(17, 5))
 panel_cfg = [
     ('pass_rate', 'Pass rate (fraction of all detections kept)'),
-    ('tpr',       'TPR — fraction of good detections kept'),
-    ('fpr',       'FPR — fraction of bad detections kept'),
+    ('tpr',       'TPR — fraction of well-aligned detections kept'),
+    ('fpr',       'FPR — fraction of misaligned detections kept'),
 ]
 for ax, (key, ylabel) in zip(axes, panel_cfg):
     for k, metric in enumerate(SNR_METRICS):

@@ -17,6 +17,8 @@ All figure-generating functions used across the pipeline scripts:
   - plot_threshold_by_type()     : Youden threshold per event type     (script 05a)
   - plot_roc_by_type()           : ROC curves faceted by event type    (script 05a)
   - plot_waveform_comparison()   : raw vs denoised waveform, one event (script 03d)
+  - plot_snr_quality_threshold() : GMM/Otsu quality-threshold overlay  (script 05b)
+  - plot_roc_pooled()            : generic pooled ROC curve plot       (script 05b)
 """
 
 import os
@@ -1184,4 +1186,172 @@ def plot_waveform_comparison(raw_signal, denoised_signal, itp, sps, run_dir, sta
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"    [SAVED] {fname_out}")
+    return out_path
+
+
+
+# =============================================================================
+# SNR QUALITY-THRESHOLD DIAGNOSTICS (script 05b)
+# =============================================================================
+# Distinct from plot_threshold_by_type/plot_roc_by_type above (script 05a), which
+# show the threshold that best predicts DETECTOR/WINDOW ALIGNMENT. These two
+# functions show candidate thresholds for actual SIGNAL QUALITY / downstream
+# usefulness — see 05b_snr_quality_threshold.py for how they're computed.
+
+def _gaussian_pdf(x, mean, std):
+    """Standard normal pdf, evaluated manually (no scipy.stats dependency here)."""
+    std = max(std, 1e-9)
+    return np.exp(-0.5 * ((x - mean) / std) ** 2) / (std * np.sqrt(2 * np.pi))
+
+
+def plot_snr_quality_threshold(df, metrics, metric_labels, gmm_params, thresholds,
+                                run_dir, stamp, event_type=""):
+    """
+    Histogram of log10(SNR) per metric — restricted to well-aligned detections —
+    with candidate "signal quality" thresholds overlaid
+
+    Two independent, label-free methods are shown together so you can see whether
+    they agree: a 2-component Gaussian mixture fit (the two components are drawn
+    individually plus their sum) and an Otsu threshold (maximizes between-class
+    variance on the histogram). The current pooled 05a windowing-validation
+    threshold is overlaid too, for reference only — it answers a different
+    question (see 05a's docstring) and is not expected to land in the same place.
+
+    Parameters
+    ----------
+    df             : pd.DataFrame — one row per detection, already restricted to
+                     well-aligned rows (e.g. pick_inside_det == True)
+    metrics        : list of str — SNR columns to plot, one panel each
+    metric_labels  : dict {metric: label} — panel titles
+    gmm_params     : dict {metric: {'means': (m0, m1), 'stds': (s0, s1),
+                     'weights': (w0, w1)}} in log10(SNR) space, or {} / missing
+                     key if the fit failed for that metric (panel just skips the
+                     component curves)
+    thresholds     : dict {metric: {'GMM crossover': float or None,
+                     'Otsu': float or None, '05a pooled (windowing)': float or None}}
+                     — linear SNR units; any None entry is not drawn
+    run_dir, stamp, event_type : see other plot_* functions in this module
+
+    Returns
+    -------
+    out_path : str
+    """
+    n_panels = len(metrics)
+    ncols = min(4, n_panels)
+    nrows = int(np.ceil(n_panels / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.2 * ncols, 4.3 * nrows))
+    axes = np.array(axes).reshape(-1)
+
+    thr_colors = {
+        'GMM crossover'          : '#2ca02c',
+        'Otsu'                   : '#9467bd',
+        '05a pooled (windowing)' : '#d62728',
+    }
+
+    for k, metric in enumerate(metrics):
+        ax = axes[k]
+        x  = df[metric].dropna()
+        x  = x[x > 0]
+        if len(x) < 5:
+            ax.text(0.5, 0.5, "No valid data", ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(metric_labels.get(metric, metric), fontsize=10, fontweight='bold')
+            continue
+
+        logx = np.log10(x)
+        ax.hist(logx, bins=50, density=True, color='steelblue', alpha=0.55, edgecolor='white')
+
+        gp = gmm_params.get(metric)
+        if gp:
+            xs = np.linspace(logx.min(), logx.max(), 300)
+            total = np.zeros_like(xs)
+            for m, s, w in zip(gp['means'], gp['stds'], gp['weights']):
+                comp = w * _gaussian_pdf(xs, m, s)
+                total += comp
+                ax.plot(xs, comp, lw=1.3, ls=':', color='grey')
+            ax.plot(xs, total, lw=1.8, color='black', label='GMM fit (2 components)')
+
+        for method, thr_val in thresholds.get(metric, {}).items():
+            if thr_val is None or thr_val <= 0:
+                continue
+            ax.axvline(np.log10(thr_val), color=thr_colors.get(method, 'grey'),
+                       linestyle='--', linewidth=1.6,
+                       label=f'{method} = {thr_val:.2f}')
+
+        ax.set_title(metric_labels.get(metric, metric), fontsize=10, fontweight='bold')
+        ax.set_xlabel('log$_{10}$(SNR)', fontsize=9)
+        ax.set_ylabel('Density', fontsize=9)
+        ax.legend(fontsize=6.5)
+        ax.tick_params(labelsize=8)
+
+    for idx in range(n_panels, len(axes)):
+        axes[idx].set_visible(False)
+
+    fig.suptitle(
+        f'SNR quality-threshold candidates (well-aligned detections only) — {event_type}'.strip(' —')
+        + '\nGreen dotted = GMM components  |  compare candidate thresholds, no single one is "correct" by construction',
+        fontsize=11, fontweight='bold', y=1.02,
+    )
+    plt.tight_layout()
+
+    fname = f"fig_quality_threshold_{stamp}.png"
+    out_path = os.path.join(run_dir, fname)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"    [SAVED] {fname}")
+    return out_path
+
+
+def plot_roc_pooled(roc_results, metrics, metric_labels, run_dir, stamp,
+                     title, subtitle="", fname=None):
+    """
+    Generic pooled ROC curve plot — one curve per metric, all on shared axes
+
+    Reusable version of 05a's inline "Figure 3" — kept generic (caller supplies
+    the title/subtitle) so it works for any binary ground truth, not just
+    windowing alignment. Used by 05b for the classification-correctness ROC.
+
+    Parameters
+    ----------
+    roc_results   : dict {metric: {fpr, tpr, auc, youden_fpr, youden_tpr, ...}}
+                    same structure as 05a's roc_results
+    metrics       : list of str — metric names, in display order
+    metric_labels : dict {metric: label} — used in the legend
+    run_dir       : str — output directory
+    stamp         : str — run timestamp, used in the default output filename
+    title         : str — main figure title
+    subtitle      : str — optional second title line
+    fname         : str or None — output filename; defaults to f"fig_roc_{stamp}.png"
+
+    Returns
+    -------
+    out_path : str
+    """
+    CMAP10 = plt.cm.tab10.colors
+    fig, ax = plt.subplots(figsize=(8, 7))
+    ax.plot([0, 1], [0, 1], 'k--', lw=0.8, label='Random (AUC = 0.50)')
+
+    for k, metric in enumerate(metrics):
+        r = roc_results.get(metric)
+        if r is None:
+            continue
+        lbl = f"{metric_labels.get(metric, metric).replace(chr(10), ' ')}  (AUC={r['auc']:.3f})"
+        ax.plot(r['fpr'], r['tpr'], lw=2.2, color=CMAP10[k % 10], label=lbl)
+        ax.scatter(r['youden_fpr'], r['youden_tpr'],
+                   color=CMAP10[k % 10], s=70, zorder=5, marker='D',
+                   edgecolors='black', linewidths=0.5)
+
+    ax.set_xlabel('False Positive Rate', fontsize=10)
+    ax.set_ylabel('True Positive Rate', fontsize=10)
+    full_title = f"{title}\n{subtitle}" if subtitle else title
+    ax.set_title(full_title, fontsize=10, fontweight='bold')
+    ax.legend(fontsize=9, loc='lower right')
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    ax.grid(True, lw=0.4, alpha=0.4)
+    plt.tight_layout()
+
+    fname = fname or f"fig_roc_{stamp}.png"
+    out_path = os.path.join(run_dir, fname)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"    [SAVED] {fname}")
     return out_path

@@ -58,7 +58,7 @@ CSV_PATH = (
 )
 
 SDS_ROOT    = "/data/sig/SDS"
-OUTPUT_DIR  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_RS100_20260716_164429"
+OUTPUT_DIR  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_EQ50_RS50_20260716_155254"
 
 # -- Quality gate (same thresholds as 03b / 05a / 06b / 06c) ------------------
 # Defines RESCUE targets: EVENT_TYPE rows that fail this gate are what we try to denoise
@@ -72,10 +72,10 @@ TRAIN_SNR_FULL_MEAN_MIN   = 3.0
 TRAIN_SNR_FULL_MEDIAN_MIN = 2.5    
 
 # -- Training-set composition (mix in other event classes?) -------------------
-TRAIN_EVENT_TYPES = [EVENT_TYPE, "rockslide"]
+TRAIN_EVENT_TYPES = [EVENT_TYPE, "earthquake"]
 
 # Target proportion of the final training set, by row count, e.g. {"rockslide": 0.5,"earthquake": 0.5} for a 50/50 mix 
-TRAIN_MIX_RATIO = None #{EVENT_TYPE: 0.5, "earthquake": 0.5}
+TRAIN_MIX_RATIO = {EVENT_TYPE: 0.5, "earthquake": 0.5}
 TRAIN_MIX_SEED  = 42   # reproducible subsampling
 
 # -- DeepDenoiser directory (where predict.py lives) --------------------------
@@ -84,12 +84,12 @@ DEEPDENOISER_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\pr
 # -- Trained model checkpoint for inference -----------------------------------
 # Set to the path of a trained checkpoint folder, e.g.: MODEL_DIR = "/data/failles/louisels/project/results/deepdenoiser/log/260601-120000"
 #  -> set to None to SKIP inference and prepare data only
-MODEL_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_RS100_20260716_164429\model-260717-085332"
+MODEL_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_EQ50_RS50_20260716_155254\model-260717-085332"
 
 # -- Existing run directory (inference-only shortcut) -------------------------
 # When BOTH MODEL_DIR and EXISTING_RUN_DIR are set, the script skips ALL extraction steps (Sections 3–6b: SDS, signal, noise, rescue) and runs predict.py directly on the rescue files from that previous run 
 #  -> set to None to run the full pipeline (extract everything from SDS)
-EXISTING_RUN_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_RS100_20260716_164429"
+EXISTING_RUN_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_EQ50_RS50_20260716_155254"
 
 # -- Waveform extraction parameters ------------------------------------------
 TARGET_FS  = 100      # [Hz]  target sampling rate (DeepDenoiser default)
