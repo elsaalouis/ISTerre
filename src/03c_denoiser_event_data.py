@@ -58,7 +58,7 @@ CSV_PATH = (
 )
 
 SDS_ROOT    = "/data/sig/SDS"
-OUTPUT_DIR  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\run_20260709_180801"
+OUTPUT_DIR  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_RS100_20260716_164429"
 
 # -- Quality gate (same thresholds as 03b / 05a / 06b / 06c) ------------------
 # Defines RESCUE targets: EVENT_TYPE rows that fail this gate are what we try to denoise
@@ -72,10 +72,10 @@ TRAIN_SNR_FULL_MEAN_MIN   = 3.0
 TRAIN_SNR_FULL_MEDIAN_MIN = 2.5    
 
 # -- Training-set composition (mix in other event classes?) -------------------
-TRAIN_EVENT_TYPES = [EVENT_TYPE, "earthquake"]
+TRAIN_EVENT_TYPES = [EVENT_TYPE, "rockslide"]
 
 # Target proportion of the final training set, by row count, e.g. {"rockslide": 0.5,"earthquake": 0.5} for a 50/50 mix 
-TRAIN_MIX_RATIO = {EVENT_TYPE: 0.5, "earthquake": 0.5}
+TRAIN_MIX_RATIO = None #{EVENT_TYPE: 0.5, "earthquake": 0.5}
 TRAIN_MIX_SEED  = 42   # reproducible subsampling
 
 # -- DeepDenoiser directory (where predict.py lives) --------------------------
@@ -84,12 +84,12 @@ DEEPDENOISER_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\pr
 # -- Trained model checkpoint for inference -----------------------------------
 # Set to the path of a trained checkpoint folder, e.g.: MODEL_DIR = "/data/failles/louisels/project/results/deepdenoiser/log/260601-120000"
 #  -> set to None to SKIP inference and prepare data only
-MODEL_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\model-260710-101336"
+MODEL_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_RS100_20260716_164429\model-260717-085332"
 
 # -- Existing run directory (inference-only shortcut) -------------------------
 # When BOTH MODEL_DIR and EXISTING_RUN_DIR are set, the script skips ALL extraction steps (Sections 3–6b: SDS, signal, noise, rescue) and runs predict.py directly on the rescue files from that previous run 
 #  -> set to None to run the full pipeline (extract everything from SDS)
-EXISTING_RUN_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\run_20260709_180801"
+EXISTING_RUN_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_RS100_20260716_164429"
 
 # -- Waveform extraction parameters ------------------------------------------
 TARGET_FS  = 100      # [Hz]  target sampling rate (DeepDenoiser default)
@@ -365,6 +365,28 @@ print(f"  Noise files saved  : {n_noise_ok}")
 print(f"  Noise files skipped: {n_noise_skip}")
 
 
+# =============================================================================
+# SECTION 5b — VALIDATE SIGNAL/NOISE STATION COVERAGE
+# =============================================================================
+# data_reader.py samples ONE noise file,per station on the fly during training, keyed by the 'channels' (NET.STA) value
+#  -> it has no fallback if a station has signal windows but zero matching noise windows, and crashes deep in training
+
+signal_stations = {r["channels"] for r in signal_records}
+noise_stations   = {r["channels"] for r in noise_records}
+orphan_stations  = signal_stations - noise_stations
+
+if orphan_stations:
+    n_before = len(signal_records)
+    signal_records = [r for r in signal_records if r["channels"] not in orphan_stations]
+    n_dropped = n_before - len(signal_records)
+    print(f"\n  [WARN] {len(orphan_stations)} station(s) have signal windows but "
+          f"ZERO matching noise windows — the DataReader would crash on these "
+          f"mid-training. Dropping {n_dropped} orphaned signal row(s):")
+    for st in sorted(orphan_stations):
+        print(f"           {st}")
+else:
+    print("\n  [OK] Every station in signal_list.csv has at least one matching noise window.")
+
 
 # =============================================================================
 # SECTION 6 — WRITE CSV INDEX FILES
@@ -513,7 +535,10 @@ for et in TRAIN_EVENT_TYPES:
     n_et = int((df_good['event_type'] == et).sum()) if 'event_type' in df_good.columns else 0
     print(f"    {et:<14s}: {n_et:>6,}")
 print(f"  GOOD total (all classes combined)  : {len(df_good):>6,}")
-print(f"  Signal .npz  (training, clean)    : {n_signal_ok:>6,}  → {signal_dir}/")
+print(f"  Signal .npz extracted              : {n_signal_ok:>6,}  → {signal_dir}/")
+if len(signal_records) != n_signal_ok:
+    print(f"  Signal rows in signal_list.csv     : {len(signal_records):>6,}  "
+          f"({n_signal_ok - len(signal_records)} dropped — orphan stations, see STEP 4 warning above)")
 print(f"  Noise  .npz  (training)           : {n_noise_ok:>6,}  → {noise_dir}/")
 print(f"  Rescue .npz  (inference targets)  : {n_rescue_ok:>6,}  → {rescue_dir}/")
 print(f"  signal_list.csv                   : {signal_csv_path}")
