@@ -58,9 +58,11 @@ FALLBACK_TOP20 = [
     "kurtosis_20_nyq",         "ediff_1_3__3_10",
 ]
 
-# -- Quality gate (same thresholds from 05a) -----------------------------------
-SNR_FULL_MEAN_MIN  = 1.856    # 05a ROC-optimal  (AUC=0.700, TPR=0.673, FPR=0.392)
-SNR_S2N_MEDIAN_MIN = 10.503   # 05a ROC-optimal  (AUC=0.703, TPR=0.749, FPR=0.445)
+# -- Quality gate (05b Tier 2 classification-based — run_20260720_104210) -----
+# Top-2 AUC metrics from 05b Tier 2 (classification correctness, not windowing).
+# SNR_full_mean/SNR_s2n_median dropped (AUC 0.617/0.588, weaker than these two).
+SNR_MIN             = 1.70    # 05b Tier 2 — metric 'SNR', AUC=0.627
+SNR_FULL_MEDIAN_MIN = 1.99    # 05b Tier 2 — metric 'SNR_full_median', AUC=0.642 (best)
 
 # -- Train / test split --------------------------------------------------------
 TEST_SIZE    = 0.20
@@ -154,15 +156,16 @@ df = rename_legacy_columns(df)
 df = df[df["event_type"].isin(TARGET_CLASSES)].copy()
 print(f"After class filter {TARGET_CLASSES}: {len(df):,} rows.")
 
-# Use quality_ok column if present, otherwise fall back to explicit SNR thresholds
-if "quality_ok" in df.columns:
-    df = df[df["quality_ok"] == True].copy()
-else:
-    mask_quality = (
-        (df["SNR_full_mean"]  >= SNR_FULL_MEAN_MIN) &
-        (df["SNR_s2n_median"] >= SNR_S2N_MEDIAN_MIN)
-    )
-    df = df[mask_quality].copy()
+# Quality gate: always recompute explicitly from SNR / SNR_full_median.
+# NOTE: do NOT trust the precomputed 'quality_ok' catalog column — it was baked
+# by 04a using the OLD 05a thresholds (SNR_full_mean/SNR_s2n_median) and is now
+# stale relative to the 05b Tier 2 thresholds used here. It will only reflect
+# the new gate again once 04a itself is rerun, which is out of scope for now.
+mask_quality = (
+    (df["SNR"]             >= SNR_MIN) &
+    (df["SNR_full_median"] >= SNR_FULL_MEDIAN_MIN)
+)
+df = df[mask_quality].copy()
 print(f"After quality filter: {len(df):,} rows kept.")
 
 # Drop rows where any Z-component feature is NaN (these should never be NaN;

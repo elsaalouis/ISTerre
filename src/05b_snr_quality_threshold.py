@@ -163,7 +163,7 @@ if GROUND_TRUTH not in df_all.columns:
     print(f"[ERROR] '{GROUND_TRUTH}' column not found. Exiting.")
     sys.exit(1)
 
-# Alignment is a hard prerequisite here, not an optimization target — see docstring.
+# Alignment is a hard prerequisite here, not an optimization target 
 df_aligned = df_all[df_all[GROUND_TRUTH] == True].copy()
 print(f"  Well-aligned rows ({GROUND_TRUTH} == True) : {len(df_aligned):,} / {len(df_all):,}"
       f"  ({100*len(df_aligned)/len(df_all):.1f}%)")
@@ -191,14 +191,12 @@ else:
 
 def otsu_threshold(values, n_bins=256):
     """
-    Otsu's method: find the threshold that maximizes between-class variance
-    of a histogram — a standard unsupervised bimodal-split finder, no label
-    or distributional assumption required (unlike the GMM fit above it).
+    Otsu's method: find the threshold that maximizes between-class variance of a histogram 
+     -> a standard unsupervised bimodal-split finder, no label or distributional assumption required (unlike the GMM fit above it)
 
     Parameters
     ----------
-    values : 1-D array-like — already in the space you want the threshold in
-             (here, log10(SNR))
+    values : 1-D array-like — already in the space you want the threshold in (here, log10(SNR))
     n_bins : int — histogram resolution
 
     Returns
@@ -244,10 +242,9 @@ def _gauss_pdf(x, mean, std):
 
 def gmm_crossover(means, stds, weights):
     """
-    Crossover point (in the same units as `means`) between two fitted Gaussian
-    components — the point in the valley between the two peaks where neither
-    component dominates. Returns None if the components don't actually cross
-    between their means (e.g. heavily overlapping / one totally dominates).
+    Crossover point (in the same units as `means`) between two fitted Gaussian components 
+     -> the point in the valley between the two peaks where neither component dominates
+     -> returns None if the components don't actually cross between their means (e.g. heavily overlapping / one totally dominates)
     """
     order = np.argsort(means)
     m = np.asarray(means)[order]

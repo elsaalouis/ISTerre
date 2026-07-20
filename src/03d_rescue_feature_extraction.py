@@ -33,12 +33,13 @@ SNR metrics (same definitions as detection.py):
   SNR_full_median = median(|sig|) / median(|noise|)
   SNR_s2n_median  = 99.5th pct(|sig|) / MAD(noise)   
 
-Quality gate (per-event-type ROC-optimal thresholds from 05a — see snr_summary_by_type_*.csv)
-  SNR_full_mean  >= SNR_FULL_MEAN_MIN
-  SNR_s2n_median >= SNR_S2N_MEDIAN_MIN
+Quality gate (05b Tier 2 classification-based thresholds — run_20260720_104210)
+  SNR             >= SNR_MIN
+  SNR_full_median >= SNR_FULL_MEDIAN_MIN
 
-Note: SNR_full_median is tracked and plotted for QC purposes, but is NOT part of the
-accept/reject gate above.
+These are the 2 highest-AUC metrics from 05b Tier 2 (classification correctness,
+not windowing alignment). SNR_full_mean and SNR_s2n_median dropped from the gate
+(AUC 0.617 and 0.588, both weaker) but are still computed/stored for reference.
 
 Outputs
 -------
@@ -78,9 +79,10 @@ SPS    = 100.0    # sampling rate (Hz) — fixed by 03c --sampling_rate 100
 ITP    = 1000     # P-arrival sample index (10 s × 100 Hz, fixed by 03c windowing)
 N_SAMP = 3000     # total samples in each NPZ window
 
-# ── Quality gate (same thresholds as 05a / 06b) ───────────────────────────────
-SNR_FULL_MEAN_MIN  = 1.91    # 05a ROC-optimal   
-SNR_FULL_MEDIAN_MIN = 1.60
+# ── Quality gate (05b Tier 2 classification-based — run_20260720_104210) ──────
+# 2 highest-AUC metrics from 05b Tier 2; SNR_full_mean/SNR_s2n_median dropped.
+SNR_MIN             = 1.70   # 05b Tier 2 — metric 'SNR', AUC=0.627
+SNR_FULL_MEDIAN_MIN = 1.99   # 05b Tier 2 — metric 'SNR_full_median', AUC=0.642 (best)
 
 # ── Minimum signal samples for feature extraction ────────────────────────────
 MIN_SIGNAL_SAMPLES = 200   # < 2 s at 100 Hz → skip (too short for 99 features)
@@ -192,7 +194,7 @@ print(f"Found {len(denoised_files):,} denoised NPZ files.")
 print(f"\n{'='*65}")
 print("  STEP 3 — SNR + feature extraction")
 print(f"{'='*65}")
-print(f"  Quality gate: SNR_full_mean >= {SNR_FULL_MEAN_MIN}  "
+print(f"  Quality gate: SNR >= {SNR_MIN}  "
       f"AND  SNR_full_median >= {SNR_FULL_MEDIAN_MIN}")
 
 rescue_rows  = []    # list of dicts — one per accepted event
@@ -269,15 +271,15 @@ for fpath in tqdm(denoised_files, desc="Processing"):
         snr_dict_raw = compute_snr_numpy(raw_signal, itp, det_dur, SPS)
         fidelity     = compute_denoise_correlation(raw_signal, denoised_signal, itp, det_dur, SPS)
     else:
-        snr_dict_raw = {'SNR_full_mean': np.nan, 'SNR_full_median': np.nan, 'SNR_s2n_median': np.nan}
+        snr_dict_raw = {'SNR': np.nan, 'SNR_full_mean': np.nan, 'SNR_full_median': np.nan, 'SNR_s2n_median': np.nan}
         fidelity     = {'corr_signal': np.nan, 'corr_noise': np.nan,
                          'energy_ratio_signal': np.nan, 'energy_ratio_noise': np.nan}
 
-    # ── Quality gate ──────────────────────────────────────────────────────────
-    snr_mean   = snr_dict.get('SNR_full_mean',  0.0)
-    snr_median    = snr_dict.get('SNR_full_median', 0.0)
-    passes     = (not np.isnan(snr_mean) and snr_mean  >= SNR_FULL_MEAN_MIN and
-                  not np.isnan(snr_median)  and snr_median   >= SNR_FULL_MEDIAN_MIN)
+    # ── Quality gate (05b Tier 2: SNR + SNR_full_median) ────────────────────────
+    snr_val    = snr_dict.get('SNR',             0.0)
+    snr_median = snr_dict.get('SNR_full_median', 0.0)
+    passes     = (not np.isnan(snr_val) and snr_val  >= SNR_MIN and
+                  not np.isnan(snr_median) and snr_median >= SNR_FULL_MEDIAN_MIN)
 
     qc_rows.append({
         'fname'               : fname,
@@ -285,6 +287,8 @@ for fpath in tqdm(denoised_files, desc="Processing"):
         'event_time'          : meta.get('event_time', None),
         'event_type'          : meta.get('event_type', None),
         'network'             : net, 'station': sta, 'channel': cha,
+        'SNR_raw'             : snr_dict_raw.get('SNR',             np.nan),
+        'SNR'                 : snr_dict.get('SNR',                 np.nan),
         'SNR_full_mean_raw'   : snr_dict_raw.get('SNR_full_mean',  np.nan),
         'SNR_full_mean'       : snr_dict.get('SNR_full_mean',      np.nan),
         'SNR_full_median_raw'  : snr_dict_raw.get('SNR_full_median', np.nan),
@@ -403,15 +407,16 @@ if MAKE_QC_PLOTS and qc_rows:
         if qc_df['event_type'].notna().any() else ""
     )
 
+    # Gate metrics (05b Tier 2, top-2 AUC): SNR and SNR_full_median.
+    # SNR_full_mean and SNR_s2n_median dropped from the gate/QC default view
+    # (weaker AUC — 0.617 and 0.588 respectively) but remain in denoise_qc_*.csv
+    # for reference.
     _metric_pairs = [
-        ('SNR_full_mean_raw',   'SNR_full_mean',   'SNR_full_mean'),
+        ('SNR_raw',             'SNR',             'SNR'),
         ('SNR_full_median_raw', 'SNR_full_median', 'SNR_full_median'),
-        ('SNR_s2n_median_raw',  'SNR_s2n_median',  'SNR_s2n_median'),
     ]
-    # Gate metrics are SNR_full_mean and SNR_s2n_median — SNR_full_median is tracked
-    # for QC only and has no threshold line drawn on its panel.
     _thresholds = {
-        'SNR_full_mean':  SNR_FULL_MEAN_MIN,
+        'SNR':             SNR_MIN,
         'SNR_full_median': SNR_FULL_MEDIAN_MIN,
     }
 
@@ -469,7 +474,7 @@ if MAKE_QC_PLOTS and qc_rows:
     )
     plot_denoise_fidelity(
         qc_df, corr_col='corr_signal',
-        snr_before_col='SNR_s2n_median_raw', snr_after_col='SNR_s2n_median',
+        snr_before_col='SNR_full_median_raw', snr_after_col='SNR_full_median',
         rescued_col='passed_gate', run_dir=RUN_DIR, stamp=STAMP,
         event_type=_event_type_label, noise_corr_col='corr_noise',
     )

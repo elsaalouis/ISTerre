@@ -72,9 +72,11 @@ FALLBACK_TOP20 = [
 ]
 
 # ── Quality gate (applied to original catalog only; rescue catalog already ────
-# ── passed the gate in 03d, so quality_ok=True for all rescue rows) ───────────
-SNR_FULL_MEAN_MIN  = 1.856    # 05a ROC-optimal  (AUC=0.700, TPR=0.673, FPR=0.392)
-SNR_S2N_MEDIAN_MIN = 10.503   # 05a ROC-optimal  (AUC=0.703, TPR=0.749, FPR=0.445)
+# ── passed the gate in 03d, so it already satisfies this same gate by construction) ──
+# 05b Tier 2 classification-based thresholds — run_20260720_104210. Top-2 AUC
+# metrics; SNR_full_mean/SNR_s2n_median dropped (AUC 0.617/0.588, weaker).
+SNR_MIN             = 1.70    # 05b Tier 2 — metric 'SNR', AUC=0.627
+SNR_FULL_MEDIAN_MIN = 1.99    # 05b Tier 2 — metric 'SNR_full_median', AUC=0.642 (best)
 
 # ── Train / test split ────────────────────────────────────────────────────────
 TEST_SIZE    = 0.20
@@ -143,15 +145,16 @@ orig = pd.read_csv(ORIGINAL_CSV, low_memory=False)
 orig = rename_legacy_columns(orig)
 orig = orig[orig["event_type"].isin(TARGET_CLASSES)].copy()
 
-# Apply quality gate to original (rescue rows already have quality_ok=True from 03d)
-if "quality_ok" in orig.columns:
-    orig = orig[orig["quality_ok"] == True].copy()
-else:
-    mask = (
-        (orig["SNR_full_mean"]  >= SNR_FULL_MEAN_MIN) &
-        (orig["SNR_s2n_median"] >= SNR_S2N_MEDIAN_MIN)
-    )
-    orig = orig[mask].copy()
+# Apply quality gate to original (rescue rows already satisfy this same gate,
+# by construction, from 03d). Always recompute explicitly from SNR/SNR_full_median
+# — do NOT trust the precomputed 'quality_ok' column, which was baked by 04a
+# using the OLD 05a thresholds and is stale relative to the 05b Tier 2 values
+# used here (only refreshed if 04a itself is rerun, out of scope for now).
+mask = (
+    (orig["SNR"]             >= SNR_MIN) &
+    (orig["SNR_full_median"] >= SNR_FULL_MEDIAN_MIN)
+)
+orig = orig[mask].copy()
 z_feat_cols = [f for f in FEATURE_NAMES if f in orig.columns]
 orig = orig.dropna(subset=z_feat_cols).copy()
 orig["source"] = "original"

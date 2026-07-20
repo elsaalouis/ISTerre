@@ -60,16 +60,19 @@ CSV_PATH = (
 SDS_ROOT    = "/data/sig/SDS"
 OUTPUT_DIR  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_EQ50_RS50_20260716_155254"
 
-# -- Quality gate (same thresholds as 03b / 05a / 06b / 06c) ------------------
-# Defines RESCUE targets: EVENT_TYPE rows that fail this gate are what we try to denoise
-SNR_FULL_MEAN_MIN  = 1.91    # 05a ROC-optimal
-SNR_FULL_MEDIAN_MIN = 1.60   # 05a ROC-optimal
+# -- Quality gate (05b Tier 2 classification-based — run_20260720_104210) -----
+# Defines RESCUE targets: EVENT_TYPE rows that fail this gate are what we try to denoise.
+# Metrics = the 2 highest-AUC metrics from 05b Tier 2 (classification correctness,
+# not windowing). SNR_full_mean and SNR_s2n_median dropped (AUC 0.617 and 0.588,
+# both weaker than these two) — same everywhere in 03c/03d/06b/06c for consistency.
+SNR_MIN             = 1.70   # 05b Tier 2 — metric 'SNR' (peak/noise), AUC=0.627
+SNR_FULL_MEDIAN_MIN = 1.99   # 05b Tier 2 — metric 'SNR_full_median', AUC=0.642 (best)
 
 # -- Training-target gate (stricter than the rescue gate above) ---------------
 # Used ONLY to select which rows are clean enough to serve as "signal" training examples for DeepDenoiser
-# -> independent of the rescue gate above
-TRAIN_SNR_FULL_MEAN_MIN   = 3.0  
-TRAIN_SNR_FULL_MEDIAN_MIN = 2.5    
+# -> independent of the rescue gate above. Same ~1.57x margin kept from the previous version.
+TRAIN_SNR_MIN             = 2.67
+TRAIN_SNR_FULL_MEDIAN_MIN = 3.12
 
 # -- Training-set composition (mix in other event classes?) -------------------
 TRAIN_EVENT_TYPES = [EVENT_TYPE, "earthquake"]
@@ -181,11 +184,11 @@ NT  = int(WINDOW_S  * TARGET_FS)          # total number of samples
 print(f"\n{'='*65}")
 print(f"  STEP 1 — Load catalog: '{EVENT_TYPE}' rescue targets + training pairs")
 print(f"{'='*65}")
-print(f"  Rescue gate   : SNR_full_mean >= {SNR_FULL_MEAN_MIN}  "
+print(f"  Rescue gate   : SNR >= {SNR_MIN}  "
       f"AND  SNR_full_median >= {SNR_FULL_MEDIAN_MIN}   (defines what needs denoising)")
-print(f"  Training gate : SNR_full_mean >= {TRAIN_SNR_FULL_MEAN_MIN}  "
+print(f"  Training gate : SNR >= {TRAIN_SNR_MIN}  "
       f"AND  SNR_full_median >= {TRAIN_SNR_FULL_MEDIAN_MIN}   (defines clean training examples)")
-if (TRAIN_SNR_FULL_MEAN_MIN < SNR_FULL_MEAN_MIN or
+if (TRAIN_SNR_MIN < SNR_MIN or
         TRAIN_SNR_FULL_MEDIAN_MIN < SNR_FULL_MEDIAN_MIN):
     print("  [WARN] Training gate is LOOSER than the rescue gate on at least one metric — "
           "check TRAIN_SNR_* if that's not intended.")
@@ -200,7 +203,7 @@ df_event = df[df["event_type"] == EVENT_TYPE].copy()
 print(f"After event_type filter: {len(df_event):,} '{EVENT_TYPE}' rows.")
 
 mask_rescue_gate = (
-    (df_event["SNR_full_mean"]  >= SNR_FULL_MEAN_MIN) &
+    (df_event["SNR"]             >= SNR_MIN) &
     (df_event["SNR_full_median"] >= SNR_FULL_MEDIAN_MIN)
 )
 df_rescue = df_event[~mask_rescue_gate].copy()
@@ -216,7 +219,7 @@ per_type_avail = {}
 for et in TRAIN_EVENT_TYPES:
     df_et  = df[df["event_type"] == et]
     mask_t = (
-        (df_et["SNR_full_mean"]   >= TRAIN_SNR_FULL_MEAN_MIN) &
+        (df_et["SNR"]             >= TRAIN_SNR_MIN) &
         (df_et["SNR_full_median"] >= TRAIN_SNR_FULL_MEDIAN_MIN)
     )
     per_type_avail[et] = df_et[mask_t].copy()
