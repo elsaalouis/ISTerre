@@ -11,6 +11,7 @@ Post-denoiser processing:
 - re-apply the quality gate
 - extract the Maggi/Hibert features on events that pass
 - save a rescue catalog CSV (rescue_catalog_<stamp>.csv) in the exact same column schema as the 04a output
+- ALSO extract the same 99 features from the RAW (pre-denoise) signal, for the exact same accepted events, into a sibling rescue_catalog_raw_<stamp>.csv
 
 Pipeline position
 -----------------
@@ -44,6 +45,8 @@ not windowing alignment). SNR_full_mean and SNR_s2n_median dropped from the gate
 Outputs
 -------
   rescue_catalog_<stamp>.csv         — accepted (gate-passing) rows, schema matches 04a
+  rescue_catalog_raw_<stamp>.csv     — same accepted events, features from the RAW
+                                        (undenoised) signal instead — feeds 06c Run C
   denoise_qc_<stamp>.csv             — one row per rescue candidate (before/after SNR + fidelity metrics)
   snr_improvement_summary_<stamp>.csv — gate-INDEPENDENT summary: how much SNR improved overall, across every denoised candidate regardless of pass/fail
   snr_before_after_<stamp>.png       — paired SNR scatter, raw vs denoised, per metric (all candidates)
@@ -59,11 +62,11 @@ Outputs
 # =============================================================================
 
 # ── Input: denoised NPZ files from 03c ───────────────────────────────────────
-DENOISED_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_EQ50_RS50_20260716_155254\denoised\results"
+DENOISED_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_RS100_20260716_164429\denoised\results"
 
 # ── Input: original (pre-denoising) rescue NPZ files — needed for itp ────────
 # Same run as DENOISED_DIR above — must always point at the matching run_.../rescue folder.
-RESCUE_DIR   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_EQ50_RS50_20260716_155254\rescue"
+RESCUE_DIR   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_RS100_20260716_164429\rescue"
 
 # ── Input: master catalog from 04a — used for metadata lookup by row index ───
 CATALOG_CSV  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent\catalog_windows_20260707_165719.csv"
@@ -197,14 +200,16 @@ print(f"{'='*65}")
 print(f"  Quality gate: SNR >= {SNR_MIN}  "
       f"AND  SNR_full_median >= {SNR_FULL_MEDIAN_MIN}")
 
-rescue_rows  = []    # list of dicts — one per accepted event
-qc_rows      = []    # list of dicts — one per EVERY evaluated candidate (pass or fail),
-                      # feeds the QC plots below; independent of the classification step
+rescue_rows     = []    # list of dicts — one per accepted event (denoised features)
+rescue_rows_raw = []    # same accepted events, but features from the RAW (pre-denoise) signal instead
+qc_rows      = []    # list of dicts — one per EVERY evaluated candidate (pass or fail), feeds the QC plots below; independent of the classification step
 n_total      = len(denoised_files)
 n_snr_fail   = 0
 n_feat_fail  = 0
 n_missing_orig  = 0
 n_raw_load_fail = 0
+n_raw_feat_fail = 0    # accepted events where a raw-ablation row could NOT be built
+n_raw_already_passed = 0   # accepted events whose RAW SNR alone already cleared the gate — i.e. denoising wasn't necessary for these to pass
 _raw_load_errs  = []   # first few exceptions, for diagnostics
 
 for fpath in tqdm(denoised_files, desc="Processing"):
@@ -348,6 +353,52 @@ for fpath in tqdm(denoised_files, desc="Processing"):
 
     rescue_rows.append(row)
 
+    # ── Raw-ablation row (same event, same window, features from the RAW ──────
+    # pre-denoise signal instead of the denoised one). This is Run C's data source
+    # in 06c: same rescued events, no denoising applied. If Run C performs about as
+    # well as Run B (denoised), the classifier gain is coming from "more real
+    # examples," not from the denoiser itself.
+    if raw_signal is not None:
+        sig_window_raw = raw_signal[itp:sig_end]
+        if len(sig_window_raw) < MIN_SIGNAL_SAMPLES:
+            n_raw_feat_fail += 1
+        else:
+            feats_raw = extract_features(sig_window_raw, sps=SPS)
+            if np.any(np.isnan(feats_raw)):
+                n_raw_feat_fail += 1
+            else:
+                row_raw = {col: meta.get(col, np.nan) for col in catalog_cols}
+                for k, v in snr_dict_raw.items():
+                    if k in row_raw:
+                        row_raw[k] = v
+                for feat_name, val in zip(FEATURE_NAMES, feats_raw):
+                    row_raw[feat_name] = val
+                if _has_3c:
+                    for pol_name in POLARIZATION_NAMES:
+                        row_raw[pol_name] = np.nan
+                if 'snr' in row_raw:
+                    row_raw['snr'] = snr_dict_raw.get('SNR', np.nan)
+
+                # Diagnostic: would this event have cleared the gate on its OWN raw
+                # SNR, with no denoising at all? If yes, the denoiser gets no credit
+                # for this particular rescue.
+                raw_snr_val    = snr_dict_raw.get('SNR', np.nan)
+                raw_snr_median = snr_dict_raw.get('SNR_full_median', np.nan)
+                raw_passes_alone = bool(
+                    not np.isnan(raw_snr_val) and raw_snr_val >= SNR_MIN and
+                    not np.isnan(raw_snr_median) and raw_snr_median >= SNR_FULL_MEDIAN_MIN
+                )
+                if raw_passes_alone:
+                    n_raw_already_passed += 1
+                row_raw['raw_passes_gate_alone'] = raw_passes_alone
+                row_raw['quality_ok']            = True  # same accepted-event set as Run B
+                row_raw['source']                = 'raw_undenoised_rescue'
+                row_raw['original_row_idx']      = row_idx
+
+                rescue_rows_raw.append(row_raw)
+    else:
+        n_raw_feat_fail += 1
+
 
 # =============================================================================
 # SECTION 6 — SUMMARY
@@ -383,6 +434,15 @@ if n_raw_load_fail / max(n_total, 1) > 0.3:
 print(f"  ─────────────────────────────────────────")
 print(f"  Accepted (rescued)     : {len(rescue_rows):,}  "
       f"({100*len(rescue_rows)/max(n_total,1):.1f} %)")
+
+print(f"\n  Raw-ablation rows (for 06c Run C, same events, undenoised features):")
+print(f"    Built successfully    : {len(rescue_rows_raw):,} / {len(rescue_rows):,}")
+print(f"    Failed (window/NaN)   : {n_raw_feat_fail:,}")
+if rescue_rows:
+    print(f"    Already passed gate on RAW SNR alone : {n_raw_already_passed:,} / "
+          f"{len(rescue_rows_raw):,}  "
+          f"({100*n_raw_already_passed/max(len(rescue_rows_raw),1):.1f} %)  "
+          f"— denoising wasn't necessary for these")
 
 
 # =============================================================================
@@ -577,6 +637,17 @@ else:
     out_csv = os.path.join(RUN_DIR, f"rescue_catalog_{STAMP}.csv")
     rescue_df.to_csv(out_csv, index=False)
     print(f"\n  [SAVED] {out_csv}")
+
+    # Raw-ablation sibling catalog (same schema, undenoised features) — feeds
+    # 06c's Run C to isolate the denoiser's own contribution.
+    if rescue_rows_raw:
+        rescue_raw_df = pd.DataFrame(rescue_rows_raw)
+        out_csv_raw = os.path.join(RUN_DIR, f"rescue_catalog_raw_{STAMP}.csv")
+        rescue_raw_df.to_csv(out_csv_raw, index=False)
+        print(f"  [SAVED] {out_csv_raw}  ({len(rescue_raw_df):,} rows, for 06c Run C)")
+    else:
+        print("\n  [WARN] No raw-ablation rows built — rescue_catalog_raw CSV not written "
+              "(06c Run C won't be available).")
 
 print(f"\n{'='*65}")
 print(f"  Run finished : {time.strftime('%Y-%m-%d %H:%M:%S')}")

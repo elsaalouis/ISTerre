@@ -9,11 +9,15 @@ Train a HistGradientBoosting classifier on the full dataset (original catalog + 
 
 Scientific question answered
 ----------------------------
-Did the DeepDenoiser rescue pipeline meaningfully improve ice quake recall?
-This script answers that directly by training the same HGB model twice:
-  (A)  Original catalog only   (same data as 06b)
-  (B)  Original + rescued      (after 03d feature extraction)
-and comparing their ice quake F1, precision, and recall side by side.
+Did the DeepDenoiser rescue pipeline meaningfully improve classification — and is
+that improvement actually coming from the DENOISER, or just from adding more real
+low-SNR examples to training regardless of denoising? Answered with three conditions:
+  (A)  Original catalog only        (same data as 06b)
+  (B)  Original + denoised rescued  (after 03d feature extraction)
+  (C)  Original + RAW rescued       (same events as B, undenoised features —
+                                      needs 03d's rescue_catalog_raw_<stamp>.csv)
+If C performs about as well as B, the gain is from added data volume, not denoising.
+If B clearly beats C, that's evidence the denoiser itself is adding value.
 
 Pipeline position
 -----------------
@@ -22,16 +26,18 @@ Pipeline position
 Key differences from 06b
 ------------------------
   - Loads and concatenates RESCUE_CATALOG_CSV (from 03d) with the original
+  - Optionally also loads RESCUE_CATALOG_RAW_CSV for the Run C ablation
   - Trains only HGB (+ RF as baseline); removes KNN / SVM / MLP for speed
-  - Runs two full train-eval cycles: "original only" then "original + rescued"
-  - Produces a direct before/after comparison figure for ice quake metrics
+  - Runs up to three full train-eval cycles: A, B, and C
+  - Produces a direct before/after/ablation comparison figure
 
 Outputs
 -------
   fig_confusion_A_<stamp>.png  : HGB confusion matrix — original only
-  fig_confusion_B_<stamp>.png  : HGB confusion matrix — original + rescued
-  fig_comparison_<stamp>.png   : before/after panel (IQ F1 / precision / recall)
-  results_<stamp>.csv          : full metrics for both runs
+  fig_confusion_B_<stamp>.png  : HGB confusion matrix — original + denoised rescued
+  fig_confusion_C_<stamp>.png  : HGB confusion matrix — original + raw rescued (ablation)
+  fig_comparison_<stamp>.png   : A / B / C panel (IQ or RS F1 / precision / recall, Macro F1)
+  results_<stamp>.csv          : full metrics for all runs present
 """
 
 
@@ -42,9 +48,15 @@ Outputs
 # ── Original catalog (04a output) ─────────────────────────────────────────────
 ORIGINAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent+3C\catalog_windows_20260708_174019.csv"
 
-# ── Rescue catalog (03d output) — DeepDenoiser did not improve IQ SNR (negative result).
-# Only 21/1030 events passed the quality gate → negligible. Set to None.
-RESCUE_CATALOG_CSV = None
+# ── Rescue catalog (03d output) ───────────────────────────────────────────────
+RESCUE_CATALOG_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03d_rescue_feature_extraction\stricter_RS100_raw_ablation_20260720_150231\rescue_catalog_20260720_150231.csv"
+
+# ── Raw-ablation rescue catalog (03d output, Run C) ───────────────────────────
+# Same accepted events as RESCUE_CATALOG_CSV, but features extracted from the RAW
+# (pre-denoise) signal instead. Set to None to skip Run C. Must be the sibling
+# rescue_catalog_raw_<stamp>.csv sitting next to the RESCUE_CATALOG_CSV above —
+# if you change RESCUE_CATALOG_CSV, update this to match (same run folder/stamp).
+RESCUE_CATALOG_RAW_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03d_rescue_feature_extraction\stricter_RS100_raw_ablation_20260720_150231\rescue_catalog_raw_20260720_150231.csv"
 
 # ── Output directory ──────────────────────────────────────────────────────────
 OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\06c_HGB_classifier"
@@ -128,7 +140,11 @@ RUN_DIR, STAMP = create_run_dir(OUTPUT_DIR)
 log_file, log_path = setup_logging(
     RUN_DIR,
     script_name="06c_HGB_with_rescues.py",
-    extra_info=f"ORIGINAL_CSV: {ORIGINAL_CSV}\nRESCUE_CATALOG_CSV: {RESCUE_CATALOG_CSV}",
+    extra_info=(
+        f"ORIGINAL_CSV: {ORIGINAL_CSV}\n"
+        f"RESCUE_CATALOG_CSV: {RESCUE_CATALOG_CSV}\n"
+        f"RESCUE_CATALOG_RAW_CSV: {RESCUE_CATALOG_RAW_CSV}"
+    ),
 )
 
 
@@ -189,12 +205,52 @@ else:
         print(f"\n  [WARN] RESCUE_CATALOG_CSV not found: {RESCUE_CATALOG_CSV}")
         print("         Running original-only mode.")
 
-# Combined dataset
+# Combined dataset (Run B: original + denoised rescue)
 combined = pd.concat([orig, rescue], ignore_index=True) if has_rescue else orig.copy()
 print(f"\n  Combined dataset  : {len(combined):,} rows")
 for cls in CLASS_ORDER:
     n = (combined["event_type"] == cls).sum()
     print(f"    {cls:<22} {n:>6,}  ({100*n/len(combined):.1f} %)")
+
+# ── Raw-ablation rescue catalog (optional, Run C) ─────────────────────────────
+# Same accepted events as `rescue`, but features from the undenoised signal.
+has_rescue_raw = (
+    RESCUE_CATALOG_RAW_CSV is not None and os.path.exists(str(RESCUE_CATALOG_RAW_CSV))
+)
+
+if has_rescue_raw:
+    rescue_raw = pd.read_csv(RESCUE_CATALOG_RAW_CSV, low_memory=False)
+    rescue_raw = rename_legacy_columns(rescue_raw)
+    rescue_raw = rescue_raw[rescue_raw["event_type"].isin(TARGET_CLASSES)].copy()
+    z_feat_cols_rr = [f for f in FEATURE_NAMES if f in rescue_raw.columns]
+    rescue_raw = rescue_raw.dropna(subset=z_feat_cols_rr).copy()
+    rescue_raw["source"] = "raw_undenoised_rescue"
+    print(f"\n  Raw-ablation catalog : {len(rescue_raw):,} rows (Run C — same events, no denoising)")
+    for cls in CLASS_ORDER:
+        n = (rescue_raw["event_type"] == cls).sum()
+        print(f"    {cls:<22} {n:>6,}  ({100*n/len(rescue_raw):.1f} %)")
+    if "raw_passes_gate_alone" in rescue_raw.columns:
+        n_alone = int(rescue_raw["raw_passes_gate_alone"].sum())
+        print(f"    Already passed the gate on raw SNR alone: {n_alone:,} / {len(rescue_raw):,} "
+              f"({100*n_alone/max(len(rescue_raw),1):.1f} %) — denoising wasn't necessary for these")
+else:
+    rescue_raw = pd.DataFrame()
+    if RESCUE_CATALOG_RAW_CSV is None:
+        print("\n  [INFO] RESCUE_CATALOG_RAW_CSV is None — Run C (raw ablation) will be skipped.")
+    else:
+        print(f"\n  [WARN] RESCUE_CATALOG_RAW_CSV not found: {RESCUE_CATALOG_RAW_CSV}")
+        print("         Run C (raw ablation) will be skipped. Re-run 03d with the current")
+        print("         code to generate the sibling rescue_catalog_raw_<stamp>.csv.")
+
+# Combined dataset (Run C: original + raw/undenoised rescue)
+combined_raw = (
+    pd.concat([orig, rescue_raw], ignore_index=True) if has_rescue_raw else pd.DataFrame()
+)
+if has_rescue_raw:
+    print(f"\n  Combined dataset (raw ablation) : {len(combined_raw):,} rows")
+    for cls in CLASS_ORDER:
+        n = (combined_raw["event_type"] == cls).sum()
+        print(f"    {cls:<22} {n:>6,}  ({100*n/len(combined_raw):.1f} %)")
 
 
 # =============================================================================
@@ -358,6 +414,33 @@ else:
 
 
 # =============================================================================
+# SECTION 7b — RUN C: ORIGINAL + RAW/UNDENOISED RESCUE (ablation, only if available)
+# =============================================================================
+# Same accepted events as Run B, same everything, EXCEPT the rescue rows' features
+# come from the raw (pre-denoise) signal instead of the denoised one. If Run C
+# performs about as well as Run B, the Run B gain is coming from "more real
+# examples" rather than from the denoiser itself.
+
+results_C = None
+cms_C     = None
+
+if has_rescue_raw:
+    print(f"\n{'='*65}")
+    print("  STEP 4b — Run C: original + RAW rescued (denoiser ablation)")
+    print(f"{'='*65}")
+    out_C = train_and_eval(combined_raw, "C — Original + raw rescued (ablation)",
+                            features, SMOTE_K, TEST_SIZE, RANDOM_STATE)
+    if out_C is not None:
+        results_C, cms_C, Xte_C, yte_C = out_C
+    else:
+        print("  [WARN] Run C failed — skipping ablation comparison.")
+else:
+    print(f"\n  [INFO] No raw-ablation catalog loaded — skipping Run C.")
+    print(f"         To enable, set RESCUE_CATALOG_RAW_CSV at the top of this script")
+    print(f"         (produced by 03d as rescue_catalog_raw_<stamp>.csv).")
+
+
+# =============================================================================
 # SECTION 8 — FIGURES
 # =============================================================================
 
@@ -400,44 +483,81 @@ if results_B is not None:
             os.path.join(RUN_DIR, f"fig_confusion_B_{short}_{STAMP}.png"),
         )
 
-# Before / after comparison figure
-if results_B is not None:
+# Confusion matrices — Run C (raw ablation)
+if results_C is not None:
+    for short in ["HGB", "RF"]:
+        cm  = cms_C[short]
+        mf1 = results_C[short]["macro_f1"]
+        acc = results_C[short]["acc"]
+        save_cm_figure(
+            cm,
+            f"{short} — Original + raw rescued (ablation)\nMacroF1={mf1:.3f}  Acc={acc:.3f}",
+            os.path.join(RUN_DIR, f"fig_confusion_C_{short}_{STAMP}.png"),
+        )
+
+# Before / after / ablation comparison figure
+# Auto-detect which class the rescue catalog actually targets (rockslide as of
+# 2026-07, historically ice quake) so the panel tracks the metric that can
+# actually move — hardcoding "ice quake" here would make Run C's effect
+# invisible whenever the rescue target is a different class.
+_class_abbr = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq"}
+if has_rescue and len(rescue) > 0:
+    _target_class = rescue["event_type"].mode().iat[0]
+elif has_rescue_raw and len(rescue_raw) > 0:
+    _target_class = rescue_raw["event_type"].mode().iat[0]
+else:
+    _target_class = "ice quake"
+_abbr = _class_abbr.get(_target_class, "iq")
+
+if results_B is not None or results_C is not None:
     metrics_shown = [
-        ("IQ F1",        "iq_f1",  "F1-score"),
-        ("IQ Precision", "iq_p",   "Precision"),
-        ("IQ Recall",    "iq_r",   "Recall"),
+        (f"{_target_class.title()} F1",        f"{_abbr}_f1", "F1-score"),
+        (f"{_target_class.title()} Precision", f"{_abbr}_p",  "Precision"),
+        (f"{_target_class.title()} Recall",    f"{_abbr}_r",  "Recall"),
         ("Macro F1",     "macro_f1", "Macro F1"),
     ]
-    fig, axes = plt.subplots(1, len(metrics_shown), figsize=(14, 4.5))
+
+    # Only include runs that actually completed
+    run_defs = [("A", "Original\nonly", "#1f77b4", results_A)]
+    if results_B is not None:
+        run_defs.append(("B", "Original\n+ denoised", "#ff7f0e", results_B))
+    if results_C is not None:
+        run_defs.append(("C", "Original\n+ raw (ablation)", "#2ca02c", results_C))
+
+    n_bars = len(run_defs)
+    positions = [0.5 * i for i in range(n_bars)]
+
+    fig, axes = plt.subplots(1, len(metrics_shown), figsize=(4 * len(metrics_shown), 4.5))
     _feat_pfx = "All" if TOP_N_FEATURES is None else f"Top-{len(features)}"
     fig.suptitle(
-        f"DeepDenoiser rescue impact on ice quake classification\n"
-        f"HGB  |  {_feat_pfx} features  |  Test set n≈{Xte_A.shape[0]}",
+        f"DeepDenoiser rescue impact on {_target_class} classification\n"
+        f"HGB  |  {_feat_pfx} features  |  Test set n≈{Xte_A.shape[0]}  |  "
+        f"B vs C isolates the denoiser's own contribution from added data volume",
         fontsize=11, fontweight="bold",
     )
     bar_kw = dict(edgecolor="white", linewidth=0.8, alpha=0.85, width=0.4)
-    colors = {"A": "#1f77b4", "B": "#ff7f0e"}
-    labels = {"A": "Original\nonly", "B": "Original\n+ rescued"}
 
     for ax, (title, key, ylabel) in zip(axes, metrics_shown):
-        val_A = results_A["HGB"][key]
-        val_B = results_B["HGB"][key]
-        b1 = ax.bar(0, val_A, color=colors["A"], **bar_kw)
-        b2 = ax.bar(0.5, val_B, color=colors["B"], **bar_kw)
-        ax.text(0,   val_A + 0.01, f"{val_A:.3f}", ha="center", va="bottom", fontsize=10, fontweight="bold")
-        ax.text(0.5, val_B + 0.01, f"{val_B:.3f}", ha="center", va="bottom", fontsize=10, fontweight="bold")
-        # Difference annotation
-        delta = val_B - val_A
-        sign  = "+" if delta >= 0 else ""
-        ax.text(0.25, max(val_A, val_B) + 0.06, f"Δ={sign}{delta:.3f}",
-                ha="center", va="bottom", fontsize=9, color="darkgreen" if delta >= 0 else "red")
-        ax.set_xlim(-0.4, 0.9)
-        ax.set_ylim(0, 1.15)
-        ax.set_xticks([0, 0.5])
-        ax.set_xticklabels([labels["A"], labels["B"]], fontsize=9)
+        vals = [res["HGB"][key] for _, _, _, res in run_defs]
+        for pos, (_, _, color, _), val in zip(positions, run_defs, vals):
+            ax.bar(pos, val, color=color, **bar_kw)
+            ax.text(pos, val + 0.01, f"{val:.3f}", ha="center", va="bottom",
+                     fontsize=9, fontweight="bold")
+        # Delta annotations relative to Run A
+        val_A = vals[0]
+        for pos, (short, _, _, _), val in list(zip(positions, run_defs, vals))[1:]:
+            delta = val - val_A
+            sign  = "+" if delta >= 0 else ""
+            ax.text(pos, val + 0.065, f"Δ{short}={sign}{delta:.3f}",
+                    ha="center", va="bottom", fontsize=8,
+                    color="darkgreen" if delta >= 0 else "red")
+        ax.set_xlim(-0.4, positions[-1] + 0.4)
+        ax.set_ylim(0, 1.2)
+        ax.set_xticks(positions)
+        ax.set_xticklabels([label for _, label, _, _ in run_defs], fontsize=9)
         ax.set_ylabel(ylabel, fontsize=9)
         ax.set_title(title, fontsize=10)
-        ax.axhline(val_A, color=colors["A"], lw=0.8, ls="--", alpha=0.5)
+        ax.axhline(val_A, color=run_defs[0][2], lw=0.8, ls="--", alpha=0.5)
 
     plt.tight_layout()
     comp_path = os.path.join(RUN_DIR, f"fig_before_after_{STAMP}.png")
@@ -456,12 +576,14 @@ print(f"{'='*65}")
 
 runs = [("A — Original only",       results_A)]
 if results_B is not None:
-    runs.append(("B — Original + rescued", results_B))
+    runs.append(("B — Original + denoised rescued", results_B))
+if results_C is not None:
+    runs.append(("C — Original + raw rescued (ablation)", results_C))
 
-COL = 25
+COL = 40
 print(f"\n  {'Run':{COL}} {'Clf':>5} {'Acc':>6} {'MacroF1':>8} "
       f"{'EQ F1':>7} {'RS F1':>7} {'IQ F1':>7} {'IQ P':>6} {'IQ R':>6}")
-print(f"  {'-'*85}")
+print(f"  {'-'*100}")
 
 csv_rows = []
 for run_label, res in runs:
