@@ -49,14 +49,12 @@ Outputs
 ORIGINAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent+3C\catalog_windows_20260708_174019.csv"
 
 # ── Rescue catalog (03d output) ───────────────────────────────────────────────
-RESCUE_CATALOG_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03d_rescue_feature_extraction\stricter_RS100_raw_ablation_20260720_150231\rescue_catalog_20260720_150231.csv"
+RESCUE_CATALOG_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03d_rescue_feature_extraction\stricter_IQ100_20260722_104854\rescue_catalog_20260722_104854.csv"
 
 # ── Raw-ablation rescue catalog (03d output, Run C) ───────────────────────────
-# Same accepted events as RESCUE_CATALOG_CSV, but features extracted from the RAW
-# (pre-denoise) signal instead. Set to None to skip Run C. Must be the sibling
-# rescue_catalog_raw_<stamp>.csv sitting next to the RESCUE_CATALOG_CSV above —
-# if you change RESCUE_CATALOG_CSV, update this to match (same run folder/stamp).
-RESCUE_CATALOG_RAW_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03d_rescue_feature_extraction\stricter_RS100_raw_ablation_20260720_150231\rescue_catalog_raw_20260720_150231.csv"
+# Same accepted events as RESCUE_CATALOG_CSV, but features extracted from the RAW (pre-denoise) signal instead
+# Set to None to skip Run C
+RESCUE_CATALOG_RAW_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03d_rescue_feature_extraction\stricter_IQ100_20260722_104854\rescue_catalog_raw_20260722_104854.csv"
 
 # ── Output directory ──────────────────────────────────────────────────────────
 OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\06c_HGB_classifier"
@@ -66,12 +64,10 @@ TARGET_CLASSES = ["earthquake", "rockslide", "ice quake"]
 CLASS_ORDER    = ["earthquake", "rockslide", "ice quake"]
 
 # ── Feature set ───────────────────────────────────────────────────────────────
-FEATURE_IMPORTANCES_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03b_feature_selection\run_20260709_145058\feature_importances_20260709_145058.csv"
+FEATURE_IMPORTANCES_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03b_feature_selection\run_20260710_144246\feature_importances_20260710_144246.csv"
 # TOP_N_FEATURES = None  → use ALL feature columns present in the catalog
-#                          (auto-detects 99 or 103 depending on LOAD_3C in 04a)
-# TOP_N_FEATURES = int   → use the top-N features ranked by FEATURE_IMPORTANCES_CSV
-#                          (or FALLBACK_TOP20 if that file is unavailable)
-TOP_N_FEATURES          = 60   # Top-60 is optimal per 03b subset experiments (macro F1 = 0.732 vs 0.717 for all-99)
+# TOP_N_FEATURES = int   → use the top-N features ranked by FEATURE_IMPORTANCES_CSV (or FALLBACK_TOP20 if that file is unavailable)
+TOP_N_FEATURES          = 60   
 
 FALLBACK_TOP20 = [
     "duration",                "ediff_3_10__10_20",   "eratio_3_10__10_20",
@@ -84,9 +80,6 @@ FALLBACK_TOP20 = [
 ]
 
 # ── Quality gate (applied to original catalog only; rescue catalog already ────
-# ── passed the gate in 03d, so it already satisfies this same gate by construction) ──
-# 05b Tier 2 classification-based thresholds — run_20260720_104210. Top-2 AUC
-# metrics; SNR_full_mean/SNR_s2n_median dropped (AUC 0.617/0.588, weaker).
 SNR_MIN             = 1.70    # 05b Tier 2 — metric 'SNR', AUC=0.627
 SNR_FULL_MEDIAN_MIN = 1.99    # 05b Tier 2 — metric 'SNR_full_median', AUC=0.642 (best)
 

@@ -115,12 +115,8 @@ KURTOSIS_SEARCH_AFTER  = 1.0
 KURTOSIS_ETYPES        = ('rockslide', 'landslide')
 
 # -- Feature extraction -------------------------------------------------------
-# LOAD_3C = True : fetch N and E channels alongside Z and compute 4 polarization
-#                  parameters (rectilinP, azimuthP, dipP, Plani) in addition to the
-#                  99 Maggi/Hibert Z features → 103 features total.
-#                  Rows where horizontals are unavailable get NaN for the 4
-#                  polarization columns — HGB handles NaN natively.
-# LOAD_3C = False: Z-component only, 99 features (backward compatible).
+# LOAD_3C = True : fetch N and E channels alongside Z and compute 4 polarizationnparameters (rectilinP, azimuthP, dipP, Plani) in addition to the 99 Maggi/Hibert Z features
+# LOAD_3C = False: Z-component only, 99 features (backward compatible)
 LOAD_3C = True
 
 # -- Checkpoint ---------------------------------------------------------------

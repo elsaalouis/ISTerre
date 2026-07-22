@@ -62,14 +62,14 @@ Outputs
 # =============================================================================
 
 # ── Input: denoised NPZ files from 03c ───────────────────────────────────────
-DENOISED_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_RS100_20260716_164429\denoised\results"
+DENOISED_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\icequake\run_20260709_160443\denoised\results"
 
 # ── Input: original (pre-denoising) rescue NPZ files — needed for itp ────────
 # Same run as DENOISED_DIR above — must always point at the matching run_.../rescue folder.
-RESCUE_DIR   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\rockslide\stricter_RS100_20260716_164429\rescue"
+RESCUE_DIR   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\icequake\run_20260709_160443\rescue"
 
 # ── Input: master catalog from 04a — used for metadata lookup by row index ───
-CATALOG_CSV  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent\catalog_windows_20260707_165719.csv"
+CATALOG_CSV  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent+3C\catalog_windows_20260708_174019.csv"
 
 # ── Output directory ──────────────────────────────────────────────────────────
 OUTPUT_DIR   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03d_rescue_feature_extraction"

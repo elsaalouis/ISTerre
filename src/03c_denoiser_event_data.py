@@ -71,8 +71,8 @@ SNR_FULL_MEDIAN_MIN = 1.99   # 05b Tier 2 — metric 'SNR_full_median', AUC=0.64
 # -- Training-target gate (stricter than the rescue gate above) ---------------
 # Used ONLY to select which rows are clean enough to serve as "signal" training examples for DeepDenoiser
 # -> independent of the rescue gate above. Same ~1.57x margin kept from the previous version.
-TRAIN_SNR_MIN             = 2.67
-TRAIN_SNR_FULL_MEDIAN_MIN = 3.12
+TRAIN_SNR_MIN             = SNR_MIN
+TRAIN_SNR_FULL_MEDIAN_MIN = SNR_FULL_MEDIAN_MIN
 
 # -- Training-set composition (mix in other event classes?) -------------------
 TRAIN_EVENT_TYPES = [EVENT_TYPE, "earthquake"]
