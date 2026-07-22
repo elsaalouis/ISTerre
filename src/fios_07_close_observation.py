@@ -5,51 +5,11 @@ ISTerre internship — Environmental seismology in glaciology
 Author : Elsa Louis
 Date   : July 2026
 
-What this script does
-----------------------
-1. DAY SELECTION — decide which nights are worth a close look:
-     - the 3 known destabilisations (13 Apr, 25 May, 23 Jun)
-     - + an automatic top-N ranking of the most energetic nights, using the night-only 1-5 Hz band energy already computed in psd_hourly.csv (fios_04.py)
-   -> written to day_selection_summary.csv so the choice is transparent and reproducible
-      add dates to MANUAL_DATES below to force extra nights in
-
-2. MULTI-SCALE ZOOM CASCADE — for each selected night, three spectrograms are computed FROM SCRATCH (not cropped) with shrinking window length:
-     Level 1 : full night   (10 h),  10-s windows -> fine Δf,  coarse Δt (context)
-     Level 2 : auto 10-min window,    2-s windows -> medium Δt
-     Level 3 : auto 1-min window,     1-s windows -> Δt ~0.1s, still a clean, low-noise spectrogram
-   ALL THREE waveform+spectrogram panels use the SAME bandpass (FILT_FMIN-FILT_FMAX,
-   1-60 Hz by default) — that band is now stated explicitly in every figure title,
-   not just fig_01, to avoid ambiguity. Change FILT_FMIN/FILT_FMAX in the config to
-   look at a narrower band (e.g. 1-20 Hz) instead; everything downstream follows.
-   Level 2/3 windows are auto-picked as the sub-window that maximises mean 2-10 Hz energy within the level above (same logic as fios_05, generalised)
-   Level 3 also plots a raw-waveform zoom (a few seconds) around the single most energetic pick, to inspect pulse SHAPE directly, as asked
-
-3. FINE-SCALE EVENT PICKER — a short-window STA/LTA (STA~0.08 s / LTA~4 s, band
-   10-60 Hz, picks closer than PICK_MIN_GAP_S merged) run on the whole night,
-   to try to resolve INDIVIDUAL events inside what looks like a continuous block.
-   This is a first tuning guess, not validated — check the printed event count
-   and fig_01's rug plot after each run (see PICK_* comments in the config).
-   Picked events are:
-     - overlaid on the Level 1 and Level 3 figures
-     - saved to events_<date>.csv (time, duration, max_cft)
-     - optionally (ENABLE_FEATURE_EXTRACTION=True) also run through
-       features.extract_features() — the 99-feature Maggi/Hibert/Provost set
-       used elsewhere in this project for event-type classification; OFF by
-       default here since it isn't needed to answer the tremor-vs-swarm
-       question on its own
-     - used to build two diagnostic plots per night:
-         fig_04_interevent_hist : histogram of the time gaps between
-           consecutive picks (clustered at short lags -> leans swarm;
-           spread out -> leans continuous tremor) — only meaningful once the
-           picker isn't over-triggering
-         (in fig_01) a sliding-window kurtosis-of-envelope curve under the
-           spectrogram (flat, ~3 -> leans tremor; spiky -> leans impulsive)
-
 Outputs (all saved to OUTPUT_DIR/<date>/)
 ------------------------------------------
   fig_01_night_10h_<date>.png        — full night: waveform + spectrogram + sliding kurtosis
-  fig_02_zoom_10min_<date>.png       — auto 10-min window, medium time resolution
-  fig_03_zoom_1min_<date>.png        — auto 1-min window, fine time resolution + picks + a few-second raw waveform zoom on the top pick
+  fig_interactive_<date>.html        — auto-picked INTERACTIVE_WINDOW_MIN window, Plotly: zoom/pan yourself on time or frequency in a browser
+  fig_03_loudest_pick_<date>.png     — few-second raw waveform zoom (PICK band) on the single loudest fine-picker event in that window
   fig_04_interevent_hist_<date>.png  — histogram of inter-event times (fine picker)
   events_<date>.csv                  — one row per picked event (+ 99 features if ENABLE_FEATURE_EXTRACTION=True)
   day_selection_summary.csv           — which dates were selected and why (OUTPUT_DIR root)
@@ -78,33 +38,47 @@ KEY_EVENTS = [
     ("2026-05-25", "2nd destabilisation"),
     ("2026-06-23", "3rd destabilisation"),
 ]
-N_AUTO_DAYS   = 5     # how many extra nights to add, ranked by night-only 1-5 Hz energy
+N_AUTO_DAYS   = 0     # how many extra nights to add, ranked by night-only 1-5 Hz energy
 MANUAL_DATES  = []    # add dates here manually, e.g. ["2026-06-02"], to force them in
 
 # ---- Night time window (UTC) -------------------------------------------------
 WINDOW_START_UTC  = 18
 WINDOW_DURATION_H = 10
 
-# ---- Display bandpass (waveform + spectrogram) -------------------------------
-FILT_FMIN = 1.0
+# ---- Display bandpass: spectrogram band vs waveform band, kept separate ------
+FILT_FMIN = 1.0    # spectrogram band (also used for the Level 1 context figure)
 FILT_FMAX = 60.0
 
-# ---- Spectrogram window length per cascade level -----------------------------
-# Shorter window -> coarser Δf, but finer Δt.
-# Level 3 was tried at 0.25 s first (Δt ~25 ms) but each pixel is then a single
-# ~62-sample FFT with no averaging -> very high per-pixel variance -> the
-# speckled/"mauvaise qualité" look. 1.0 s keeps Δt ~0.1 s at 90% overlap
-# (still ~10x finer than fios_05's 10-s zoom, and shorter than a typical
-# picked event duration here, ~0.5-2 s per fios_01's stats) while the spectral
-# estimate at each pixel is far more stable.
-LEVEL1_WINDOW_S = 10.0    # full night   -> Δf = 0.10 Hz
-LEVEL2_WINDOW_S = 2.0     # 10-min zoom  -> Δf = 0.50 Hz
-LEVEL3_WINDOW_S = 1.0     # 1-min zoom   -> Δf = 1.0  Hz,  Δt ~ 0.1 s steps
+# Waveform panel only (Level 1 + the interactive figure)
+WAVE_FMIN = 1.0
+WAVE_FMAX = 20.0
+
+# ---- Spectrogram window length: Level 1 only (context, kept as a plain scipy.signal.spectrogram)
+LEVEL1_WINDOW_S = 10.0    # full night -> Δf = 0.10 Hz
 SPEC_OVERLAP    = 0.90
 
-LEVEL2_DURATION_MIN = 10
-LEVEL3_DURATION_MIN = 1
-SUBWINDOW_BAND       = (2.0, 10.0)   # band used to auto-pick the loudest sub-window
+SUBWINDOW_BAND = (2.0, 10.0)   # band used to auto-pick the loudest sub-window
+
+# ---- Interactive zoom window (auto-picked, exported as Plotly .html) ---------
+INTERACTIVE_WINDOW_MIN = 120   # length of the auto-picked window you'll explore yourself
+#   INTERACTIVE_HOP_S     : Δt of the final spectrogram (how far the analysis bin
+#                 slides between columns) — "how often do we get a new column";
+#                 does not by itself change blur.
+#   INTERACTIVE_BIN_S     : length of data feeding ONE column's Welch average —
+#                 the real temporal "blur" width. Smaller = sharper in time,
+#                 but fewer sub-segments fit inside -> noisier, unless
+#                 compensated with a smaller SUBSEG_S and/or higher overlap.
+#   INTERACTIVE_SUBSEG_S  : length of each Welch sub-segment inside a bin -> Δf = 1/SUBSEG_S
+#   INTERACTIVE_SUBSEG_OVERLAP : overlap between sub-segments inside a bin ->
+#                 more overlap = more sub-segments averaged = smoother
+INTERACTIVE_BIN_S          = 0.5
+INTERACTIVE_SUBSEG_S       = 0.5
+INTERACTIVE_SUBSEG_OVERLAP = 0.75
+INTERACTIVE_HOP_S          = 0.2
+
+# 'cdn'    -> small file, needs internet to view
+# 'inline' -> larger file (+~3-4 MB for plotly.js), fully offline-viewable
+PLOTLYJS_MODE = 'cdn'
 
 FREQ_MIN_PLOT = 1.0
 FREQ_MAX_PLOT = 60.0
@@ -118,18 +92,6 @@ LEVEL1_VMAX_DB =  55
 FINE_TRACE_MARGIN_S = 3.0
 
 # ---- Fine-scale event picker --------------------------------------------------
-# First attempt (STA=0.05s LTA=2s ON=4.0 band 5-60Hz) fired 7496 times over a
-# single 10-h night, i.e. one "event" every ~5 s on average, with the rug plot
-# in fig_01 essentially solid red -> the picker was just tracking background
-# fluctuations, not distinct events. Retuned below:
-#  - PICK_FREQMIN raised to 10 Hz to get away from the persistent, highly
-#    variable <10 Hz band (that's what was destabilising the 2-s LTA baseline)
-#  - LTA lengthened and thresholds raised for a much more stable baseline
-#  - PICK_MIN_GAP_S: picks separated by less than this are merged into one,
-#    so a single ringing burst isn't chopped into a dozen "events"
-# These are still a first guess, not validated — check events_<date>.csv and
-# the fig_01 rug plot after a run and retune if the count still looks off
-# (expect tens, not thousands, per night outside a destabilisation burst).
 PICK_FREQMIN   = 10.0
 PICK_FREQMAX   = 60.0
 PICK_STA_S     = 0.08
@@ -141,12 +103,7 @@ PICK_MIN_GAP_S = 0.3
 
 FEATURE_PAD_S = 0.2   # padding added on each side of a pick before feature extraction
 
-# The 99-feature Maggi/Hibert/Provost set (seismic_params.py / features.py) is
-# used elsewhere in this project for automatic event-type classification
-# (Provost et al. 2017, Hibert et al. 2017, Pirot et al. 2024). It is NOT
-# needed to answer "is this tremor or a microfissure swarm" by itself — kept
-# here only as an optional extra in case you want per-event features for a
-# classifier later. Off by default: turn on if/when you actually need it.
+# The 99-feature Maggi/Hibert/Provost set (seismic_params.py / features.py)
 ENABLE_FEATURE_EXTRACTION = False
 
 # Sliding kurtosis (envelope "smoothness" diagnostic, computed on tr_filt)
@@ -173,9 +130,12 @@ import matplotlib.pyplot as plt
 import matplotlib.dates  as mdates
 
 from obspy                 import UTCDateTime, read, Stream
-from scipy.signal          import spectrogram as sp_spectrogram
+from scipy.signal          import spectrogram as sp_spectrogram, welch
 from scipy.signal.windows  import hann as hann_window
 from scipy.stats           import kurtosis as scipy_kurtosis
+
+import plotly.graph_objects as go
+from plotly.subplots        import make_subplots
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from detection import run_sta_lta
@@ -301,6 +261,59 @@ def compute_spectrogram(data, fs, window_s, overlap_frac):
     )
     Sxx_db = 10 * np.log10(np.maximum(Sxx, 1e-30))
     return t_sec, f_hz, Sxx_db
+
+
+def compute_welch_spectrogram(data, fs, bin_s, subseg_s, subseg_overlap, hop_s):
+    """
+    "Spectrogram" built as a sequence of Welch PSD estimates (scipy.signal.welch),
+    one per sliding bin, instead of scipy.signal.spectrogram's one-raw-periodogram-
+    per-column approach. A raw periodogram is NOT a low-variance estimator —
+    its per-bin variance stays ~constant no matter how short the window is
+    (only Δf improves), which is why a plain short-window spectrogram looks
+    speckled/noisy up close. Averaging several overlapping sub-segments per
+    column (exactly what scipy.signal.welch does, already used for the PSD
+    figures in fios_04/06) removes that per-pixel noise.
+
+    Parameters
+    ----------
+    bin_s            : length of data (s) that feeds ONE output column
+    subseg_s         : length of each Welch sub-segment inside a bin (s) -> Δf = 1/subseg_s
+    subseg_overlap   : overlap fraction between sub-segments inside a bin
+    hop_s            : how far the bin slides between columns (s) -> Δt of the output
+
+    Returns (t_sec, f_hz, Sxx_db) — t_sec = bin CENTER time, seconds from data start.
+    """
+    nbin = max(8, int(bin_s * fs))
+    nseg = max(8, min(int(subseg_s * fs), nbin))
+    noverlap_seg = min(nseg - 1, int(nseg * subseg_overlap))
+    nhop = max(1, int(hop_s * fs))
+
+    n = len(data)
+    starts = np.arange(0, max(1, n - nbin + 1), nhop)
+    if len(starts) == 0:
+        starts = np.array([0])
+
+    f_ref = None
+    cols  = []
+    used_starts = []
+    for s0 in starts:
+        seg = data[s0:s0 + nbin]
+        if len(seg) < nseg:
+            continue
+        freqs, psd = welch(seg, fs=fs, nperseg=nseg, noverlap=noverlap_seg,
+                           window='hann', scaling='density')
+        if f_ref is None:
+            f_ref = freqs
+        cols.append(psd)
+        used_starts.append(s0)
+
+    if not cols:
+        return np.array([]), np.array([]), np.zeros((0, 0))
+
+    Sxx    = np.array(cols).T   # shape (n_freq, n_time)
+    Sxx_db = 10 * np.log10(np.maximum(Sxx, 1e-30))
+    t_sec  = (np.array(used_starts) + nbin / 2.0) / fs
+    return t_sec, f_ref, Sxx_db
 
 
 def find_best_subwindow(t_abs_spec, f_plot, S_plot, band, duration_min):
@@ -452,6 +465,7 @@ for TARGET_DATE in TARGET_DATES:
 
         fmax_disp_safe = min(FILT_FMAX, 0.45 * fs)
         fmax_pick_safe = min(PICK_FREQMAX, 0.45 * fs)
+        fmax_wave_safe = min(WAVE_FMAX, 0.45 * fs)
 
         tr_filt = tr_raw.copy()
         tr_filt.filter('bandpass', freqmin=FILT_FMIN, freqmax=fmax_disp_safe,
@@ -459,6 +473,13 @@ for TARGET_DATE in TARGET_DATES:
 
         tr_pick = tr_raw.copy()
         tr_pick.filter('bandpass', freqmin=PICK_FREQMIN, freqmax=fmax_pick_safe,
+                       corners=4, zerophase=True)
+
+        # Separate, narrower band for waveform panels (Level 1 + interactive
+        # figure) so they aren't dominated by broadband/high-freq content
+        # you can already see clearly in the spectrogram.
+        tr_wave = tr_raw.copy()
+        tr_wave.filter('bandpass', freqmin=WAVE_FMIN, freqmax=fmax_wave_safe,
                        corners=4, zerophase=True)
 
         # ---- Fine-scale picker over the WHOLE night --------------------------------
@@ -613,155 +634,138 @@ for TARGET_DATE in TARGET_DATES:
             print("  [SKIP] Fewer than 3 picked events — skipping inter-event histogram.")
 
         # =========================================================================
-        # LEVEL 2 — auto 10-min window, medium time resolution (RECOMPUTED, not cropped)
+        # INTERACTIVE ZOOM — auto-picked INTERACTIVE_WINDOW_MIN window, exported
+        # as a Plotly .html: zoom/pan yourself on time or frequency in a browser,
+        # instead of relying on a pre-picked "Level 2/3" PNG (see module docstring)
         # =========================================================================
-        t_zoom10 = find_best_subwindow(t_abs1, f_plot1, S_plot1, SUBWINDOW_BAND, LEVEL2_DURATION_MIN)
-        t_zoom10_end = t_zoom10 + LEVEL2_DURATION_MIN * 60
-        print(f"  Level 2 — auto 10-min window : {t_zoom10}  ->  {t_zoom10_end}")
+        t_zoom = find_best_subwindow(t_abs1, f_plot1, S_plot1, SUBWINDOW_BAND, INTERACTIVE_WINDOW_MIN)
+        t_zoom_end = t_zoom + INTERACTIVE_WINDOW_MIN * 60
+        print(f"  Interactive zoom — auto {INTERACTIVE_WINDOW_MIN}-min window : {t_zoom}  ->  {t_zoom_end}")
 
-        tr_l2 = tr_filt.slice(t_zoom10, t_zoom10_end)
-        if tr_l2.stats.npts < 20:
-            print("  [WARN] Level 2 window too short — skipping fig_02.")
-            t_abs2, f_plot2, S_plot2 = None, None, None
+        tr_int      = tr_filt.slice(t_zoom, t_zoom_end)   # spectrogram band
+        tr_int_wave = tr_wave.slice(t_zoom, t_zoom_end)   # separate waveform band
+
+        picks_in_window = []
+
+        if tr_int.stats.npts < 20:
+            print("  [WARN] Interactive zoom window too short — skipping fig_interactive.")
         else:
-            t_sec2, f_hz2, Sxx2_db = compute_spectrogram(tr_l2.data, fs, LEVEL2_WINDOW_S, SPEC_OVERLAP)
-            freq_mask2 = (f_hz2 >= FREQ_MIN_PLOT) & (f_hz2 <= FREQ_MAX_PLOT)
-            f_plot2 = f_hz2[freq_mask2]
-            S_plot2 = Sxx2_db[freq_mask2, :]
-            t_abs2  = np.array([(tr_l2.stats.starttime + float(t)).datetime for t in t_sec2])
-
-            vmin2 = float(np.nanpercentile(S_plot2, 5))
-            vmax2 = float(np.nanpercentile(S_plot2, 99))
-
-            t_wave2 = np.array([(tr_l2.stats.starttime + i / fs).datetime for i in range(tr_l2.stats.npts)])
-
-            fig, (ax_w, ax_s) = plt.subplots(
-                2, 1, figsize=(14, 7), gridspec_kw={'height_ratios': [1, 2.5]}, sharex=True
+            t_sec_i, f_hz_i, Sxx_i_db = compute_welch_spectrogram(
+                tr_int.data, fs, INTERACTIVE_BIN_S, INTERACTIVE_SUBSEG_S,
+                INTERACTIVE_SUBSEG_OVERLAP, INTERACTIVE_HOP_S
             )
-            ax_w.plot(t_wave2, tr_l2.data, color='black', lw=0.6, rasterized=True)
-            ax_w.set_ylabel('Amplitude (counts)', fontsize=9)
-            ax_w.set_title(
-                f'FIO1 — {LEVEL2_DURATION_MIN}-min zoom  |  '
-                f'{t_zoom10.datetime.strftime("%Y-%m-%d %H:%M")} -> '
-                f'{t_zoom10_end.datetime.strftime("%H:%M")} UTC  |  '
-                f'Bandpass {FILT_FMIN}-{fmax_disp_safe:.0f} Hz\n'
-                f'RECOMPUTED with {LEVEL2_WINDOW_S:.0f}-s windows -> Δf={1/LEVEL2_WINDOW_S:.2f} Hz  '
-                f'(auto-picked on max {SUBWINDOW_BAND[0]:.0f}-{SUBWINDOW_BAND[1]:.0f} Hz energy)',
-                fontsize=10
-            )
-            ax_w.grid(axis='y', lw=0.3, alpha=0.4)
-            im2 = ax_s.pcolormesh(t_abs2, f_plot2, S_plot2, cmap=cmap_spec,
-                                  vmin=vmin2, vmax=vmax2, shading='auto', rasterized=True)
-            cbar2 = plt.colorbar(im2, ax=ax_s, pad=0.01, fraction=0.015)
-            cbar2.set_label('PSD (dB re counts²/Hz)', fontsize=8)
-            ax_s.set_ylabel('Frequency (Hz)', fontsize=9)
-            ax_s.set_xlabel('Time UTC', fontsize=9)
-            ax_s.set_ylim(FREQ_MIN_PLOT, FREQ_MAX_PLOT)
-            ax_s.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-            plt.setp(ax_s.xaxis.get_majorticklabels(), rotation=45, ha='right')
-            plt.tight_layout()
-            fig_path = os.path.join(date_dir, f"fig_02_zoom_10min_{TARGET_DATE}.png")
-            plt.savefig(fig_path, dpi=160, bbox_inches='tight')
-            plt.close(fig)
-            print(f"  [SAVED] {os.path.basename(fig_path)}")
+            if Sxx_i_db.size == 0:
+                print("  [WARN] Interactive Welch spectrogram produced no columns — skipping fig_interactive.")
+            else:
+                freq_mask_i = (f_hz_i >= FREQ_MIN_PLOT) & (f_hz_i <= FREQ_MAX_PLOT)
+                f_plot_i = f_hz_i[freq_mask_i]
+                S_plot_i = Sxx_i_db[freq_mask_i, :]
+                t_abs_i  = [(tr_int.stats.starttime + float(t)).datetime for t in t_sec_i]
+
+                n_cells = S_plot_i.shape[0] * S_plot_i.shape[1]
+                print(f"  Interactive grid: {S_plot_i.shape[1]} time cols x {S_plot_i.shape[0]} "
+                      f"freq rows = {n_cells:,} cells")
+
+                picks_in_window = [ev for ev in events
+                                   if tr_int.stats.starttime <= ev['t_on'] <= tr_int.stats.endtime]
+
+                step_ds_i = max(1, tr_int_wave.stats.npts // 20000)
+                t_wave_i = [(tr_int_wave.stats.starttime + i / fs).datetime
+                           for i in range(0, tr_int_wave.stats.npts, step_ds_i)]
+                d_wave_i = tr_int_wave.data[::step_ds_i]
+
+                fig_int = make_subplots(
+                    rows=2, cols=1, shared_xaxes=True,
+                    row_heights=[0.25, 0.75], vertical_spacing=0.03,
+                    subplot_titles=("Waveform", "Spectrogram")
+                )
+                fig_int.add_trace(
+                    go.Scatter(x=t_wave_i, y=d_wave_i, mode='lines',
+                              line=dict(color='black', width=0.6),
+                              name=f'Waveform ({WAVE_FMIN:.0f}-{fmax_wave_safe:.0f} Hz)',
+                              hovertemplate='%{x}<br>%{y:.0f} counts<extra></extra>'),
+                    row=1, col=1
+                )
+                if picks_in_window:
+                    y_rug = float(np.max(np.abs(d_wave_i))) * 1.05 if len(d_wave_i) else 1.0
+                    fig_int.add_trace(
+                        go.Scatter(
+                            x=[ev['t_on'].datetime for ev in picks_in_window],
+                            y=[y_rug] * len(picks_in_window),
+                            mode='markers', marker=dict(color='crimson', symbol='line-ns', size=10,
+                                                        line=dict(width=1.5, color='crimson')),
+                            name=f'{len(picks_in_window)} fine-picker picks',
+                            hovertemplate='pick: %{x}<extra></extra>'
+                        ),
+                        row=1, col=1
+                    )
+                fig_int.add_trace(
+                    go.Heatmap(
+                        z=S_plot_i, x=t_abs_i, y=f_plot_i,
+                        colorscale='Inferno',
+                        colorbar=dict(title='PSD (dB re counts²/Hz)', len=0.75, y=0.35),
+                        hovertemplate='Time: %{x}<br>Freq: %{y:.1f} Hz<br>PSD: %{z:.1f} dB<extra></extra>',
+                    ),
+                    row=2, col=1
+                )
+                fig_int.update_layout(
+                    title=(
+                        f'FIO1 — {TARGET_DATE}  |  {tr_int.stats.starttime.strftime("%H:%M:%S")} -> '
+                        f'{tr_int.stats.endtime.strftime("%H:%M:%S")} UTC (auto-picked on max '
+                        f'{SUBWINDOW_BAND[0]:.0f}-{SUBWINDOW_BAND[1]:.0f} Hz energy)  |  '
+                        f'Spectrogram band {FILT_FMIN:.0f}-{fmax_disp_safe:.0f} Hz, '
+                        f'waveform band {WAVE_FMIN:.0f}-{fmax_wave_safe:.0f} Hz<br>'
+                        f'<sub>Welch spectrogram: Δf={1/INTERACTIVE_SUBSEG_S:.1f} Hz, '
+                        f'Δt={INTERACTIVE_HOP_S*1000:.0f} ms (fixed grid — zooming magnifies these '
+                        f'pixels, it does not compute new ones)  |  '
+                        f'{len(picks_in_window)} fine-picker event(s) in this window (rug above waveform)  |  '
+                        f'scroll/drag to zoom, double-click to reset</sub>'
+                    ),
+                    height=750,
+                    hovermode='x unified',
+                    xaxis2=dict(rangeslider=dict(visible=True), type='date', title='Time UTC'),
+                    yaxis=dict(title='Amplitude (counts)'),
+                    yaxis2=dict(title='Frequency (Hz)', range=[FREQ_MIN_PLOT, FREQ_MAX_PLOT]),
+                )
+                fig_path = os.path.join(date_dir, f"fig_interactive_{TARGET_DATE}.html")
+                fig_int.write_html(fig_path, include_plotlyjs=PLOTLYJS_MODE)
+                print(f"  [SAVED] {os.path.basename(fig_path)}")
 
         # =========================================================================
-        # LEVEL 3 — auto 1-min window, fine time resolution (RECOMPUTED) + picks
+        # LOUDEST PICK — few-second raw waveform zoom (PICK band, not WAVE band)
+        # on the single loudest fine-picker event in the interactive window, to
+        # inspect pulse SHAPE without the general-purpose waveform band flattening it
         # =========================================================================
-        if S_plot2 is not None:
-            t_zoom1 = find_best_subwindow(t_abs2, f_plot2, S_plot2, SUBWINDOW_BAND, LEVEL3_DURATION_MIN)
-        else:
-            t_zoom1 = t_zoom10
-        t_zoom1_end = t_zoom1 + LEVEL3_DURATION_MIN * 60
-        print(f"  Level 3 — auto 1-min window  : {t_zoom1}  ->  {t_zoom1_end}")
-
-        tr_l3 = tr_filt.slice(t_zoom1, t_zoom1_end)
-        if tr_l3.stats.npts < 20:
-            print("  [WARN] Level 3 window too short — skipping fig_03.")
-            continue
-
-        t_sec3, f_hz3, Sxx3_db = compute_spectrogram(tr_l3.data, fs, LEVEL3_WINDOW_S, SPEC_OVERLAP)
-        freq_mask3 = (f_hz3 >= FREQ_MIN_PLOT) & (f_hz3 <= FREQ_MAX_PLOT)
-        f_plot3 = f_hz3[freq_mask3]
-        S_plot3 = Sxx3_db[freq_mask3, :]
-        t_abs3  = np.array([(tr_l3.stats.starttime + float(t)).datetime for t in t_sec3])
-
-        vmin3 = float(np.nanpercentile(S_plot3, 5))
-        vmax3 = float(np.nanpercentile(S_plot3, 99))
-
-        t_wave3 = np.array([(tr_l3.stats.starttime + i / fs).datetime for i in range(tr_l3.stats.npts)])
-
-        # Picks falling inside this 1-min window
-        picks_in_window = [ev for ev in events if tr_l3.stats.starttime <= ev['t_on'] <= tr_l3.stats.endtime]
-
-        fig = plt.figure(figsize=(14, 10))
-        gs  = fig.add_gridspec(3, 1, height_ratios=[1, 2.5, 1])
-        ax_w  = fig.add_subplot(gs[0])
-        ax_s  = fig.add_subplot(gs[1], sharex=ax_w)
-        ax_zw = fig.add_subplot(gs[2])   # NOT sharing x — this is a separate, finer time zoom
-
-        ax_w.plot(t_wave3, tr_l3.data, color='black', lw=0.8, rasterized=True)
-        ax_w.set_ylabel('Amplitude (counts)', fontsize=9)
-        for ev in picks_in_window:
-            ax_w.axvline(ev['t_on'].datetime, color='crimson', lw=1.0, alpha=0.7)
-        ax_w.set_title(
-            f'FIO1 — {LEVEL3_DURATION_MIN}-min zoom  |  '
-            f'{t_zoom1.datetime.strftime("%Y-%m-%d %H:%M:%S")} -> '
-            f'{t_zoom1_end.datetime.strftime("%H:%M:%S")} UTC  |  '
-            f'Bandpass {FILT_FMIN}-{fmax_disp_safe:.0f} Hz\n'
-            f'RECOMPUTED with {LEVEL3_WINDOW_S*1000:.0f}-ms windows -> Δf={1/LEVEL3_WINDOW_S:.1f} Hz  |  '
-            f'{len(picks_in_window)} fine-picker event(s) in this window (red lines)',
-            fontsize=10
-        )
-        ax_w.grid(axis='y', lw=0.3, alpha=0.4)
-
-        im3 = ax_s.pcolormesh(t_abs3, f_plot3, S_plot3, cmap=cmap_spec,
-                              vmin=vmin3, vmax=vmax3, shading='auto', rasterized=True)
-        cbar3 = plt.colorbar(im3, ax=ax_s, pad=0.01, fraction=0.015)
-        cbar3.set_label('PSD (dB re counts²/Hz)', fontsize=8)
-        for ev in picks_in_window:
-            ax_s.axvline(ev['t_on'].datetime, color='white', lw=1.0, ls='--', alpha=0.8)
-        for f_g in [2, 4, 6, 8, 10, 12, 14]:
-            if FREQ_MIN_PLOT < f_g < FREQ_MAX_PLOT:
-                ax_s.axhline(f_g, color='white', lw=0.4, ls=':', alpha=0.35)
-        ax_s.set_ylabel('Frequency (Hz)', fontsize=9)
-        ax_s.set_xlabel('Time UTC', fontsize=9)
-        ax_s.set_ylim(FREQ_MIN_PLOT, FREQ_MAX_PLOT)
-        ax_s.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-        plt.setp(ax_s.xaxis.get_majorticklabels(), rotation=45, ha='right')
-
-        # ---- Raw waveform zoom (a few seconds) on the single loudest pick ---------
         if picks_in_window:
             loudest = max(picks_in_window, key=lambda ev: ev['max_cft'])
             t_fine0 = loudest['t_on']  - FINE_TRACE_MARGIN_S
             t_fine1 = loudest['t_off'] + FINE_TRACE_MARGIN_S
-            tr_fine = tr_filt.slice(t_fine0, t_fine1)
+            tr_fine = tr_pick.slice(t_fine0, t_fine1)
             t_fine_ax = np.array([(tr_fine.stats.starttime + i / fs).datetime
                                   for i in range(tr_fine.stats.npts)])
+
+            fig, ax_zw = plt.subplots(figsize=(10, 4))
             ax_zw.plot(t_fine_ax, tr_fine.data, color='black', lw=1.0)
             ax_zw.axvspan(loudest['t_on'].datetime, loudest['t_off'].datetime,
                          color='crimson', alpha=0.15)
             ax_zw.set_title(
-                f'Raw waveform (Bandpass {FILT_FMIN}-{fmax_disp_safe:.0f} Hz), loudest pick in '
-                f'this window (max_cft={loudest["max_cft"]:.1f}, dur={loudest["duration_s"]:.2f}s)  '
-                f'-> look at the pulse shape here',
-                fontsize=9
+                f'FIO1 — {TARGET_DATE}  |  Raw waveform (Bandpass {PICK_FREQMIN:.0f}-{fmax_pick_safe:.0f} Hz '
+                f'— picker band), loudest pick in the interactive window '
+                f'(max_cft={loudest["max_cft"]:.1f}, dur={loudest["duration_s"]:.2f}s)',
+                fontsize=10
             )
-            ax_zw.set_ylabel('Amplitude\n(counts)', fontsize=8)
+            ax_zw.set_ylabel('Amplitude (counts)', fontsize=9)
+            ax_zw.set_xlabel('Time UTC', fontsize=9)
             ax_zw.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S.%f'))
-            plt.setp(ax_zw.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=7)
+            plt.setp(ax_zw.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
             ax_zw.grid(axis='y', lw=0.3, alpha=0.4)
+            plt.tight_layout()
+            fig_path = os.path.join(date_dir, f"fig_03_loudest_pick_{TARGET_DATE}.png")
+            plt.savefig(fig_path, dpi=160, bbox_inches='tight')
+            plt.close(fig)
+            print(f"  [SAVED] {os.path.basename(fig_path)}")
         else:
-            ax_zw.text(0.5, 0.5, 'No fine-picker event in this 1-min window',
-                      ha='center', va='center', transform=ax_zw.transAxes, fontsize=10, color='grey')
-            ax_zw.set_xticks([])
-            ax_zw.set_yticks([])
-
-        plt.tight_layout()
-        fig_path = os.path.join(date_dir, f"fig_03_zoom_1min_{TARGET_DATE}.png")
-        plt.savefig(fig_path, dpi=180, bbox_inches='tight')
-        plt.close(fig)
-        print(f"  [SAVED] {os.path.basename(fig_path)}")
+            print("  [SKIP] No fine-picker event in the interactive window — skipping fig_03_loudest_pick.")
 
 
     except Exception as e:

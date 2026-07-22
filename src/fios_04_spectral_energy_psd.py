@@ -47,7 +47,7 @@ LOCATION = "01"
 CHANNEL  = "DHZ"
 
 T_START = "2026-03-19"
-T_END   = "2026-07-01"   # exclusive
+T_END   = "2026-07-21"   # exclusive
 
 # ---- Multi-band energy analysis -------------------------------------------
 # Each tuple (fmin, fmax) produces a separate energy time series + figure
