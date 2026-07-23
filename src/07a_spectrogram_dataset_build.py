@@ -43,7 +43,7 @@ Next step: upload the run folder to Google Drive and point 07b_train_cnn_classif
 # =============================================================================
 
 # -- Input CSV (output of 04a_sta_lta_catalog_windowing.py) -------------------
-CSV_PATH = "/data/failles/louisels/project/results/outputs_04a/catalog_windows_XXXX_XXXX.csv"
+CSV_PATH = "/data/failles/louisels/project/results/outputs_04a/all-99-features-recent+3C/catalog_windows_20260708_174019.csv"
 
 # -- Paths ---------------------------------------------------------------------
 SDS_ROOT    = "/data/sig/SDS"
@@ -57,8 +57,7 @@ TARGET_CLASSES = ["earthquake", "rockslide", "ice quake"]   # same as 06a_train_
 FILTER_QUALITY = True   # True -> keep only quality_ok == True rows (05a/05b thresholds, same as 06a)
 
 # -- Waveform extraction: fixed window anchored on the (kurtosis-refined) onset --
-# det_starttime in the CSV is already the refined onset from 04a. The window is
-# [onset - WINDOW_PRE_S, onset + WINDOW_POST_S]
+# det_starttime in the CSV is already the refined onset from 04a. The window is [onset - WINDOW_PRE_S, onset + WINDOW_POST_S]
 # ADAPT THESE to the data: check the det_duration_s distribution in the CSV first 
 # -- WINDOW_POST_S must comfortably cover the longest events (rockslide codas in particular can run long) or the spectrogram will cut off real signal
 TARGET_FS      = 100     # [Hz] common resampling rate for every trace
@@ -114,7 +113,7 @@ from obspy import UTCDateTime
 from sklearn.model_selection import train_test_split
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from run_setup import create_run_dir, setup_logging, connect_sds, connect_fdsn, fetch_inventory
+from run_setup import create_run_dir, setup_logging, connect_sds, connect_fdsn
 from preprocessing import cosine_taper
 
 
@@ -192,17 +191,48 @@ print("\nClass distribution:")
 for cls, n in df["event_type"].value_counts().items():
     print(f"  {cls:<20s}  {n:6,} rows")
 
-# Fetch instrument inventory covering the full time span of the catalog
+# Fetch instrument inventory — restricted to the networks that actually appear in the filtered catalog (not "*"), and fetched ONE NETWORK AT A TIME
+print(f"\n{'='*65}")
+print("  STEP 1b — Fetching instrument inventory (per network)")
+print(f"{'='*65}")
+
 t_min = pd.to_datetime(df["event_time"]).min()
 t_max = pd.to_datetime(df["event_time"]).max()
-inv_t_start = (t_min - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-inv_t_end   = (t_max + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-inventory = fetch_inventory(client_fdsn, inv_t_start, inv_t_end)
+inv_t_start = UTCDateTime((t_min - pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
+inv_t_end   = UTCDateTime((t_max + pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
+
+networks = sorted(df["network"].dropna().unique())
+print(f"Networks in catalog: {networks}")
+
+inventory = None
+failed_networks = []
+for net in networks:
+    try:
+        inv_net = client_fdsn.get_stations(
+            network=net, station="*",
+            starttime=inv_t_start, endtime=inv_t_end,
+            level="response",
+        )
+        n_sta = sum(len(n.stations) for n in inv_net.networks)
+        inventory = inv_net if inventory is None else inventory + inv_net
+        print(f"  [OK]   {net:<4s}  {n_sta} station(s)")
+    except Exception as e:
+        failed_networks.append(net)
+        print(f"  [WARN] {net:<4s}  failed: {e}")
+
+if failed_networks:
+    print(f"\n[WARN] {len(failed_networks)} network(s) failed to fetch: {failed_networks}")
+    print(f"       Rows for these networks will be skipped at the per-trace "
+          f"response-removal step, not the whole run.")
+
 if inventory is None:
-    print("\n[ERROR] Could not fetch instrument inventory — response removal "
-          "impossible. Exiting.")
+    print("\n[ERROR] Could not fetch instrument inventory for ANY network — "
+          "response removal impossible. Exiting.")
     log_file.close()
     sys.exit(1)
+
+print(f"\nInventory ready: {len(networks) - len(failed_networks)}/{len(networks)} "
+      f"network(s) loaded.")
 
 
 
@@ -402,6 +432,19 @@ def spectrogram_image(data3, fs, nperseg, noverlap, nfft, freq_keep_mask):
     -------
     image : np.ndarray, shape (n_freq, n_time, 3), float32, dB-scaled
     """
+    # Floor epsilon, chosen to sit well BELOW real PSD values for this dataset --
+    # confirmed via 07a_debug_amplitude_check.py: background PSD is ~1e-18
+    # (m/s)^2/Hz and even the strongest observed event peaks only reach
+    # ~1e-13. The previous epsilon (1e-12) was *larger* than nearly every real
+    # value, so `Sxx + 1e-12` was dominated by the epsilon itself almost
+    # everywhere -- silently flattening nearly the entire dynamic range to a
+    # near-constant -120 dB floor regardless of whether a bin held background
+    # noise or an actual event (worst for ice quake, the weakest class, whose
+    # real PSD never got close to escaping the old floor). 1e-20 is ~2 orders
+    # of magnitude below the smallest real values seen, so it only guards
+    # against literal log(0) without swallowing real signal.
+    PSD_FLOOR_EPS = 1e-20
+
     channels = []
     for c in range(3):
         _, _, Sxx = spectrogram(
@@ -409,7 +452,7 @@ def spectrogram_image(data3, fs, nperseg, noverlap, nfft, freq_keep_mask):
             nperseg=nperseg, noverlap=noverlap, nfft=nfft,
             scaling="density", mode="psd",
         )
-        Sxx_db = 10 * np.log10(Sxx[freq_keep_mask, :] + 1e-12)
+        Sxx_db = 10 * np.log10(Sxx[freq_keep_mask, :] + PSD_FLOOR_EPS)
         channels.append(Sxx_db.astype(np.float32))
     return np.stack(channels, axis=-1)   # (n_freq, n_time, 3)
 
@@ -522,13 +565,18 @@ print(f"  Log file           : {log_path}")
 print(f"""
   Next steps
   ----------
-  1. Upload the run folder to Google Drive, e.g.:
+  1. Run 07a_consolidate_for_colab.py (set RUN_DIR = "{RUN_DIR}") to pack
+     the {n_ok:,} individual .npz files above into a handful of large
+     archives — DO NOT upload the images/ folder directly to Google Drive
+  2. Upload the contents of {RUN_DIR}/colab_package/ to Google Drive:
        MyDrive/colab_cnn_training_spectrogram/
-           images/            <- copy contents of {images_dir}/
+           spectrograms_train.npz
+           spectrograms_val.npz
+           spectrograms_test.npz
            image_list.csv
            freq_axis.npy
            time_axis.npy
-  2. Open 07b_train_cnn_classifier_colab.ipynb, set the Drive folder path in
+  3. Open 07b_train_cnn_classifier_colab.ipynb, set the Drive folder path in
      Cell 3, and run through the notebook (Runtime > Change runtime type > T4 GPU).
 """)
 print(f"{'='*70}")
