@@ -146,7 +146,8 @@ def connect_fdsn(isterre_url):
         return None
 
 
-def fetch_inventory(client_fdsn, t_start, t_end, lat_min=None, lat_max=None, lon_min=None, lon_max=None):
+def fetch_inventory(client_fdsn, t_start, t_end, lat_min=None, lat_max=None, lon_min=None, lon_max=None,
+                    network=None, station=None):
     """
     Fetch the instrument inventory (poles, zeros, sensitivity) from FDSN
      -> the inventory is needed by remove_response_or_fallback() to convert raw counts into ground velocity [m/s]
@@ -156,6 +157,10 @@ def fetch_inventory(client_fdsn, t_start, t_end, lat_min=None, lat_max=None, lon
     client_fdsn              : ObsPy FDSN_Client
     t_start, t_end           : str, ISO date strings e.g. "2022-06-01"
     lat_min/max, lon_min/max : float or None — optional spatial filter
+    network, station         : str or None — optional exact codes to restrict the query to
+                                a single station (e.g. for long multi-year single-station
+                                queries where "*" over 10 years would be far more data than
+                                needed — see script 04d)
 
     Returns
     -------
@@ -163,8 +168,8 @@ def fetch_inventory(client_fdsn, t_start, t_end, lat_min=None, lat_max=None, lon
     """
     from obspy import UTCDateTime
     kwargs = dict(
-        network   = "*",
-        station   = "*",
+        network   = network if network is not None else "*",
+        station   = station if station is not None else "*",
         starttime = UTCDateTime(t_start),
         endtime   = UTCDateTime(t_end),
         level     = "response"   # deepest level: includes poles/zeros/gain

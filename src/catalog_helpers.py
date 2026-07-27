@@ -30,7 +30,7 @@ def query_catalog(client_fdsn, t_start, t_end, lat_min, lat_max, lon_min, lon_ma
     client_fdsn  : ObsPy FDSN_Client
     t_start, t_end : str, ISO date strings -> "2022-06-01"
     lat_min/max, lon_min/max : float, bounding box
-    target_types : list of str -> ["earthquake", "ice quake"]
+    target_types : list of str -> ["earthquake", "ice quake"]  or  None -> keep every event type
 
     Returns
     -------
@@ -50,8 +50,9 @@ def query_catalog(client_fdsn, t_start, t_end, lat_min, lat_max, lon_min, lon_ma
     )
     print(f"Found {len(cat)} events in total.")
 
-    events = [ev for ev in cat if str(ev.event_type) in target_types]
-    print(f"After type filter : {len(events)} events kept — types: {target_types}")
+    events = [ev for ev in cat if target_types is None or str(ev.event_type) in target_types]
+    label = "ALL types (no filter)" if target_types is None else target_types
+    print(f"After type filter : {len(events)} events kept — types: {label}")
 
     return events
 
@@ -221,12 +222,19 @@ def query_catalog_chunked(client_fdsn, t_start, t_end,
     client_fdsn      : ObsPy FDSN_Client
     t_start, t_end   : str — ISO date strings e.g. "2022-01-01"
     lat_min/max, lon_min/max : float — bounding box
-    target_types     : list of str — event types to keep
+    target_types     : list of str — event types to keep  |  None -> keep every event type
+                       (None is useful to build a complete exclusion list for noise
+                       sampling, e.g. script 04d — quarry blasts and any other catalog
+                       type must be excluded too, not just the 3 classification targets)
     chunk_days       : int — size of each query window in days (default 90 ≈ 3 months)
     cache_path       : str or None — path to a .xml QuakeML cache file
                        • If the file already exists → load from it, no FDSN query
                        • If it does not exist       → query in chunks, save if complete
                        • None                       → query in chunks, no caching
+                       NOTE: the cache stores only the TYPE-FILTERED events, so a cache
+                       built with a restricted target_types list cannot be reused for a
+                       target_types=None (all-types) query and vice versa — use a
+                       different cache_path per target_types configuration.
     max_retries      : int — number of retry attempts per chunk on timeout (default 3)
     retry_sleep_s    : int — seconds to wait between retries (default 60)
 
@@ -242,9 +250,10 @@ def query_catalog_chunked(client_fdsn, t_start, t_end,
     if cache_path and os.path.isfile(cache_path):
         print(f"\n[CACHE] Loading catalog from {cache_path} ...")
         cat    = read_events(cache_path)
-        events = [ev for ev in cat if str(ev.event_type) in target_types]
+        events = [ev for ev in cat if target_types is None or str(ev.event_type) in target_types]
+        label  = "ALL types (no filter)" if target_types is None else target_types
         print(f"[CACHE] {len(cat)} events in file, "
-              f"{len(events)} kept after type filter: {target_types}")
+              f"{len(events)} kept after type filter: {label}")
         return events
 
     # ---- Build chunk list ----------------------------------------------------
@@ -262,7 +271,7 @@ def query_catalog_chunked(client_fdsn, t_start, t_end,
     print(f"\nQuerying catalog in {len(chunks)} chunks of ~{chunk_days} days ...")
     print(f"  Full window  : {t_start} → {t_end}")
     print(f"  Bounding box : lat [{lat_min}, {lat_max}]  lon [{lon_min}, {lon_max}]")
-    print(f"  Types kept   : {target_types}")
+    print(f"  Types kept   : {'ALL types (no filter)' if target_types is None else target_types}")
     print(f"  Retry policy : up to {max_retries} attempts, {retry_sleep_s}s sleep between retries")
 
     # ---- Query chunk by chunk (with retries) ---------------------------------
@@ -312,7 +321,7 @@ def query_catalog_chunked(client_fdsn, t_start, t_end,
 
     # ---- Filter by type ------------------------------------------------------
     events = [ev for ev in all_events
-              if str(ev.event_type) in target_types]
+              if target_types is None or str(ev.event_type) in target_types]
     print(f"\nTotal : {len(all_events)} events fetched across all chunks, "
           f"{len(events)} kept after type filter.")
 

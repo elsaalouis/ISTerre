@@ -41,11 +41,15 @@ References
 # -- Input CSV (output of script 04a) -----------------------------------------
 CSV_PATH = "/data/failles/louisels/project/results/outputs_04a/catalog_windows_XXXX_XXXX.csv"
 
+# -- Noise CSV (output of script 04d, optional 4th class) ----------------------
+# Set to a 04d `noise_windows_<stamp>.csv` to add the "noise" class
+NOISE_CSV = None
+
 # -- Output directory ----------------------------------------------------------
 OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_06a"
 
 # -- Classes to keep -----------------------------------------------------------
-TARGET_CLASSES = ["earthquake", "rockslide", "ice quake"]
+TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise"]
 
 # -- Quality filtering ---------------------------------------------------------
 FILTER_QUALITY = True   # True  → keep only quality_ok == True rows
@@ -136,6 +140,17 @@ if not os.path.isfile(CSV_PATH):
 df_raw = pd.read_csv(CSV_PATH)
 rename_legacy_columns(df_raw)   # renames feat_01…feat_99 → descriptive names if needed
 print(f"Loaded {len(df_raw):,} rows × {df_raw.shape[1]} columns.")
+
+# -- Optional 4th class: noise (output of 04d) --------------------------------
+if NOISE_CSV is not None:
+    if os.path.isfile(NOISE_CSV):
+        df_noise = pd.read_csv(NOISE_CSV)
+        rename_legacy_columns(df_noise)
+        print(f"Loaded {len(df_noise):,} noise rows × {df_noise.shape[1]} columns "
+              f"from {os.path.basename(NOISE_CSV)}.")
+        df_raw = pd.concat([df_raw, df_noise], ignore_index=True)
+    else:
+        print(f"[WARN] NOISE_CSV not found: {NOISE_CSV} — continuing without the noise class.")
 
 # -- Keep only target classes -------------------------------------------------
 df_raw = df_raw[df_raw["event_type"].isin(TARGET_CLASSES)].copy()

@@ -32,12 +32,17 @@ Outputs
 # -- Input CSV (output of script 04a) -----------------------------------------
 CSV_PATH   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent\catalog_windows_20260707_165719.csv"
 
+# -- Noise CSV (output of script 04d, optional 4th class) ----------------------
+# Set to a 04d `noise_windows_<stamp>.csv` to add the "noise" class
+NOISE_CSV  = None
+
 # -- Output directory ----------------------------------------------------------
 OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\06b_compare_classifiers"
 
 # -- Classes -------------------------------------------------------------------
-TARGET_CLASSES = ["earthquake", "rockslide", "ice quake"]
-CLASS_ORDER    = ["earthquake", "rockslide", "ice quake"]   # table / figure order
+TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise"]
+CLASS_ORDER    = ["earthquake", "rockslide", "ice quake", "noise"]   # table / figure order
+CLASS_ABBR     = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq", "noise": "no"}
 
 # -- Feature set ---------------------------------------------------------------
 # TOP_N_FEATURES = None  → use ALL feature columns present in the catalog CSV
@@ -174,6 +179,19 @@ print(f"After quality filter: {len(df):,} rows kept.")
 z_feat_cols = [f for f in FEATURE_NAMES if f in df.columns]
 df = df.dropna(subset=z_feat_cols).copy()
 print(f"After NaN drop (Z features): {len(df):,} rows.")
+
+# -- Optional 4th class: noise (output of 04d), added AFTER the quality gate --
+# (noise rows have SNR=NaN by construction — they'd fail the mask above)
+if NOISE_CSV is not None:
+    if os.path.isfile(NOISE_CSV):
+        df_noise = pd.read_csv(NOISE_CSV, low_memory=False)
+        df_noise = rename_legacy_columns(df_noise)
+        z_feat_cols_n = [f for f in FEATURE_NAMES if f in df_noise.columns]
+        df_noise = df_noise.dropna(subset=z_feat_cols_n).copy()
+        print(f"Loaded {len(df_noise):,} noise rows from {os.path.basename(NOISE_CSV)}.")
+        df = pd.concat([df, df_noise], ignore_index=True)
+    else:
+        print(f"[WARN] NOISE_CSV not found: {NOISE_CSV} — continuing without the noise class.")
 
 print("\n  CLASS DISTRIBUTION")
 print("  " + "─" * 45)
@@ -495,12 +513,8 @@ for cfg in CLASSIFIER_CONFIGS:
             "macro_f1":   macro_f1,
             "train_time": train_time,
             **{
-                f"{abbr}_{metric}": round(report[cls][full], 4)
-                for cls, abbr in [
-                    ("earthquake", "eq"),
-                    ("rockslide",  "rs"),
-                    ("ice quake",  "iq"),
-                ]
+                f"{CLASS_ABBR[cls]}_{metric}": round(report[cls][full], 4)
+                for cls in CLASS_ORDER
                 for metric, full in [
                     ("f1", "f1-score"),
                     ("p",  "precision"),
@@ -535,9 +549,8 @@ colors    = [r["color"]    for r in RESULTS]
 macro_f1s = [r["macro_f1"] for r in RESULTS]
 accs      = [r["acc"]      for r in RESULTS]
 times     = [r["train_time"] for r in RESULTS]
-eq_f1s    = [r["eq_f1"]   for r in RESULTS]
-rs_f1s    = [r["rs_f1"]   for r in RESULTS]
-iq_f1s    = [r["iq_f1"]   for r in RESULTS]
+# per-class F1 lists, one array per class in CLASS_ORDER (generalizes to any n classes)
+class_f1s = {cls: [r[f"{CLASS_ABBR[cls]}_f1"] for r in RESULTS] for cls in CLASS_ORDER}
 
 n = len(RESULTS)
 x = np.arange(n)
@@ -549,26 +562,27 @@ _feat_label = (
     if TOP_N_FEATURES is None
     else f"Top-{len(features)} features"
 )
+_class_counts_str = "  ".join(
+    f"{sum(y_test == cls):,} {CLASS_ABBR[cls].upper()}" for cls in CLASS_ORDER
+)
 fig.suptitle(
     f"Classifier comparison — {_feat_label}  "
-    f"({len(X_test):,} test rows, "
-    f"{sum(y_test == 'earthquake'):,} EQ  "
-    f"{sum(y_test == 'rockslide'):,} RS  "
-    f"{sum(y_test == 'ice quake'):,} IQ)",
+    f"({len(X_test):,} test rows, {_class_counts_str})",
     fontsize=11, fontweight="bold",
 )
 
 # -- Panel 1: per-class F1 grouped bars --------------------------------------
 ax  = axes[0]
-w   = 0.22
+n_cls   = len(CLASS_ORDER)
+w       = min(0.8 / n_cls, 0.22)
+_bar_colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#8c564b"]
 bar_kw = dict(alpha=0.85, edgecolor="white", linewidth=0.8)
-ax.bar(x - w, eq_f1s, w, label="earthquake", color="#1f77b4", **bar_kw)
-ax.bar(x,     rs_f1s, w, label="rockslide",  color="#d62728", **bar_kw)
-ax.bar(x + w, iq_f1s, w, label="ice quake",  color="#2ca02c", **bar_kw)
-for i, (eq, rs, iq) in enumerate(zip(eq_f1s, rs_f1s, iq_f1s)):
-    ax.text(i - w, eq + 0.01, f"{eq:.2f}", ha="center", va="bottom", fontsize=7)
-    ax.text(i,     rs + 0.01, f"{rs:.2f}", ha="center", va="bottom", fontsize=7)
-    ax.text(i + w, iq + 0.01, f"{iq:.2f}", ha="center", va="bottom", fontsize=7)
+offsets = [(i - (n_cls - 1) / 2) * w for i in range(n_cls)]
+for off, cls, bc in zip(offsets, CLASS_ORDER, _bar_colors):
+    vals = class_f1s[cls]
+    ax.bar(x + off, vals, w, label=cls, color=bc, **bar_kw)
+    for i, val in enumerate(vals):
+        ax.text(i + off, val + 0.01, f"{val:.2f}", ha="center", va="bottom", fontsize=7)
 ax.set_xticks(x)
 ax.set_xticklabels(shorts, fontsize=10)
 ax.set_ylabel("F1-score")
@@ -619,15 +633,11 @@ res_df = pd.DataFrame([
         "n_features":   len(features),
         "accuracy":     round(r["acc"],        4),
         "macro_f1":     round(r["macro_f1"],   4),
-        "eq_f1":        round(r["eq_f1"],      4),
-        "eq_precision": round(r["eq_p"],       4),
-        "eq_recall":    round(r["eq_r"],       4),
-        "rs_f1":        round(r["rs_f1"],      4),
-        "rs_precision": round(r["rs_p"],       4),
-        "rs_recall":    round(r["rs_r"],       4),
-        "iq_f1":        round(r["iq_f1"],      4),
-        "iq_precision": round(r["iq_p"],       4),
-        "iq_recall":    round(r["iq_r"],       4),
+        **{
+            f"{CLASS_ABBR[cls]}_{metric}": round(r[f"{CLASS_ABBR[cls]}_{key}"], 4)
+            for cls in CLASS_ORDER
+            for metric, key in [("f1", "f1"), ("precision", "p"), ("recall", "r")]
+        },
         "train_time_s": round(r["train_time"], 2),
     }
     for r in RESULTS
@@ -647,19 +657,18 @@ _feat_src = (
 )
 print(f"  SUMMARY — {len(features)}-feature set  ({_feat_src})")
 print(f"  {'='*85}")
-print(f"  {'Classifier':{COL}} {'Acc':>6} {'MacroF1':>8} "
-      f"{'EQ F1':>7} {'RS F1':>7} {'IQ F1':>7} {'Time':>8}")
+_cls_headers = "".join(f"{CLASS_ABBR[cls].upper() + ' F1':>7} " for cls in CLASS_ORDER)
+print(f"  {'Classifier':{COL}} {'Acc':>6} {'MacroF1':>8} {_cls_headers}{'Time':>8}")
 print(f"  {'-'*85}")
 for r in RESULTS:
     t     = r["train_time"]
     t_str = f"{t:.0f}s" if t < 60 else f"{t/60:.1f}m"
+    _cls_vals = "".join(f"{r[f'{CLASS_ABBR[cls]}_f1']:>7.3f} " for cls in CLASS_ORDER)
     print(
         f"  {r['name']:{COL}} "
         f"{r['acc']:>6.3f} "
         f"{r['macro_f1']:>8.3f} "
-        f"{r['eq_f1']:>7.3f} "
-        f"{r['rs_f1']:>7.3f} "
-        f"{r['iq_f1']:>7.3f} "
+        f"{_cls_vals}"
         f"{t_str:>8}"
     )
 print(f"  {'='*85}")

@@ -56,12 +56,17 @@ RESCUE_CATALOG_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\
 # Set to None to skip Run C
 RESCUE_CATALOG_RAW_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03d_rescue_feature_extraction\stricter_IQ100_20260722_145529\rescue_catalog_raw_20260722_145529.csv"
 
+# ── Noise catalog (output of script 04d, optional 4th class) ──────────────────
+# Set to a 04d `noise_windows_<stamp>.csv` to add the "noise" class
+NOISE_CSV = None
+
 # ── Output directory ──────────────────────────────────────────────────────────
 OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\06c_HGB_classifier"
 
 # ── Classes ───────────────────────────────────────────────────────────────────
-TARGET_CLASSES = ["earthquake", "rockslide", "ice quake"]
-CLASS_ORDER    = ["earthquake", "rockslide", "ice quake"]
+TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise"]
+CLASS_ORDER    = ["earthquake", "rockslide", "ice quake", "noise"]
+CLASS_ABBR     = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq", "noise": "no"}
 
 # ── Feature set ───────────────────────────────────────────────────────────────
 FEATURE_IMPORTANCES_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03b_feature_selection\run_20260710_144246\feature_importances_20260710_144246.csv"
@@ -172,6 +177,23 @@ print(f"  Original catalog  : {len(orig):,} rows after quality gate + NaN drop")
 for cls in CLASS_ORDER:
     n = (orig["event_type"] == cls).sum()
     print(f"    {cls:<22} {n:>6,}  ({100*n/len(orig):.1f} %)")
+
+# ── Noise catalog (optional 4th class, added to `orig` so it flows into every
+#    run — A/B/C all build on top of `orig`) ───────────────────────────────────
+if NOISE_CSV is not None and os.path.exists(str(NOISE_CSV)):
+    noise = pd.read_csv(NOISE_CSV, low_memory=False)
+    noise = rename_legacy_columns(noise)
+    z_feat_cols_noise = [f for f in FEATURE_NAMES if f in noise.columns]
+    noise = noise.dropna(subset=z_feat_cols_noise).copy()
+    noise["source"] = "noise"
+    print(f"\n  Noise catalog     : {len(noise):,} rows from {os.path.basename(NOISE_CSV)}")
+    orig = pd.concat([orig, noise], ignore_index=True)
+    print(f"  Original + noise  : {len(orig):,} rows")
+    for cls in CLASS_ORDER:
+        n = (orig["event_type"] == cls).sum()
+        print(f"    {cls:<22} {n:>6,}  ({100*n/len(orig):.1f} %)")
+elif NOISE_CSV is not None:
+    print(f"\n  [WARN] NOISE_CSV not found: {NOISE_CSV} — continuing without the noise class.")
 
 # ── Rescue catalog (optional) ─────────────────────────────────────────────────
 has_rescue = RESCUE_CATALOG_CSV is not None and os.path.exists(str(RESCUE_CATALOG_CSV))
@@ -352,15 +374,18 @@ def train_and_eval(df, label, features, smote_k, test_size, rs):
         macro_f1 = report["macro avg"]["f1-score"]
 
         t_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{elapsed/60:.1f}m"
+        _per_cls_str = "  ".join(
+            f"{CLASS_ABBR[cls].upper()}-F1={report[cls]['f1-score']:.3f}" for cls in CLASS_ORDER
+        )
         print(f"  {name}: Accuracy={acc:.3f}  MacroF1={macro_f1:.3f}  "
-              f"IQ-F1={report['ice quake']['f1-score']:.3f}  Time={t_str}")
+              f"{_per_cls_str}  Time={t_str}")
 
         results[short] = {
             "acc":      acc,
             "macro_f1": macro_f1,
             **{
-                f"{abbr}_{m}": round(report[cls][full], 4)
-                for cls, abbr in [("earthquake","eq"),("rockslide","rs"),("ice quake","iq")]
+                f"{CLASS_ABBR[cls]}_{m}": round(report[cls][full], 4)
+                for cls in CLASS_ORDER
                 for m, full in [("f1","f1-score"),("p","precision"),("r","recall")]
             },
             "train_time_s": round(elapsed, 2),
@@ -493,14 +518,13 @@ if results_C is not None:
 # 2026-07, historically ice quake) so the panel tracks the metric that can
 # actually move — hardcoding "ice quake" here would make Run C's effect
 # invisible whenever the rescue target is a different class.
-_class_abbr = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq"}
 if has_rescue and len(rescue) > 0:
     _target_class = rescue["event_type"].mode().iat[0]
 elif has_rescue_raw and len(rescue_raw) > 0:
     _target_class = rescue_raw["event_type"].mode().iat[0]
 else:
     _target_class = "ice quake"
-_abbr = _class_abbr.get(_target_class, "iq")
+_abbr = CLASS_ABBR.get(_target_class, "iq")
 
 if results_B is not None or results_C is not None:
     metrics_shown = [
@@ -574,19 +598,22 @@ if results_C is not None:
     runs.append(("C — Original + raw rescued (ablation)", results_C))
 
 COL = 40
+_f1_headers = "".join(f"{CLASS_ABBR[cls].upper() + ' F1':>7} " for cls in CLASS_ORDER)
+_target_headers = f"{_abbr.upper() + ' P':>6} {_abbr.upper() + ' R':>6}"
 print(f"\n  {'Run':{COL}} {'Clf':>5} {'Acc':>6} {'MacroF1':>8} "
-      f"{'EQ F1':>7} {'RS F1':>7} {'IQ F1':>7} {'IQ P':>6} {'IQ R':>6}")
+      f"{_f1_headers}{_target_headers}")
 print(f"  {'-'*100}")
 
 csv_rows = []
 for run_label, res in runs:
     for short in ["HGB", "RF"]:
         r = res[short]
+        _f1_vals = "".join(f"{r[f'{CLASS_ABBR[cls]}_f1']:>7.3f} " for cls in CLASS_ORDER)
         print(
             f"  {run_label:{COL}} {short:>5} "
             f"{r['acc']:>6.3f} {r['macro_f1']:>8.3f} "
-            f"{r['eq_f1']:>7.3f} {r['rs_f1']:>7.3f} "
-            f"{r['iq_f1']:>7.3f} {r['iq_p']:>6.3f} {r['iq_r']:>6.3f}"
+            f"{_f1_vals}"
+            f"{r[f'{_abbr}_p']:>6.3f} {r[f'{_abbr}_r']:>6.3f}"
         )
         csv_rows.append({
             "run":         run_label,
