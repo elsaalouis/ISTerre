@@ -82,7 +82,7 @@ SPEC_NPERSEG   = int(SPEC_NPERSEG_S * TARGET_FS)
 SPEC_NOVERLAP  = int(SPEC_NPERSEG * SPEC_NOVERLAP_FRAC)
 
 # -- Train / val / test split (by EVENT, stratified by class) --------------------
-VAL_SIZE     = 0.15
+VAL_SIZE     = 0.20
 TEST_SIZE    = 0.15
 RANDOM_STATE = 42
 

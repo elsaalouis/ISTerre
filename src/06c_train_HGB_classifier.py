@@ -58,7 +58,7 @@ RESCUE_CATALOG_RAW_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTE
 
 # ── Noise catalog (output of script 04d, optional 4th class) ──────────────────
 # Set to a 04d `noise_windows_<stamp>.csv` to add the "noise" class
-NOISE_CSV = None
+NOISE_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04d_noise_window_extraction\run_20260727_111052\noise_windows_20260727_111052.csv"
 
 # ── Output directory ──────────────────────────────────────────────────────────
 OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\06c_HGB_classifier"
