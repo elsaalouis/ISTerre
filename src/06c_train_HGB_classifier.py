@@ -104,6 +104,26 @@ HGB_LR        = 0.1
 # RF — baseline comparison
 RF_N_EST      = 200
 
+# ── Example waveform gallery (optional QC figure) ──────────────────────────────
+# catalog_windows_<stamp>.csv only stores the 99/103 SCALAR features per row,
+# not the raw signal — this re-fetches the actual waveform from the SDS
+# archive for a handful of rows per class, so you can visually compare shapes.
+# Cluster-only (needs SDS_ROOT/ISTERRE_URL); silently skipped if unreachable.
+PLOT_EXAMPLE_TRACES  = True
+N_EXAMPLES_PER_CLASS = 10
+PLOT_PAD_SEC         = 10     # context padding before/after the detected window, more generous than the 5s used for feature extraction
+PLOT_FREQ_MIN        = 1.0    # display bandpass, same band used elsewhere in the pipeline
+PLOT_FREQ_MAX        = 20.0
+SDS_ROOT             = "/data/sig/SDS"
+ISTERRE_URL          = "http://ist-sc3-geobs.osug.fr:8080"
+# Same bounding box used everywhere else in the pipeline (01/02a/02b/03a/04a/04d).
+# fetch_inventory MUST be called with this box, not a bare network="*"/station="*"
+# query — see the note where it's called below.
+LAT_MIN, LAT_MAX     = 45.5, 46.0
+LON_MIN, LON_MAX     = 6.5, 7.2
+CLASS_COLORS         = {"earthquake": "#1f77b4", "rockslide": "#d62728",
+                        "ice quake": "#2ca02c", "noise": "#7f7f7f"}
+
 
 # =============================================================================
 # SECTION 2 — SETUP
@@ -126,11 +146,13 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 from sklearn.impute import SimpleImputer
 from imblearn.over_sampling import SMOTE
+from obspy import UTCDateTime
 
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SRC_DIR)
 from features import FEATURE_NAMES, FEATURE_NAMES_3C, POLARIZATION_NAMES, rename_legacy_columns
-from run_setup import create_run_dir, setup_logging
+from run_setup import create_run_dir, setup_logging, connect_sds, connect_fdsn, fetch_inventory
+from preprocessing import build_station_times_df, remove_response_or_fallback
 
 warnings.filterwarnings("ignore")
 
@@ -194,6 +216,118 @@ if NOISE_CSV is not None and os.path.exists(str(NOISE_CSV)):
         print(f"    {cls:<22} {n:>6,}  ({100*n/len(orig):.1f} %)")
 elif NOISE_CSV is not None:
     print(f"\n  [WARN] NOISE_CSV not found: {NOISE_CSV} — continuing without the noise class.")
+
+
+# =============================================================================
+# SECTION 3b — EXAMPLE WAVEFORM GALLERY (optional QC figure)
+# =============================================================================
+
+if PLOT_EXAMPLE_TRACES:
+    print(f"\n{'='*65}")
+    print("  Example waveform gallery")
+    print(f"{'='*65}")
+
+    _client_sds  = connect_sds(SDS_ROOT)
+    _client_fdsn = connect_fdsn(ISTERRE_URL)
+
+    if _client_sds is None or _client_fdsn is None:
+        print("  [WARN] SDS/FDSN unavailable — skipping example waveform gallery "
+              "(this section only works on the cluster / with VPN access).")
+    else:
+        _t_min = pd.to_datetime(orig["det_starttime"]).min()
+        _t_max = pd.to_datetime(orig["det_starttime"]).max()
+        # IMPORTANT: pass the bounding box, same as every other fetch_inventory
+        # call in this pipeline (01/02a/02b/03a/04a/04d). A bare network="*"/
+        # station="*" query with no spatial filter appears to route through a
+        # different code path on ISTerre's FDSN server (a SeisComP fdsnws
+        # instance) that raised "emails needs to match the pattern
+        # '[\w\.\-_]+@[\w\.\-_]+'" — an unrelated WADL parameter validation
+        # error, not anything about our own request. Scoping to the massif
+        # bounding box (which is also just correct — this is the only region
+        # we ever want anyway) avoids it and is faster besides.
+        _inventory = fetch_inventory(
+            _client_fdsn, str(_t_min.date()), str((_t_max + pd.Timedelta(days=1)).date()),
+            lat_min=LAT_MIN, lat_max=LAT_MAX, lon_min=LON_MIN, lon_max=LON_MAX,
+        )
+        if _inventory is None:
+            print("  [WARN] Inventory fetch failed even with the bounding box — "
+                  "waveforms below will be UNCALIBRATED raw counts, not true ground "
+                  "velocity (shape is still roughly indicative, amplitude/scale is not).")
+
+        _fig, _axes = plt.subplots(
+            N_EXAMPLES_PER_CLASS, len(CLASS_ORDER),
+            figsize=(4 * len(CLASS_ORDER), 2 * N_EXAMPLES_PER_CLASS),
+        )
+
+        for _col, _cls in enumerate(CLASS_ORDER):
+            _sub = orig[orig["event_type"] == _cls].copy()
+            if _cls == "noise" and "trigger_on_cft" in _sub.columns:
+                _sub = _sub.sort_values("trigger_on_cft", ascending=False)
+                _rank_col, _rank_label = "trigger_on_cft", "CFT"
+            else:
+                _sub = _sub.sort_values("SNR_full_median", ascending=False)
+                _rank_col, _rank_label = "SNR_full_median", "SNR"
+
+            _plotted = 0
+            for _, _row in _sub.iterrows():
+                if _plotted >= N_EXAMPLES_PER_CLASS:
+                    break
+                try:
+                    _net, _sta, _chan = _row["network"], _row["station"], _row["channel"]
+                    _t_on  = UTCDateTime(_row["det_starttime"]) - PLOT_PAD_SEC
+                    _t_off = UTCDateTime(_row["det_endtime"])   + PLOT_PAD_SEC
+
+                    _st_raw = _client_sds.get_waveforms(_net, _sta, "*", _chan, _t_on, _t_off)
+                    if len(_st_raw) == 0:
+                        continue
+                    _st_raw.merge(fill_value=0)
+
+                    _sdf = build_station_times_df(_st_raw, _t_on, _t_off)
+                    _st_vel = remove_response_or_fallback(_st_raw, _inventory, _sdf)
+                    if len(_st_vel) == 0:
+                        continue
+
+                    _tr = _st_vel[0].copy()
+                    _nyq = _tr.stats.sampling_rate / 2
+                    _tr.filter("bandpass", freqmin=PLOT_FREQ_MIN,
+                              freqmax=min(PLOT_FREQ_MAX, 0.9 * _nyq),
+                              corners=4, zerophase=True)
+
+                    _ax = _axes[_plotted, _col]
+                    _t_axis = _tr.times() - PLOT_PAD_SEC   # 0 = det_starttime
+                    _ax.plot(_t_axis, _tr.data, lw=0.6, color=CLASS_COLORS.get(_cls, "black"))
+                    _ax.axvspan(0, _row["det_duration_s"], color="grey", alpha=0.15)
+                    _ax.set_title(f"{_net}.{_sta}  {_rank_label}={_row[_rank_col]:.2f}", fontsize=7)
+                    _ax.tick_params(labelsize=6)
+                    if _plotted == 0:
+                        _ax.set_ylabel(_cls, fontsize=10, fontweight="bold")
+                    if _col == 0:
+                        _ax.text(-0.35, 0.5, f"#{_plotted+1}", transform=_ax.transAxes,
+                                 fontsize=7, va="center", ha="right")
+                    _plotted += 1
+                except Exception:
+                    continue
+
+            if _plotted < N_EXAMPLES_PER_CLASS:
+                print(f"  [WARN] Only found {_plotted}/{N_EXAMPLES_PER_CLASS} plottable "
+                      f"waveforms for '{_cls}' (SDS fetch/response-removal failures skipped)")
+                for _extra in range(_plotted, N_EXAMPLES_PER_CLASS):
+                    _axes[_extra, _col].axis("off")
+            else:
+                print(f"  [OK] {_plotted}/{N_EXAMPLES_PER_CLASS} waveforms plotted for '{_cls}'")
+
+        _fig.suptitle(
+            "Example waveforms by class — top-ranked by SNR (EQ/RS/IQ) or STA/LTA "
+            "ratio at trigger (noise)\nshaded region = the detected window used for "
+            "feature extraction",
+            fontsize=11, fontweight="bold",
+        )
+        plt.tight_layout()
+        _gallery_path = os.path.join(RUN_DIR, f"fig_example_traces_{STAMP}.png")
+        plt.savefig(_gallery_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"\n  [SAVED] {_gallery_path}")
+
 
 # ── Rescue catalog (optional) ─────────────────────────────────────────────────
 has_rescue = RESCUE_CATALOG_CSV is not None and os.path.exists(str(RESCUE_CATALOG_CSV))
