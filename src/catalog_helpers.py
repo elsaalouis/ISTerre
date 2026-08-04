@@ -348,6 +348,159 @@ def query_catalog_chunked(client_fdsn, t_start, t_end,
 
 
 # =============================================================================
+# DISTANCE-BASED CATALOG QUERY WITH DISK CACHE — used by script 04c
+# =============================================================================
+
+def query_catalog_by_distance_chunked(client_fdsn, t_start, t_end,
+                                      center_lat, center_lon,
+                                      min_radius_deg, max_radius_deg,
+                                      min_magnitude, max_magnitude=None,
+                                      chunk_days=90, cache_path=None,
+                                      max_retries=3, retry_sleep_s=60):
+    """
+    Query an FDSN event catalog for events at a given EPICENTRAL-DISTANCE
+    range from a reference point, above a minimum magnitude.
+
+    Unlike query_catalog_chunked() (lat/lon bounding box + event-type filter,
+    used for the LOCAL massif catalog by 04a/04d), this queries by DISTANCE
+    from a center point (FDSN's own latitude/longitude/minradius/maxradius,
+    in DEGREES) and by MAGNITUDE — the two criteria that actually define
+    "not local" physically, whether that means regional (~150-1000 km,
+    Pn/Sn Moho-refracted waves — script 04c's current use, see
+    [[plan_regional_class]]) or teleseismic (>1000 km, mantle/core-turning
+    waves — 04c's original design, repurposed 2026-08-04). A lat/lon box
+    makes no sense for either kind of distance-defined search.
+
+    Parameters
+    ----------
+    client_fdsn      : ObsPy FDSN_Client (e.g. connect_fdsn("https://api.franceseisme.fr"))
+    t_start, t_end   : str — ISO date strings -> "2015-01-01"
+    center_lat/lon   : float — reference point (e.g. Mont Blanc massif centroid)
+    min_radius_deg   : float — minimum epicentral distance in DEGREES
+                       (use obspy.geodetics.kilometer2degrees(km) to convert
+                       from the physical distance threshold, e.g. 150 km)
+    max_radius_deg   : float — maximum epicentral distance in degrees (180 = no limit)
+    min_magnitude    : float — minimum magnitude to keep
+    max_magnitude    : float or None — optional upper magnitude bound
+    chunk_days       : int — size of each query window in days (default 90)
+    cache_path       : str or None — path to a .xml QuakeML cache file, same
+                       load/save semantics as query_catalog_chunked() — a
+                       cache is only written if ALL chunks succeeded
+    max_retries      : int — retry attempts per chunk on timeout (default 3)
+    retry_sleep_s    : int — seconds to wait between retries (default 60)
+
+    Returns
+    -------
+    events : list of ObsPy Event objects (deduplicated by origin time)
+    """
+    import os
+    import time
+    from obspy import UTCDateTime, Catalog, read_events
+
+    # ---- Load from cache if available ----------------------------------------
+    if cache_path and os.path.isfile(cache_path):
+        print(f"\n[CACHE] Loading distance-filtered catalog from {cache_path} ...")
+        cat = read_events(cache_path)
+        print(f"[CACHE] {len(cat)} events loaded.")
+        return list(cat)
+
+    # ---- Build chunk list ----------------------------------------------------
+    t0        = UTCDateTime(t_start)
+    t1        = UTCDateTime(t_end)
+    chunk_sec = chunk_days * 86400
+
+    chunks  = []
+    current = t0
+    while current < t1:
+        next_t = min(current + chunk_sec, t1)
+        chunks.append((current, next_t))
+        current = next_t
+
+    print(f"\nQuerying distance-filtered catalog in {len(chunks)} chunks of ~{chunk_days} days ...")
+    print(f"  Full window   : {t_start} → {t_end}")
+    print(f"  Center point  : ({center_lat}, {center_lon})")
+    print(f"  Radius range  : [{min_radius_deg:.2f}, {max_radius_deg:.2f}] deg "
+          f"(~[{min_radius_deg*111.195:.0f}, {max_radius_deg*111.195:.0f}] km)")
+    print(f"  Magnitude     : >= {min_magnitude}" +
+          (f", <= {max_magnitude}" if max_magnitude is not None else ""))
+
+    # ---- Query chunk by chunk (with retries) ---------------------------------
+    all_events    = []
+    seen_ids      = set()   # deduplicate events that straddle chunk boundaries
+    failed_chunks = []      # (c_start, c_end) pairs that failed all retries
+
+    for k, (c_start, c_end) in enumerate(chunks, 1):
+        label   = f"{str(c_start)[:10]} → {str(c_end)[:10]}"
+        success = False
+
+        for attempt in range(1, max_retries + 1):
+            attempt_label = f"attempt {attempt}/{max_retries}" if attempt > 1 else ""
+            print(f"  Chunk {k:2d}/{len(chunks)} : {label} {attempt_label}...",
+                  end=" ", flush=True)
+            try:
+                kwargs = dict(
+                    starttime    = c_start,
+                    endtime      = c_end,
+                    latitude     = center_lat,
+                    longitude    = center_lon,
+                    minradius    = min_radius_deg,
+                    maxradius    = max_radius_deg,
+                    minmagnitude = min_magnitude,
+                )
+                if max_magnitude is not None:
+                    kwargs["maxmagnitude"] = max_magnitude
+                cat_chunk = client_fdsn.get_events(**kwargs)
+
+                n_new = 0
+                for ev in cat_chunk:
+                    origin = ev.preferred_origin() or (ev.origins[0] if ev.origins else None)
+                    if origin is None:
+                        continue
+                    ev_id = str(origin.time)
+                    if ev_id not in seen_ids:
+                        seen_ids.add(ev_id)
+                        all_events.append(ev)
+                        n_new += 1
+                print(f"{len(cat_chunk)} returned, {n_new} new")
+                success = True
+                break   # chunk done — move to next
+
+            except Exception as e:
+                err_msg = str(e) if str(e) else type(e).__name__
+                if attempt < max_retries:
+                    print(f"FAILED ({err_msg}) — retrying in {retry_sleep_s}s ...")
+                    time.sleep(retry_sleep_s)
+                else:
+                    print(f"FAILED ({err_msg}) — giving up after {max_retries} attempts.")
+
+        if not success:
+            failed_chunks.append((c_start, c_end))
+
+    print(f"\nTotal : {len(all_events)} distance-filtered candidate events fetched "
+          f"(dist >= {min_radius_deg*111.195:.0f} km, mag >= {min_magnitude}).")
+
+    # ---- Report any failures -------------------------------------------------
+    if failed_chunks:
+        print(f"\n[WARN] {len(failed_chunks)} chunk(s) failed after all retries "
+              f"— the following date ranges are MISSING from the catalog:")
+        for cs, ce in failed_chunks:
+            print(f"         {str(cs)[:10]} → {str(ce)[:10]}")
+        print(f"[WARN] Cache will NOT be saved because the catalog is incomplete.")
+        print(f"       Re-run the script to retry the missing chunks.")
+        return all_events
+
+    # ---- Save cache (only if all chunks succeeded) ---------------------------
+    if cache_path and all_events:
+        os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
+        Catalog(events=all_events).write(cache_path, format="QUAKEML")
+        print(f"[CACHE] All chunks succeeded. Catalog saved → {cache_path}")
+        print(f"        Next run will skip the FDSN query entirely.")
+
+    return all_events
+
+
+
+# =============================================================================
 # STATION LIST FROM INVENTORY (used by script 04)
 # =============================================================================
 

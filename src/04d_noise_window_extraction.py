@@ -25,9 +25,9 @@ Pipeline
 --------
   1. Fetch the FDSN inventory for the whole bounding box -> resolve every candidate station's exact channel + operational epochs + coordinates
   2. Query the FULL catalog (all event types, no filter) over the same period and bounding box
-  3. Repeatedly: pick a random station + a random day within its operational epochs 
-     -> load that day's continuous trace, remove instrument response, bandpass filter, run classical STA/LTA 
-     -> take up to MAX_CANDIDATES_PER_DAY of that day's triggers
+  3. Repeatedly: pick a random station + a random day within its operational epochs
+     -> load that day's continuous trace, remove instrument response, bandpass filter, run classical STA/LTA
+     -> take up to MAX_CANDIDATES_PER_DAY of that day's triggers, STRONGEST (peak STA/LTA ratio) first
   4. For each candidate trigger: reject if it overlaps a catalog exclusion interval, reject if any neighbor station also triggers during the same window
   5. Extract the 99/103 Maggi/Hibert features from the (t_on-PAD_SEC, t_off+PAD_SEC) window
   6. Save a CSV with the SAME column layout as `catalog_windows_<stamp>.csv` so it can be loaded and concatenated directly by 06a/06b/06c
@@ -566,9 +566,22 @@ while len(all_rows) < N_NOISE_WINDOWS and n_attempts < MAX_TOTAL_ATTEMPTS:
                 n_days_no_trigger += 1
                 continue
 
-            # Shuffle so capping at MAX_CANDIDATES_PER_DAY doesn't always keep
-            # only the earliest-in-day triggers.
-            order = rng.permutation(len(on_off))
+            # Rank this day's triggers by PEAK STA/LTA ratio reached within
+            # each [i_on, i_off] span, strongest first, instead of a random
+            # order. A busy day can produce many triggers of very different
+            # character (a marginal ambient-level graze that barely clears
+            # THR_ON vs. a real, sharp local burst that climbs well past it),
+            # and MAX_CANDIDATES_PER_DAY only lets a handful through — a
+            # random draw can easily fill that quota with weak grazes and
+            # never even attempt the day's strongest burst. Trying strongest
+            # first means the most genuinely event-like local fluctuations
+            # get first crack at the exclusion/coincidence checks, instead of
+            # whichever candidates happened to win a coin flip.
+            peak_cft = np.array([
+                np.max(cft[i_on:i_off + 1]) if i_off > i_on else cft[i_on]
+                for i_on, i_off in on_off
+            ])
+            order = np.argsort(-peak_cft)   # descending: strongest burst first
 
             for k in order:
                 if accepted_today >= MAX_CANDIDATES_PER_DAY or len(all_rows) >= N_NOISE_WINDOWS:

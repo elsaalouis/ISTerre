@@ -19,6 +19,14 @@ All figure-generating functions used across the pipeline scripts:
   - plot_waveform_comparison()   : raw vs denoised waveform, one event (script 03d)
   - plot_snr_quality_threshold() : GMM/Otsu quality-threshold overlay  (script 05b)
   - plot_roc_pooled()            : generic pooled ROC curve plot       (script 05b)
+  - plot_noise_diagnostic()      : waveform + broadband spectrogram + classical
+                                    STA/LTA CFT, one noise-class example (script 04e)
+  - plot_event_map()             : geographic catalog-event map, colored
+                                    by event type                        (script 08)
+  - plot_waveform_spectrogram_example() : single-event waveform + spectrogram panel (script 08)
+  - plot_average_spectrograms()  : "typical fingerprint" spectrogram per class (script 08)
+  - plot_feature_distributions() : violin plots of a feature, one panel per class (script 08)
+  - plot_snr_quality_by_class()  : SNR/quality violin plots with gate threshold  (script 08)
 """
 
 import os
@@ -27,7 +35,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from obspy import UTCDateTime
-from scipy.signal import welch, butter, filtfilt
+from scipy.signal import welch, butter, filtfilt, spectrogram
 
 
 # =============================================================================
@@ -544,14 +552,16 @@ def plot_station_map(ax, snr_series, sta_coords, title, vmin, vmax, map_extent, 
     -------
     n_plotted : int — number of stations successfully drawn on the map
     """
-    import matplotlib.cm as cm
+    import matplotlib as mpl
     import matplotlib.colors as mcolors
     from matplotlib.patches import Rectangle
     import matplotlib.patheffects as pe
 
     lon_min, lon_max, lat_min, lat_max = map_extent
     norm     = mcolors.Normalize(vmin=vmin, vmax=vmax)
-    cmap_obj = cm.get_cmap(cmap)
+    # matplotlib.cm.get_cmap() was removed in newer matplotlib (deprecated since
+    # 3.7, gone in 3.9+) -- matplotlib.colormaps[name] is the current API.
+    cmap_obj = mpl.colormaps[cmap]
 
     # ---- Map frame ----------------------------------------------------------
     ax.set_xlim(lon_min, lon_max)
@@ -576,10 +586,16 @@ def plot_station_map(ax, snr_series, sta_coords, title, vmin, vmax, map_extent, 
         ax.set_xlim(lon_min, lon_max)
         ax.set_ylim(lat_min, lat_max)
         _has_basemap = True
-    except ImportError:         # falls back to a white grid if contextily not installed or network unavailable
+    except ImportError as exc:   # contextily not installed in this environment
+        print(f"    [WARN] Basemap skipped -- contextily not installed ({exc}). "
+              f"Falling back to a white grid.")
         ax.grid(True, lw=0.3, alpha=0.5, ls='--')
         ax.set_facecolor('#f0f0f0')
-    except Exception as exc:
+        ax.text(0.01, 0.01, 'Basemap unavailable (contextily not installed)',
+                transform=ax.transAxes, fontsize=5, color='grey', va='bottom')
+    except Exception as exc:     # network/proxy/SSL error reaching the tile servers
+        print(f"    [WARN] Basemap skipped -- contextily raised: {exc}. "
+              f"Falling back to a white grid.")
         ax.grid(True, lw=0.3, alpha=0.5, ls='--')
         ax.text(0.01, 0.01, f'Basemap unavailable ({exc})',
                 transform=ax.transAxes, fontsize=5, color='grey', va='bottom')
@@ -1350,6 +1366,548 @@ def plot_roc_pooled(roc_results, metrics, metric_labels, run_dir, stamp,
     plt.tight_layout()
 
     fname = fname or f"fig_roc_{stamp}.png"
+    out_path = os.path.join(run_dir, fname)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"    [SAVED] {fname}")
+    return out_path
+
+
+
+# =============================================================================
+# CATALOG EVENT MAP (script 08)
+# =============================================================================
+
+def plot_event_map(ax, lats, lons, event_types, class_colors, map_extent,
+                   mont_blanc_lon, mont_blanc_lat, cities=None, title="", sizes=None):
+    """
+    Plot catalog event locations on a satellite-basemap panel, colored by event_type
+
+    Same visual style/fallback behaviour as plot_station_map() (contextily satellite
+    basemap, graceful white-grid fallback if unavailable, Mont Blanc summit marker)
+    but for individual event locations rather than station coordinates.
+
+    Parameters
+    ----------
+    ax              : matplotlib.axes.Axes
+    lats, lons      : array-like — event latitude / longitude, one entry per event
+    event_types     : array-like — event_type string, one entry per event (same length)
+    class_colors    : dict {event_type: matplotlib color} — also defines legend order
+    map_extent      : tuple (lon_min, lon_max, lat_min, lat_max)
+    mont_blanc_lon  : float — longitude of the Mont Blanc summit
+    mont_blanc_lat  : float — latitude  of the Mont Blanc summit
+    cities          : list of (name, lon, lat) or None — optional city labels
+    title           : str — subplot title
+    sizes           : array-like or None — marker size per event; default constant 18
+
+    Returns
+    -------
+    n_plotted : int — number of events actually drawn (finite lat/lon only)
+    """
+    import matplotlib.patheffects as pe
+
+    lon_min, lon_max, lat_min, lat_max = map_extent
+    ax.set_xlim(lon_min, lon_max)
+    ax.set_ylim(lat_min, lat_max)
+    ax.set_xlabel('Longitude (°E)', fontsize=8)
+    ax.set_ylabel('Latitude (°N)',  fontsize=8)
+    ax.tick_params(labelsize=7)
+    ax.set_title(title, fontsize=9, fontweight='bold')
+
+    # ---- Satellite basemap (contextily) --------------------------------------
+    _has_basemap = False
+    try:
+        import contextily as ctx
+        ctx.add_basemap(ax, crs='EPSG:4326', source=ctx.providers.Esri.WorldImagery,
+                        zoom=9, attribution_size=5)
+        ctx.add_basemap(ax, crs='EPSG:4326', source=ctx.providers.CartoDB.VoyagerOnlyLabels,
+                        zoom=9, attribution_size=5, alpha=0.85)
+        ax.set_xlim(lon_min, lon_max)
+        ax.set_ylim(lat_min, lat_max)
+        _has_basemap = True
+    except ImportError as exc:   # contextily not installed in this environment
+        print(f"    [WARN] Basemap skipped -- contextily not installed ({exc}). "
+              f"Falling back to a white grid.")
+        ax.grid(True, lw=0.3, alpha=0.5, ls='--')
+        ax.set_facecolor('#f0f0f0')
+        ax.text(0.01, 0.01, 'Basemap unavailable (contextily not installed)',
+                transform=ax.transAxes, fontsize=5, color='grey', va='bottom')
+    except Exception as exc:     # network/proxy/SSL error reaching the tile servers
+        print(f"    [WARN] Basemap skipped -- contextily raised: {exc}. "
+              f"Falling back to a white grid.")
+        ax.grid(True, lw=0.3, alpha=0.5, ls='--')
+        ax.text(0.01, 0.01, f'Basemap unavailable ({exc})',
+                transform=ax.transAxes, fontsize=5, color='grey', va='bottom')
+
+    _stroke    = [pe.withStroke(linewidth=2, foreground='black')] if _has_basemap else []
+    _txt_color = 'white' if _has_basemap else '#222222'
+
+    # ---- City labels ----------------------------------------------------------
+    if cities:
+        for city, clon, clat in cities:
+            if lon_min <= clon <= lon_max and lat_min <= clat <= lat_max:
+                ax.plot(clon, clat, marker='o', ms=3, color='white',
+                        markeredgecolor='black', markeredgewidth=0.5, zorder=6)
+                ax.text(clon + 0.02, clat + 0.02, city, fontsize=6.5, color=_txt_color,
+                        zorder=7, path_effects=_stroke)
+
+    # ---- Mont Blanc summit ------------------------------------------------------
+    ax.plot(mont_blanc_lon, mont_blanc_lat, marker='*',
+            color='white' if _has_basemap else 'black', markersize=13,
+            markeredgecolor='black', markeredgewidth=0.5, zorder=10)
+    ax.annotate('Mont Blanc', (mont_blanc_lon, mont_blanc_lat), textcoords='offset points',
+                xytext=(5, 5), fontsize=7, color=_txt_color, fontweight='bold',
+                path_effects=_stroke, zorder=10)
+
+    # ---- Event scatter, colored by class ----------------------------------------
+    lats        = np.asarray(lats, dtype=float)
+    lons        = np.asarray(lons, dtype=float)
+    event_types = np.asarray(event_types)
+    valid       = np.isfinite(lats) & np.isfinite(lons)
+    sizes_arr   = np.full(len(lats), 18.0) if sizes is None else np.asarray(sizes, dtype=float)
+
+    _ec = 'white' if _has_basemap else 'none'
+    _lw = 0.4     if _has_basemap else 0
+    n_plotted = 0
+    for etype, color in class_colors.items():
+        idx = valid & (event_types == etype)
+        if not np.any(idx):
+            continue
+        ax.scatter(lons[idx], lats[idx], s=sizes_arr[idx], color=color, alpha=0.75,
+                   label=f"{etype} (n={int(idx.sum())})", edgecolors=_ec, linewidths=_lw, zorder=4)
+        n_plotted += int(idx.sum())
+
+    ax.legend(fontsize=6.5, loc='lower left', facecolor='white', framealpha=0.85)
+    return n_plotted
+
+
+
+# =============================================================================
+# WAVEFORM + SPECTROGRAM EXAMPLE PANEL (script 08)
+# =============================================================================
+
+def plot_waveform_spectrogram_example(times_wave, wave_data, times_spec, freq_axis, spec_db,
+                                      det_duration_s, title_lines, out_path,
+                                      wave_color='black', spec_vmin=-200, spec_vmax=-120,
+                                      wave_units='m/s'):
+    """
+    One figure: bandpassed waveform (top) + broadband dB spectrogram (bottom), for
+    a single example event — mirrors the layout of a typical published seismic
+    event-catalog figure (amplitude trace above, spectrogram below, shaded
+    detected window on both panels)
+
+    Parameters
+    ----------
+    times_wave      : 1D array — seconds relative to the detection window start (0 = det_starttime)
+    wave_data       : 1D array — displayed (bandpassed) ground velocity, same length as times_wave
+    times_spec      : 1D array — spectrogram time bin centers, same relative-second convention
+    freq_axis       : 1D array — spectrogram frequency bins [Hz]
+    spec_db         : 2D array, shape (len(freq_axis), len(times_spec)) — dB-scaled power spectrogram
+    det_duration_s  : float — duration of the detected window [s], shaded on both panels
+    title_lines     : tuple of str (line1, line2) — e.g. (event type + date, "NET.STA | XX km from source")
+    out_path        : str — full path to save the PNG
+    wave_color      : str — trace color
+    spec_vmin/vmax  : float — dB color scale bounds
+    wave_units      : str — y-axis label units for the waveform panel
+
+    Returns
+    -------
+    out_path : str
+    """
+    fig, (ax_wave, ax_spec) = plt.subplots(
+        2, 1, figsize=(6.5, 5.5), sharex=True,
+        gridspec_kw={'height_ratios': [1, 1.3]},
+    )
+
+    ax_wave.plot(times_wave, wave_data, lw=0.5, color=wave_color)
+    ax_wave.axvspan(0, det_duration_s, color='grey', alpha=0.15, zorder=0)
+    ax_wave.set_ylabel(f"Ground velocity ({wave_units})", fontsize=9)
+    ax_wave.ticklabel_format(axis='y', style='sci', scilimits=(0, 0))
+    ax_wave.tick_params(labelsize=8)
+    ax_wave.grid(True, lw=0.3, alpha=0.3)
+
+    im = ax_spec.pcolormesh(times_spec, freq_axis, spec_db, cmap='jet',
+                            vmin=spec_vmin, vmax=spec_vmax, shading='auto')
+    ax_spec.axvspan(0, det_duration_s, color='white', alpha=0.12, zorder=2)
+    ax_spec.set_ylabel('Frequency (Hz)', fontsize=9)
+    ax_spec.set_xlabel('Time (s, 0 = detection onset)', fontsize=9)
+    ax_spec.tick_params(labelsize=8)
+
+    cbar = fig.colorbar(im, ax=[ax_wave, ax_spec], shrink=0.85, pad=0.02)
+    cbar.set_label('dB', fontsize=8)
+    cbar.ax.tick_params(labelsize=7)
+
+    line1, line2 = title_lines
+    fig.suptitle(f"{line1}\n{line2}", fontsize=10, fontweight='bold', y=0.98)
+
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return out_path
+
+
+
+# =============================================================================
+# AVERAGE ("TYPICAL") SPECTROGRAM PER CLASS (script 08)
+# =============================================================================
+
+def plot_average_spectrograms(class_avg_db, freq_axis, times_spec, class_order,
+                              run_dir, stamp, vmin=-200, vmax=-120):
+    """
+    Grid of averaged spectrograms, one panel per class — a "typical fingerprint"
+    built upstream by averaging the LINEAR power spectrogram across several
+    example events of that class, THEN converting the average to dB (averaging
+    directly in dB would be biased low by Jensen's inequality)
+
+    Parameters
+    ----------
+    class_avg_db   : dict {class_name: 2D array (n_freq, n_time), dB-scaled} — one
+                     already-averaged spectrogram per class (a class may be
+                     missing if no waveform could be fetched — shown as "No data")
+    freq_axis      : 1D array — spectrogram frequency bins [Hz], shared across classes
+    times_spec     : 1D array — spectrogram time bin centers [s], 0 = detection onset
+    class_order    : list of str — panel order (and which classes to attempt to show)
+    run_dir, stamp : str — output location / filename stamp
+    vmin, vmax     : float — shared dB color scale bounds
+
+    Returns
+    -------
+    out_path : str
+    """
+    n = len(class_order)
+    fig, axes = plt.subplots(1, n, figsize=(4.2 * n, 4), sharey=True)
+    if n == 1:
+        axes = [axes]
+
+    im = None
+    for ax, cls in zip(axes, class_order):
+        if cls not in class_avg_db:
+            ax.text(0.5, 0.5, "No data", ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(cls, fontsize=10, fontweight='bold')
+            continue
+        im = ax.pcolormesh(times_spec, freq_axis, class_avg_db[cls], cmap='jet',
+                           vmin=vmin, vmax=vmax, shading='auto')
+        ax.set_title(cls, fontsize=10, fontweight='bold')
+        ax.set_xlabel('Time (s, 0 = detection onset)', fontsize=8)
+        ax.tick_params(labelsize=7)
+    axes[0].set_ylabel('Frequency (Hz)', fontsize=9)
+
+    if im is not None:
+        fig.colorbar(im, ax=axes, shrink=0.8, pad=0.01, label='dB')
+
+    fig.suptitle('Average spectrogram by class ("typical fingerprint")',
+                 fontsize=12, fontweight='bold')
+
+    fname = f"fig_average_spectrogram_{stamp}.png"
+    out_path = os.path.join(run_dir, fname)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"    [SAVED] {fname}")
+    return out_path
+
+
+
+# =============================================================================
+# FEATURE DISTRIBUTIONS BY CLASS (script 08)
+# =============================================================================
+
+def plot_feature_distributions(df, features, feature_labels, class_col, class_order,
+                               class_colors, run_dir, stamp, log_features=None):
+    """
+    Grid of violin plots, one panel per feature, showing how its distribution
+    differs across event classes — the quantitative counterpart to the example
+    waveform gallery: what actually separates the classes numerically
+
+    Parameters
+    ----------
+    df             : pd.DataFrame — one row per detection, must contain `class_col`
+                     and every entry of `features`
+    features       : list of str — column names to plot (one panel each)
+    feature_labels : dict {feature: axis label str} — human-readable label + units
+    class_col      : str — column holding the class label (e.g. 'event_type')
+    class_order    : list of str — x-axis category order
+    class_colors   : dict {class: color}
+    run_dir, stamp : str — output location / filename stamp
+    log_features   : set of str or None — features to show on a log y-axis (useful
+                     for heavy-tailed quantities like energy ratios)
+
+    Returns
+    -------
+    out_path : str
+    """
+    log_features = log_features or set()
+    n = len(features)
+    ncols = 2
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.5 * ncols, 4 * nrows))
+    axes = np.atleast_1d(axes).flatten()
+
+    for ax, feat in zip(axes, features):
+        data_by_class = [
+            df.loc[df[class_col] == cls, feat].replace([np.inf, -np.inf], np.nan).dropna().to_numpy()
+            for cls in class_order
+        ]
+        positions = np.arange(1, len(class_order) + 1)
+
+        # violinplot's internal KDE needs >= 2 points per dataset -- a class with
+        # 0 or 1 valid values (e.g. a feature that's undefined/NaN for that class
+        # by construction) would crash it. Plot violins only for classes with
+        # enough data, and label the rest "no data" instead.
+        has_data  = np.array([len(d) >= 2 for d in data_by_class])
+        ok_pos    = positions[has_data]
+        ok_data   = [d for d, ok in zip(data_by_class, has_data) if ok]
+
+        if ok_data:
+            parts = ax.violinplot(ok_data, positions=ok_pos, showmedians=True, widths=0.8)
+            ok_classes = [c for c, ok in zip(class_order, has_data) if ok]
+            for pc, cls in zip(parts['bodies'], ok_classes):
+                pc.set_facecolor(class_colors.get(cls, 'grey'))
+                pc.set_alpha(0.65)
+                pc.set_edgecolor('black')
+                pc.set_linewidth(0.6)
+            for key in ('cmedians', 'cbars', 'cmins', 'cmaxes'):
+                if key in parts:
+                    parts[key].set_color('black')
+                    parts[key].set_linewidth(0.8)
+
+        blended = ax.get_xaxis_transform()   # x in data coords, y in axes fraction
+        for pos, ok in zip(positions, has_data):
+            if not ok:
+                ax.text(pos, 0.5, 'no data', ha='center', va='center', fontsize=7,
+                        color='grey', transform=blended)
+
+        ax.set_xticks(positions)
+        ax.set_xticklabels(class_order, rotation=15, ha='right', fontsize=8)
+        ax.set_ylabel(feature_labels.get(feat, feat), fontsize=9)
+        ax.set_title(feat, fontsize=9, fontweight='bold')
+        if feat in log_features:
+            ax.set_yscale('log')
+        ax.grid(True, axis='y', lw=0.3, alpha=0.3)
+
+    for ax in axes[n:]:
+        ax.axis('off')
+
+    fig.suptitle('Feature distributions by class', fontsize=13, fontweight='bold')
+    plt.tight_layout()
+
+    fname = f"fig_feature_distributions_{stamp}.png"
+    out_path = os.path.join(run_dir, fname)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"    [SAVED] {fname}")
+    return out_path
+
+
+
+# =============================================================================
+# SNR / DATA-QUALITY DISTRIBUTION BY CLASS (script 08)
+# =============================================================================
+
+def plot_snr_quality_by_class(df, class_col, class_order, class_colors, run_dir, stamp,
+                              snr_min=None, snr_full_median_min=None,
+                              metrics=('SNR', 'SNR_full_median')):
+    """
+    Violin plots of SNR-type metrics by class, log-scaled, with the pipeline's
+    quality-gate thresholds overlaid — shows directly why some classes (typically
+    ice quakes: small, high-frequency, easily attenuated) are harder to acquire
+    cleanly than others
+
+    Parameters
+    ----------
+    df                   : pd.DataFrame — must contain `class_col` and every entry
+                           of `metrics`. Pass the UNGATED data here — gating
+                           everything to the same threshold first would make the
+                           whole point (why the gate matters, and unevenly so
+                           across classes) invisible
+    class_col            : str
+    class_order          : list of str
+    class_colors         : dict {class: color}
+    run_dir, stamp       : str
+    snr_min              : float or None — gate threshold for metrics[0], drawn as a horizontal line
+    snr_full_median_min  : float or None — gate threshold for metrics[1]
+    metrics              : tuple of column names to show (one panel each)
+
+    Returns
+    -------
+    out_path : str
+    """
+    thresholds = {}
+    if len(metrics) >= 1:
+        thresholds[metrics[0]] = snr_min
+    if len(metrics) >= 2:
+        thresholds[metrics[1]] = snr_full_median_min
+
+    fig, axes = plt.subplots(1, len(metrics), figsize=(6.5 * len(metrics), 4.5))
+    if len(metrics) == 1:
+        axes = [axes]
+
+    for ax, metric in zip(axes, metrics):
+        data_by_class = [
+            df.loc[df[class_col] == cls, metric].replace([np.inf, -np.inf], np.nan).dropna()
+            for cls in class_order
+        ]
+        data_by_class = [d[d > 0].to_numpy() for d in data_by_class]   # log axis needs strictly positive values
+        positions = np.arange(1, len(class_order) + 1)
+
+        # Some classes legitimately have no value for a metric (e.g. 'noise' has
+        # no defined SNR/SNR_full_median -- there's no detection onset to split
+        # signal from noise the same way). violinplot's KDE needs >= 2 points,
+        # so plot violins only where there's enough data and label the rest.
+        has_data = np.array([len(d) >= 2 for d in data_by_class])
+        ok_pos   = positions[has_data]
+        ok_data  = [d for d, ok in zip(data_by_class, has_data) if ok]
+
+        if ok_data:
+            parts = ax.violinplot(ok_data, positions=ok_pos, showmedians=True, widths=0.8)
+            ok_classes = [c for c, ok in zip(class_order, has_data) if ok]
+            for pc, cls in zip(parts['bodies'], ok_classes):
+                pc.set_facecolor(class_colors.get(cls, 'grey'))
+                pc.set_alpha(0.65)
+                pc.set_edgecolor('black')
+
+        blended = ax.get_xaxis_transform()
+        for pos, ok in zip(positions, has_data):
+            if not ok:
+                ax.text(pos, 0.5, 'no data', ha='center', va='center', fontsize=7,
+                        color='grey', transform=blended)
+
+        thr = thresholds.get(metric)
+        if thr is not None:
+            ax.axhline(thr, color='red', linestyle='--', linewidth=1.3,
+                       label=f'Quality gate ({thr:g})', zorder=5)
+            ax.legend(fontsize=8, loc='upper right')
+
+        ax.set_yscale('log')
+        ax.set_xticks(positions)
+        ax.set_xticklabels(class_order, rotation=15, ha='right', fontsize=8)
+        ax.set_ylabel(metric, fontsize=9)
+        ax.set_title(metric, fontsize=10, fontweight='bold')
+        ax.grid(True, axis='y', which='both', lw=0.3, alpha=0.3)
+
+    fig.suptitle('SNR / data-quality distribution by class (log scale)\n'
+                'noise is intentionally NOT quality-gated — shown here for contrast',
+                fontsize=11, fontweight='bold')
+    plt.tight_layout()
+
+    fname = f"fig_snr_quality_by_class_{stamp}.png"
+    out_path = os.path.join(run_dir, fname)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"    [SAVED] {fname}")
+    return out_path
+
+
+
+# =============================================================================
+# NOISE-CLASS DETECTION DIAGNOSTIC (script 04e)
+# =============================================================================
+# Shows, for ONE noise-class example extracted by 04d, exactly what classical
+# STA/LTA saw: the waveform on top, its characteristic function below, with
+# the threshold lines and the accepted trigger window both marked — the same
+# kind of "how did the detector actually fire" view 02c gives for real
+# detections, applied here to sanity-check the noise class.
+
+def plot_noise_diagnostic(tr_wave, cft, freq_axis, times_spec, spec_db,
+                          t_on, t_off, thr_on, thr_off,
+                          run_dir, stamp, fname_tag, title_extra="",
+                          spec_vmin=-200, spec_vmax=-120):
+    """
+    Three-panel figure for one noise-candidate window: bandpassed waveform
+    (top) + broadband dB spectrogram (middle) + classical STA/LTA
+    characteristic function (bottom), sharing a time axis.
+
+    Mirrors the waveform+spectrogram layout of plot_waveform_spectrogram_example()
+    (used for the EQ/RS/IQ report gallery, script 08) so noise examples are
+    visually comparable to real events, with the STA/LTA panel kept underneath
+    since that ratio is the actual mechanism 04d used to accept this window.
+
+    Parameters
+    ----------
+    tr_wave     : obspy.Trace — velocity trace (response-removed if an
+                  inventory was available, raw counts otherwise), BANDPASS
+                  FILTERED to 04d's detection band (PRIMARY_FREQ_MIN/MAX),
+                  spanning the detected window plus context padding
+    cft         : 1-D numpy array — classical STA/LTA ratio, same sampling
+                  rate as tr_wave (from detection.run_sta_lta), same or
+                  greater length
+    freq_axis   : 1-D array — spectrogram frequency bins [Hz]
+    times_spec  : 1-D array — spectrogram time bin centers, seconds relative
+                  to tr_wave.stats.starttime (same convention as tr_wave.times())
+    spec_db     : 2-D array, shape (len(freq_axis), len(times_spec)) — dB
+                  power spectrogram, computed from the BROADBAND (unfiltered)
+                  trace so the full frequency content is visible, not just
+                  the narrow 1–20 Hz detection band
+    t_on, t_off : UTCDateTime — the accepted trigger window (04d's
+                  det_starttime/det_endtime for this row)
+    thr_on, thr_off : float — STA/LTA thresholds used (drawn as reference lines)
+    run_dir, stamp  : str — output directory / run timestamp
+    fname_tag   : str — unique identifier for this example (e.g. "NET.STA_time"),
+                  used in the output filename
+    title_extra : str — appended to the figure title (e.g. a CFT value)
+    spec_vmin/vmax : float — dB color scale bounds (same defaults as script 08)
+
+    Returns
+    -------
+    out_path : str
+    """
+    t0      = tr_wave.stats.starttime
+    t_wav   = tr_wave.times()
+    data_um = tr_wave.data.astype(float) * 1e6   # m/s -> µm/s (no-op if response wasn't removed, still fine for shape)
+    t_on_s  = t_on  - t0
+    t_off_s = t_off - t0
+
+    fig, (ax_wave, ax_spec, ax_cft) = plt.subplots(
+        3, 1, figsize=(10, 8.5), sharex=True,
+        gridspec_kw={'height_ratios': [1.3, 1.6, 1]},
+    )
+
+    # ── Waveform panel ────────────────────────────────────────────────────────
+    ax_wave.plot(t_wav, data_um, 'k-', linewidth=0.6)
+    ax_wave.axhline(0, color='lightgrey', linewidth=0.4, zorder=0)
+    ax_wave.axvspan(t_on_s, t_off_s, color='#7f7f7f', alpha=0.22, zorder=1)
+    ax_wave.axvline(t_on_s,  color='#555555', linewidth=1.5, zorder=3)
+    ax_wave.axvline(t_off_s, color='#555555', linewidth=1.1, linestyle='--', zorder=3)
+    ax_wave.set_ylabel("Velocity (µm/s)\n(1–20 Hz)", fontsize=10, fontweight='bold')
+    ax_wave.set_title(
+        f"{tr_wave.stats.network}.{tr_wave.stats.station}   {str(t_on)[:19]}Z"
+        f"   |   duration={t_off - t_on:.1f}s{title_extra}",
+        fontsize=11, fontweight='bold',
+    )
+    ax_wave.tick_params(labelsize=8)
+    ax_wave.margins(x=0)
+
+    # ── Spectrogram panel (broadband, unfiltered) ────────────────────────────
+    im = ax_spec.pcolormesh(times_spec, freq_axis, spec_db, cmap='jet',
+                            vmin=spec_vmin, vmax=spec_vmax, shading='auto')
+    ax_spec.axvspan(t_on_s, t_off_s, color='white', alpha=0.12, zorder=2)
+    ax_spec.axvline(t_on_s,  color='white', linewidth=1.2, zorder=3)
+    ax_spec.axvline(t_off_s, color='white', linewidth=0.9, linestyle='--', zorder=3)
+    ax_spec.set_ylabel("Frequency (Hz)\n(broadband)", fontsize=10, fontweight='bold')
+    ax_spec.tick_params(labelsize=8)
+    cbar = fig.colorbar(im, ax=ax_spec, pad=0.02, fraction=0.05)
+    cbar.set_label('dB', fontsize=8)
+    cbar.ax.tick_params(labelsize=7)
+
+    # ── STA/LTA characteristic function panel ────────────────────────────────
+    n = min(len(t_wav), len(cft))
+    ax_cft.plot(t_wav[:n], cft[:n], color='steelblue', linewidth=0.8)
+    ax_cft.axhline(thr_on,  color='red', linestyle='--', linewidth=1.3,
+                   label=f'THR_ON = {thr_on:g}')
+    ax_cft.axhline(thr_off, color='darkorange', linestyle=':', linewidth=1.1,
+                   label=f'THR_OFF = {thr_off:g}')
+    ax_cft.axvspan(t_on_s, t_off_s, color='#7f7f7f', alpha=0.22, zorder=1)
+    ax_cft.axvline(t_on_s,  color='#555555', linewidth=1.5, zorder=3)
+    ax_cft.axvline(t_off_s, color='#555555', linewidth=1.1, linestyle='--', zorder=3)
+    ax_cft.set_ylim(bottom=0)
+    ax_cft.set_ylabel("STA/LTA\nratio", fontsize=10, fontweight='bold')
+    ax_cft.set_xlabel("Time (s) relative to trace start", fontsize=10, fontweight='bold')
+    ax_cft.legend(fontsize=8, loc='upper right')
+    ax_cft.tick_params(labelsize=8)
+    ax_cft.margins(x=0)
+
+    plt.tight_layout()
+
+    safe_tag = fname_tag.replace('/', '_').replace(':', '-').replace(' ', '_')
+    fname    = f"noise_diagnostic_{safe_tag}_{stamp}.png"
     out_path = os.path.join(run_dir, fname)
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
