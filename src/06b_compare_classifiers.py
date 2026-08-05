@@ -34,15 +34,19 @@ CSV_PATH   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\
 
 # -- Noise CSV (output of script 04d, optional 4th class) ----------------------
 # Set to a 04d `noise_windows_<stamp>.csv` to add the "noise" class
-NOISE_CSV  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04d_noise_window_extraction\run_20260727_111052\noise_windows_20260727_111052.csv"
+NOISE_CSV  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04d_noise_window_extraction\run_20260803_174514\noise_windows_20260803_174514.csv"
+
+# -- Regional CSV (output of script 04c, optional 5th class) -------------------
+# Set to a 04c `regional_windows_<stamp>.csv` to add the "regional" class
+REGIONAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04c_regional_EQ_extraction\run_20260805_103100\regional_windows_20260805_103100.csv"
 
 # -- Output directory ----------------------------------------------------------
 OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\06b_compare_classifiers"
 
 # -- Classes -------------------------------------------------------------------
-TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise"]
-CLASS_ORDER    = ["earthquake", "rockslide", "ice quake", "noise"]   # table / figure order
-CLASS_ABBR     = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq", "noise": "no"}
+TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise", "regional"]
+CLASS_ORDER    = ["earthquake", "rockslide", "ice quake", "noise", "regional"]   # table / figure order
+CLASS_ABBR     = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq", "noise": "no", "regional": "re"}
 
 # -- Feature set ---------------------------------------------------------------
 # TOP_N_FEATURES = None  → use ALL feature columns present in the catalog CSV
@@ -160,6 +164,21 @@ df = rename_legacy_columns(df)
 # Class filter
 df = df[df["event_type"].isin(TARGET_CLASSES)].copy()
 print(f"After class filter {TARGET_CLASSES}: {len(df):,} rows.")
+
+# -- Optional 5th class: regional (output of 04c), added BEFORE the quality
+# gate below — unlike noise (concatenated AFTER the gate further down, since
+# noise rows have SNR=NaN by construction and would be wrongly dropped by the
+# mask), regional rows carry REAL computed SNR from 04c's own detection
+# pipeline and need to pass the SAME gate as the local classes, not skip it.
+if REGIONAL_CSV is not None:
+    if os.path.isfile(REGIONAL_CSV):
+        df_regional = pd.read_csv(REGIONAL_CSV, low_memory=False)
+        df_regional = rename_legacy_columns(df_regional)
+        df_regional = df_regional[df_regional["event_type"].isin(TARGET_CLASSES)].copy()
+        print(f"Loaded {len(df_regional):,} regional rows from {os.path.basename(REGIONAL_CSV)}.")
+        df = pd.concat([df, df_regional], ignore_index=True)
+    else:
+        print(f"[WARN] REGIONAL_CSV not found: {REGIONAL_CSV} — continuing without the regional class.")
 
 # Quality gate: always recompute explicitly from SNR / SNR_full_median.
 # NOTE: do NOT trust the precomputed 'quality_ok' catalog column — it was baked

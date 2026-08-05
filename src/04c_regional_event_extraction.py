@@ -144,7 +144,7 @@ warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
 from obspy import UTCDateTime
-from obspy.geodetics import gps2dist_azimuth, locations2degrees, kilometer2degrees
+from obspy.geodetics import gps2dist_azimuth, locations2degrees
 from obspy.taup import TauPyModel
 
 from catalog_helpers import (
@@ -265,14 +265,11 @@ print(f"\n{'='*65}")
 print("  STEP 1 — Querying regional catalog")
 print(f"{'='*65}")
 
-min_radius_deg = kilometer2degrees(DIST_MIN_KM)
-max_radius_deg = kilometer2degrees(DIST_MAX_KM) if DIST_MAX_KM is not None else 180.0
-
 regional_events = query_catalog_by_distance_chunked(
     client_regional,
     T_START, T_END,
     MASSIF_CENTER_LAT, MASSIF_CENTER_LON,
-    min_radius_deg, max_radius_deg,
+    DIST_MIN_KM, DIST_MAX_KM,
     MIN_MAGNITUDE, MAX_MAGNITUDE,
     chunk_days = CHUNK_DAYS,
     cache_path = CATALOG_CACHE_FILE if CATALOG_CACHE_FILE else None,

@@ -24,9 +24,14 @@ Figures produced
 
 Data sources
 ------------
-  04a catalog_windows_<stamp>.csv  : earthquake / rockslide / ice quake detections + features
-  04d noise_windows_<stamp>.csv    : noise-class detections + features (same schema)
-  ISTerre SDS archive + FDSN inventory : ONLY for the example gallery + average spectrogram 
+  04a catalog_windows_<stamp>.csv     : earthquake / rockslide / ice quake detections + features
+  04d noise_windows_<stamp>.csv       : noise-class detections + features (same schema)
+  04c regional_windows_<stamp>.csv    : optional 5th class (regional earthquakes, 150-1000km,
+                                        same schema) — REGIONAL_CSV=None to skip. Included in
+                                        every figure EXCEPT Map 1 (fig_event_map), which is
+                                        deliberately tight to the massif bounding box and would
+                                        never show a regional hypocenter anyway — see Section 3.
+  ISTerre SDS archive + FDSN inventory : ONLY for the example gallery + average spectrogram
 """
 
 
@@ -38,6 +43,11 @@ Data sources
 # -- Input CSVs (04a / 04d outputs) -------------------------------------------
 ORIGINAL_CSV = "/data/failles/louisels/project/results/outputs_04a/all-99-features-recent+3C/catalog_windows_20260708_174019.csv"
 NOISE_CSV    = "/data/failles/louisels/project/results/outputs_04d/run_20260731_141524/noise_windows_20260731_141524.csv"
+
+# -- Regional catalog (output of script 04c, optional 5th class) --------------
+# Set to a 04c `regional_windows_<stamp>.csv` to add the "regional" class.
+# None = skip it entirely (unlike NOISE_CSV above, which is currently required).
+REGIONAL_CSV = None
 
 # -- Output ---------------------------------------------------------------------
 OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_08"
@@ -68,11 +78,20 @@ CITIES = [   # (name, lon, lat) — same list used in notebooks/01_catalog_explo
 ]
 
 # -- Classes ----------------------------------------------------------------------
+# TARGET_CLASSES : the 3 LOCAL classes from the catalog (04a) only — this list
+#   also drives Map 1 (fig_event_map), which is deliberately tight to the
+#   massif bounding box. Regional events' true hypocenters are 150-1000km
+#   away, so "regional" is NOT added here — it would be invisible (or force
+#   the map to zoom out and lose the point) — see Section 3/4 notes below.
 TARGET_CLASSES = ["earthquake", "rockslide", "ice quake"]        # from the catalog (04a)
-CLASS_ORDER    = ["earthquake", "rockslide", "ice quake", "noise"]  # incl. 4th class (04d)
-CLASS_ABBR     = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq", "noise": "no"}
+# CLASS_ORDER : everything else (station map, example gallery, average
+#   spectrogram, feature distributions, SNR figure) — these are all about what
+#   was recorded on the massif STATIONS, which regional legitimately belongs to.
+CLASS_ORDER    = ["earthquake", "rockslide", "ice quake", "noise", "regional"]  # incl. 4th/5th class (04d/04c)
+CLASS_ABBR     = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq", "noise": "no", "regional": "re"}
 CLASS_COLORS   = {"earthquake": "#1f77b4", "rockslide": "#d62728",
-                  "ice quake": "#2ca02c", "noise": "#7f7f7f"}
+                  "ice quake": "#2ca02c", "noise": "#7f7f7f",
+                  "regional": "#9467bd"}
 
 # -- Quality gate (same values used in 05b Tier 2 / 06c) — applied to the
 #    earthquake/rockslide/ice quake catalog only; noise is intentionally NOT
@@ -216,7 +235,7 @@ from visualization import (
 RUN_DIR, STAMP = create_run_dir(OUTPUT_DIR)
 log_file, log_path = setup_logging(
     RUN_DIR, "08_report_figures.py",
-    extra_info=f"ORIGINAL_CSV: {ORIGINAL_CSV}\nNOISE_CSV: {NOISE_CSV}",
+    extra_info=f"ORIGINAL_CSV: {ORIGINAL_CSV}\nNOISE_CSV: {NOISE_CSV}\nREGIONAL_CSV: {REGIONAL_CSV}",
 )
 set_matplotlib_defaults()
 
@@ -261,12 +280,41 @@ z_feat_cols_noise = [f for f in FEATURE_NAMES if f in noise.columns]
 noise = noise.dropna(subset=z_feat_cols_noise).copy()
 print(f"  Noise catalog                  : {len(noise):,} rows")
 
+# -- Optional 5th class: regional (04c output) ---------------------------------
+# Kept as SEPARATE variables from orig_all/orig_gated (which stay local-only
+# and continue to feed Map 1's tight massif-only geography, via TARGET_CLASSES
+# — see Section 1 note). Regional's true hypocenters are 150-1000km away, well
+# outside that map's extent, so mixing it into orig_all would either make it
+# invisible or force the local map to zoom out and lose its whole point.
+# It DOES belong in combined_gated/combined_all below though — its WAVEFORMS
+# were recorded on the same massif stations as everything else, which is what
+# the station map / example gallery / feature and SNR distributions are about.
+if REGIONAL_CSV is not None and os.path.exists(str(REGIONAL_CSV)):
+    regional_all = pd.read_csv(REGIONAL_CSV, low_memory=False)
+    regional_all = rename_legacy_columns(regional_all)
+    regional_all = regional_all[regional_all["event_type"] == "regional"].copy()
+    print(f"  Regional catalog (all quality) : {len(regional_all):,} rows")
+
+    # Same gate as the local classes — regional rows carry REAL computed SNR
+    # from 04c's own detection pipeline, unlike noise (SNR=NaN by construction).
+    regional_mask = (
+        (regional_all["SNR"]             >= SNR_MIN) &
+        (regional_all["SNR_full_median"] >= SNR_FULL_MEDIAN_MIN)
+    )
+    z_feat_cols_r  = [f for f in FEATURE_NAMES if f in regional_all.columns]
+    regional_gated = regional_all[regional_mask].dropna(subset=z_feat_cols_r).copy()
+    print(f"  After quality gate + NaN drop  : {len(regional_gated):,} rows")
+else:
+    if REGIONAL_CSV is not None:
+        print(f"  [WARN] REGIONAL_CSV not found: {REGIONAL_CSV} — continuing without the regional class.")
+    regional_all, regional_gated = pd.DataFrame(), pd.DataFrame()
+
 # `combined_gated`  -> what the classifier actually trains on (used for the
 #                      station map and the example gallery)
 # `combined_all`    -> ungated union, used ONLY for the SNR/quality figure so the
 #                      gate's effect is actually visible (see docstring)
-combined_gated = pd.concat([orig_gated, noise], ignore_index=True)
-combined_all   = pd.concat([orig_all,   noise], ignore_index=True)
+combined_gated = pd.concat([orig_gated, noise, regional_gated], ignore_index=True)
+combined_all   = pd.concat([orig_all,   noise, regional_all],   ignore_index=True)
 
 
 

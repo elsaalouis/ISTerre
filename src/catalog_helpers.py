@@ -353,7 +353,7 @@ def query_catalog_chunked(client_fdsn, t_start, t_end,
 
 def query_catalog_by_distance_chunked(client_fdsn, t_start, t_end,
                                       center_lat, center_lon,
-                                      min_radius_deg, max_radius_deg,
+                                      min_radius_km, max_radius_km,
                                       min_magnitude, max_magnitude=None,
                                       chunk_days=90, cache_path=None,
                                       max_retries=3, retry_sleep_s=60):
@@ -363,39 +363,57 @@ def query_catalog_by_distance_chunked(client_fdsn, t_start, t_end,
 
     Unlike query_catalog_chunked() (lat/lon bounding box + event-type filter,
     used for the LOCAL massif catalog by 04a/04d), this queries by DISTANCE
-    from a center point (FDSN's own latitude/longitude/minradius/maxradius,
-    in DEGREES) and by MAGNITUDE — the two criteria that actually define
-    "not local" physically, whether that means regional (~150-1000 km,
+    from a center point and by MAGNITUDE — the two criteria that actually
+    define "not local" physically, whether that means regional (~150-1000 km,
     Pn/Sn Moho-refracted waves — script 04c's current use, see
     [[plan_regional_class]]) or teleseismic (>1000 km, mantle/core-turning
-    waves — 04c's original design, repurposed 2026-08-04). A lat/lon box
-    makes no sense for either kind of distance-defined search.
+    waves — 04c's original design, repurposed 2026-08-04).
+
+    **Implementation note (fixed 2026-08-05, first real run against RENASS/
+    franceseisme)**: this does NOT use FDSN's own `minradius`/`maxradius`
+    query parameters, even though that's the obvious way to ask for a
+    distance range. Those are OPTIONAL in the FDSN spec, and franceseisme's
+    server rejects `minradius` outright ("parameter not supported by the
+    service") — every chunk failed on the first live run. Instead, this
+    queries a lat/lon BOUNDING BOX sized to comfortably contain the full
+    max_radius_km circle around the center point (minlatitude/maxlatitude/
+    minlongitude/maxlongitude are REQUIRED/core FDSN parameters, guaranteed
+    supported by any spec-compliant server), then filters the returned
+    events to the actual [min_radius_km, max_radius_km] annulus locally
+    using obspy.geodetics.gps2dist_azimuth — same "broad server-side fetch +
+    precise client-side filter" pattern query_catalog() already uses for
+    event-type filtering.
 
     Parameters
     ----------
     client_fdsn      : ObsPy FDSN_Client (e.g. connect_fdsn("https://api.franceseisme.fr"))
     t_start, t_end   : str — ISO date strings -> "2015-01-01"
     center_lat/lon   : float — reference point (e.g. Mont Blanc massif centroid)
-    min_radius_deg   : float — minimum epicentral distance in DEGREES
-                       (use obspy.geodetics.kilometer2degrees(km) to convert
-                       from the physical distance threshold, e.g. 150 km)
-    max_radius_deg   : float — maximum epicentral distance in degrees (180 = no limit)
+    min_radius_km    : float — minimum epicentral distance in KM
+    max_radius_km    : float — maximum epicentral distance in KM (or None = no limit,
+                       treated as 20000 km, more than half of Earth's circumference)
     min_magnitude    : float — minimum magnitude to keep
     max_magnitude    : float or None — optional upper magnitude bound
     chunk_days       : int — size of each query window in days (default 90)
     cache_path       : str or None — path to a .xml QuakeML cache file, same
                        load/save semantics as query_catalog_chunked() — a
-                       cache is only written if ALL chunks succeeded
+                       cache is only written if ALL chunks succeeded. NOTE:
+                       the cache stores only the DISTANCE-FILTERED result
+                       (post client-side filter), same convention as
+                       query_catalog_chunked()'s type-filtered cache.
     max_retries      : int — retry attempts per chunk on timeout (default 3)
     retry_sleep_s    : int — seconds to wait between retries (default 60)
 
     Returns
     -------
-    events : list of ObsPy Event objects (deduplicated by origin time)
+    events : list of ObsPy Event objects (deduplicated by origin time,
+             already restricted to the [min_radius_km, max_radius_km] annulus)
     """
     import os
     import time
+    import math
     from obspy import UTCDateTime, Catalog, read_events
+    from obspy.geodetics import gps2dist_azimuth
 
     # ---- Load from cache if available ----------------------------------------
     if cache_path and os.path.isfile(cache_path):
@@ -403,6 +421,20 @@ def query_catalog_by_distance_chunked(client_fdsn, t_start, t_end,
         cat = read_events(cache_path)
         print(f"[CACHE] {len(cat)} events loaded.")
         return list(cat)
+
+    max_radius_km = max_radius_km if max_radius_km is not None else 20000.0
+
+    # ---- Bounding box that comfortably contains the full max_radius_km circle --
+    # ~111.32 km per degree of latitude everywhere; longitude degrees shrink
+    # by cos(latitude) at higher latitudes, so widen the box accordingly.
+    # +10% margin so the circle is never clipped by rounding.
+    km_per_deg_lat = 111.32
+    dlat = (max_radius_km / km_per_deg_lat) * 1.10
+    dlon = (max_radius_km / (km_per_deg_lat * max(math.cos(math.radians(center_lat)), 0.05))) * 1.10
+    box_lat_min = max(center_lat - dlat, -90.0)
+    box_lat_max = min(center_lat + dlat, 90.0)
+    box_lon_min = center_lon - dlon
+    box_lon_max = center_lon + dlon
 
     # ---- Build chunk list ----------------------------------------------------
     t0        = UTCDateTime(t_start)
@@ -417,17 +449,21 @@ def query_catalog_by_distance_chunked(client_fdsn, t_start, t_end,
         current = next_t
 
     print(f"\nQuerying distance-filtered catalog in {len(chunks)} chunks of ~{chunk_days} days ...")
-    print(f"  Full window   : {t_start} → {t_end}")
-    print(f"  Center point  : ({center_lat}, {center_lon})")
-    print(f"  Radius range  : [{min_radius_deg:.2f}, {max_radius_deg:.2f}] deg "
-          f"(~[{min_radius_deg*111.195:.0f}, {max_radius_deg*111.195:.0f}] km)")
-    print(f"  Magnitude     : >= {min_magnitude}" +
+    print(f"  Full window     : {t_start} → {t_end}")
+    print(f"  Center point    : ({center_lat}, {center_lon})")
+    print(f"  Target distance : [{min_radius_km:.0f}, {max_radius_km:.0f}] km "
+          f"(applied client-side, after a bounding-box server query)")
+    print(f"  Server bbox     : lat [{box_lat_min:.2f}, {box_lat_max:.2f}]  "
+          f"lon [{box_lon_min:.2f}, {box_lon_max:.2f}]")
+    print(f"  Magnitude       : >= {min_magnitude}" +
           (f", <= {max_magnitude}" if max_magnitude is not None else ""))
 
     # ---- Query chunk by chunk (with retries) ---------------------------------
     all_events    = []
     seen_ids      = set()   # deduplicate events that straddle chunk boundaries
     failed_chunks = []      # (c_start, c_end) pairs that failed all retries
+    n_seen_in_box = 0
+    n_kept_dist   = 0
 
     for k, (c_start, c_end) in enumerate(chunks, 1):
         label   = f"{str(c_start)[:10]} → {str(c_end)[:10]}"
@@ -441,27 +477,33 @@ def query_catalog_by_distance_chunked(client_fdsn, t_start, t_end,
                 kwargs = dict(
                     starttime    = c_start,
                     endtime      = c_end,
-                    latitude     = center_lat,
-                    longitude    = center_lon,
-                    minradius    = min_radius_deg,
-                    maxradius    = max_radius_deg,
+                    minlatitude  = box_lat_min,
+                    maxlatitude  = box_lat_max,
+                    minlongitude = box_lon_min,
+                    maxlongitude = box_lon_max,
                     minmagnitude = min_magnitude,
                 )
                 if max_magnitude is not None:
                     kwargs["maxmagnitude"] = max_magnitude
                 cat_chunk = client_fdsn.get_events(**kwargs)
+                n_seen_in_box += len(cat_chunk)
 
                 n_new = 0
                 for ev in cat_chunk:
                     origin = ev.preferred_origin() or (ev.origins[0] if ev.origins else None)
-                    if origin is None:
+                    if origin is None or origin.latitude is None or origin.longitude is None:
                         continue
+                    dist_km = gps2dist_azimuth(center_lat, center_lon,
+                                               origin.latitude, origin.longitude)[0] / 1000.0
+                    if not (min_radius_km <= dist_km <= max_radius_km):
+                        continue
+                    n_kept_dist += 1
                     ev_id = str(origin.time)
                     if ev_id not in seen_ids:
                         seen_ids.add(ev_id)
                         all_events.append(ev)
                         n_new += 1
-                print(f"{len(cat_chunk)} returned, {n_new} new")
+                print(f"{len(cat_chunk)} in box, {n_new} new in distance range")
                 success = True
                 break   # chunk done — move to next
 
@@ -476,8 +518,9 @@ def query_catalog_by_distance_chunked(client_fdsn, t_start, t_end,
         if not success:
             failed_chunks.append((c_start, c_end))
 
-    print(f"\nTotal : {len(all_events)} distance-filtered candidate events fetched "
-          f"(dist >= {min_radius_deg*111.195:.0f} km, mag >= {min_magnitude}).")
+    print(f"\nTotal : {n_seen_in_box} event(s) returned inside the bounding box, "
+          f"{len(all_events)} kept after distance filter "
+          f"([{min_radius_km:.0f}, {max_radius_km:.0f}] km, mag >= {min_magnitude}).")
 
     # ---- Report any failures -------------------------------------------------
     if failed_chunks:

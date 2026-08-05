@@ -45,11 +45,15 @@ CSV_PATH = "/data/failles/louisels/project/results/outputs_04a/catalog_windows_X
 # Set to a 04d `noise_windows_<stamp>.csv` to add the "noise" class
 NOISE_CSV = None
 
+# -- Regional CSV (output of script 04c, optional 5th class) -------------------
+# Set to a 04c `regional_windows_<stamp>.csv` to add the "regional" class
+REGIONAL_CSV = None
+
 # -- Output directory ----------------------------------------------------------
 OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_06a"
 
 # -- Classes to keep -----------------------------------------------------------
-TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise"]
+TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise", "regional"]
 
 # -- Quality filtering ---------------------------------------------------------
 FILTER_QUALITY = True   # True  → keep only quality_ok == True rows
@@ -151,6 +155,23 @@ if NOISE_CSV is not None:
         df_raw = pd.concat([df_raw, df_noise], ignore_index=True)
     else:
         print(f"[WARN] NOISE_CSV not found: {NOISE_CSV} — continuing without the noise class.")
+
+# -- Optional 5th class: regional (output of 04c) ------------------------------
+# Same position/pattern as noise above — 06a's quality filter trusts each row's
+# own precomputed `quality_ok` column rather than recomputing the SNR mask (see
+# FILTER_QUALITY below), and 04c bakes `quality_ok` with the same current
+# pipeline-wide gate as everything else, so no special before/after-gate
+# ordering is needed here (unlike 06b/06c, which recompute the mask explicitly
+# and DO need regional loaded before that recompute — see those scripts).
+if REGIONAL_CSV is not None:
+    if os.path.isfile(REGIONAL_CSV):
+        df_regional = pd.read_csv(REGIONAL_CSV)
+        rename_legacy_columns(df_regional)
+        print(f"Loaded {len(df_regional):,} regional rows × {df_regional.shape[1]} columns "
+              f"from {os.path.basename(REGIONAL_CSV)}.")
+        df_raw = pd.concat([df_raw, df_regional], ignore_index=True)
+    else:
+        print(f"[WARN] REGIONAL_CSV not found: {REGIONAL_CSV} — continuing without the regional class.")
 
 # -- Keep only target classes -------------------------------------------------
 df_raw = df_raw[df_raw["event_type"].isin(TARGET_CLASSES)].copy()

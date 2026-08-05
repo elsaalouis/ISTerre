@@ -58,15 +58,19 @@ RESCUE_CATALOG_RAW_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTE
 
 # ── Noise catalog (output of script 04d, optional 4th class) ──────────────────
 # Set to a 04d `noise_windows_<stamp>.csv` to add the "noise" class
-NOISE_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04d_noise_window_extraction\run_20260727_111052\noise_windows_20260727_111052.csv"
+NOISE_CSV = None
+
+# ── Regional catalog (output of script 04c, optional 5th class) ───────────────
+# Set to a 04c `regional_windows_<stamp>.csv` to add the "regional" class
+REGIONAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04c_regional_EQ_extraction\run_20260805_103100\regional_windows_20260805_103100.csv"
 
 # ── Output directory ──────────────────────────────────────────────────────────
 OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\06c_HGB_classifier"
 
 # ── Classes ───────────────────────────────────────────────────────────────────
-TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise"]
-CLASS_ORDER    = ["earthquake", "rockslide", "ice quake", "noise"]
-CLASS_ABBR     = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq", "noise": "no"}
+TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise", "regional"]
+CLASS_ORDER    = ["earthquake", "rockslide", "ice quake", "noise", "regional"]
+CLASS_ABBR     = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq", "noise": "no", "regional": "re"}
 
 # ── Feature set ───────────────────────────────────────────────────────────────
 FEATURE_IMPORTANCES_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03b_feature_selection\run_20260710_144246\feature_importances_20260710_144246.csv"
@@ -122,7 +126,8 @@ ISTERRE_URL          = "http://ist-sc3-geobs.osug.fr:8080"
 LAT_MIN, LAT_MAX     = 45.5, 46.0
 LON_MIN, LON_MAX     = 6.5, 7.2
 CLASS_COLORS         = {"earthquake": "#1f77b4", "rockslide": "#d62728",
-                        "ice quake": "#2ca02c", "noise": "#7f7f7f"}
+                        "ice quake": "#2ca02c", "noise": "#7f7f7f",
+                        "regional": "#9467bd"}
 
 
 # =============================================================================
@@ -163,7 +168,9 @@ log_file, log_path = setup_logging(
     extra_info=(
         f"ORIGINAL_CSV: {ORIGINAL_CSV}\n"
         f"RESCUE_CATALOG_CSV: {RESCUE_CATALOG_CSV}\n"
-        f"RESCUE_CATALOG_RAW_CSV: {RESCUE_CATALOG_RAW_CSV}"
+        f"RESCUE_CATALOG_RAW_CSV: {RESCUE_CATALOG_RAW_CSV}\n"
+        f"NOISE_CSV: {NOISE_CSV}\n"
+        f"REGIONAL_CSV: {REGIONAL_CSV}"
     ),
 )
 
@@ -180,12 +187,32 @@ print(f"{'='*65}")
 orig = pd.read_csv(ORIGINAL_CSV, low_memory=False)
 orig = rename_legacy_columns(orig)
 orig = orig[orig["event_type"].isin(TARGET_CLASSES)].copy()
+orig["source"] = "original"
 
-# Apply quality gate to original (rescue rows already satisfy this same gate,
-# by construction, from 03d). Always recompute explicitly from SNR/SNR_full_median
-# — do NOT trust the precomputed 'quality_ok' column, which was baked by 04a
-# using the OLD 05a thresholds and is stale relative to the 05b Tier 2 values
-# used here (only refreshed if 04a itself is rerun, out of scope for now).
+# ── Regional catalog (optional 5th class, output of 04c) ──────────────────────
+# Concatenated BEFORE the quality gate below — unlike noise (added AFTER the
+# gate further down, since noise rows have SNR=NaN by construction), regional
+# rows carry REAL computed SNR from 04c's own detection pipeline and need to
+# pass the SAME gate as the local classes, not skip it.
+if REGIONAL_CSV is not None and os.path.exists(str(REGIONAL_CSV)):
+    regional = pd.read_csv(REGIONAL_CSV, low_memory=False)
+    regional = rename_legacy_columns(regional)
+    regional = regional[regional["event_type"].isin(TARGET_CLASSES)].copy()
+    regional["source"] = "regional"
+    print(f"  Regional catalog  : {len(regional):,} rows from {os.path.basename(REGIONAL_CSV)} "
+          f"(pre-gate)")
+    orig = pd.concat([orig, regional], ignore_index=True)
+elif REGIONAL_CSV is not None:
+    print(f"  [WARN] REGIONAL_CSV not found: {REGIONAL_CSV} — continuing without the regional class.")
+
+# Apply quality gate to original(+regional) — rescue rows already satisfy this
+# same gate, by construction, from 03d. Always recompute explicitly from
+# SNR/SNR_full_median — do NOT trust the precomputed 'quality_ok' column, which
+# was baked by 04a using the OLD 05a thresholds and is stale relative to the
+# 05b Tier 2 values used here (only refreshed if 04a itself is rerun, out of
+# scope for now). 04c's own 'quality_ok' column IS current (built after the
+# 05b Tier 2 resolution) but is still ignored here for the same reason: this
+# gate is always recomputed explicitly, never trusted from either source CSV.
 mask = (
     (orig["SNR"]             >= SNR_MIN) &
     (orig["SNR_full_median"] >= SNR_FULL_MEDIAN_MIN)
@@ -193,9 +220,8 @@ mask = (
 orig = orig[mask].copy()
 z_feat_cols = [f for f in FEATURE_NAMES if f in orig.columns]
 orig = orig.dropna(subset=z_feat_cols).copy()
-orig["source"] = "original"
 
-print(f"  Original catalog  : {len(orig):,} rows after quality gate + NaN drop")
+print(f"  Original(+regional) catalog : {len(orig):,} rows after quality gate + NaN drop")
 for cls in CLASS_ORDER:
     n = (orig["event_type"] == cls).sum()
     print(f"    {cls:<22} {n:>6,}  ({100*n/len(orig):.1f} %)")
