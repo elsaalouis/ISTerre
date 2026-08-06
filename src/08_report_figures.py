@@ -42,12 +42,12 @@ Data sources
 
 # -- Input CSVs (04a / 04d outputs) -------------------------------------------
 ORIGINAL_CSV = "/data/failles/louisels/project/results/outputs_04a/all-99-features-recent+3C/catalog_windows_20260708_174019.csv"
-NOISE_CSV    = "/data/failles/louisels/project/results/outputs_04d/run_20260731_141524/noise_windows_20260731_141524.csv"
+NOISE_CSV    = "/data/failles/louisels/project/results/outputs_04d/run_20260803_174514/noise_windows_20260803_174514.csv"
 
 # -- Regional catalog (output of script 04c, optional 5th class) --------------
 # Set to a 04c `regional_windows_<stamp>.csv` to add the "regional" class.
 # None = skip it entirely (unlike NOISE_CSV above, which is currently required).
-REGIONAL_CSV = None
+REGIONAL_CSV = "/data/failles/louisels/project/results/outputs_04c/run_20260805_135512/regional_windows_20260805_135512.csv"
 
 # -- Output ---------------------------------------------------------------------
 OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_08"
@@ -127,6 +127,42 @@ NOISE_SAMPLE_SEED = 42
 SNR_OUTLIER_PCTL = 0.99
 SNR_OUTLIER_MULT = 5.0
 
+# The class-wide percentile cap above can still miss a B03-type artifact when
+# the class has few detections (e.g. rockslide, n=7,656 vs earthquake's
+# 42,615): the artifact rows are then a big enough share of the top tail that
+# they drag the 99th-percentile value itself upward, which raises the cap
+# (5x that already-inflated percentile) enough for some of them to survive.
+# XX.B03 and XX.B01 have now BOTH shown the exact same narrow double-spike
+# signature -- same shape, same implausible SNR relative to a normal
+# station's median -- across THREE different classes (rockslide, regional,
+# noise). Two different stations in the same network sharing an identical,
+# distinctive artifact is not a coincidence of two unrelated broken sensors;
+# it's consistent with a shared hardware/telemetry issue across the whole XX
+# deployment (XX-style codes are typically a temporary/nodal experiment
+# network, which commonly show periodic GPS-clock-resync spikes). Rather than
+# keep whitelisting individual XX station codes one at a time as new ones
+# turn up, exclude the entire network -- use ("<network>", "*") to blacklist
+# every station in a network.
+# GU.BLANC (regional class) shows a related but distinct signature: 2-3
+# near-identical spikes recurring at a fixed ~43s interval within the SAME
+# 90s window -- a real earthquake doesn't repeat itself perfectly on a timer,
+# this is consistent with a periodic instrumental artifact (calibration
+# pulse / timing correction / digitizer glitch). Note GU.REMY does NOT show
+# this pattern (its examples look like genuine noisy regional arrivals), so
+# only GU.BLANC specifically is excluded, not the whole GU network.
+# Confirmed the artifact is NOT a filtering issue: it survived both the
+# 2-10Hz and a wider 1-20Hz bandpass, meaning it's broadband (impulsive/
+# spike-like) energy present in the RAW trace itself, not something our
+# processing introduces or a filter can remove.
+# Add other (network, station) pairs -- or ("network", "*") -- here if the
+# same pattern shows up again.
+EXCLUDED_STATIONS = {("XX", "*"), ("GU", "BLANC")}
+
+
+def _is_station_excluded(net, sta):
+    """True if (net, sta) or the whole network ("net", "*") is blacklisted."""
+    return (net, sta) in EXCLUDED_STATIONS or (net, "*") in EXCLUDED_STATIONS
+
 # Fixed-length window fetched for every example (also what gets averaged into the
 # per-class "typical fingerprint" spectrogram, so the shape MUST be identical for
 # every example — hence fixed window length + fixed target sampling rate, no
@@ -150,8 +186,8 @@ TARGET_FS      = 200    # [Hz] every trace is resampled to this before spectrogr
 FETCH_PAD_S = 60
 
 # Waveform display filter (matches the reference figure the report is modeled on)
-WAVE_FREQMIN = 2.0
-WAVE_FREQMAX = 10.0
+WAVE_FREQMIN = 1.0
+WAVE_FREQMAX = 20.0
 
 # Spectrogram parameters (same convention as 07a_spectrogram_dataset_build.py,
 # but with a higher frequency ceiling -- see TARGET_FS note above)
@@ -503,6 +539,22 @@ if client_sds is None or client_fdsn is None or not sta_coords:
 else:
     for cls in CLASS_ORDER:
         sub = combined_gated[combined_gated["event_type"] == cls].copy()
+
+        # Hard-exclude known-broken stations/networks first (see
+        # EXCLUDED_STATIONS note in section 1) -- applies to EVERY class,
+        # including noise: the noise gallery used to skip this check entirely
+        # and picked up the exact same XX artifact as a "typical noise"
+        # example.
+        n_before_excl = len(sub)
+        keep_mask = [not _is_station_excluded(net, sta)
+                     for net, sta in zip(sub["network"], sub["station"])]
+        sub = sub[keep_mask]
+        n_excl_station = n_before_excl - len(sub)
+        if n_excl_station:
+            print(f"  [{cls}] excluded {n_excl_station} detection(s) from "
+                  f"hard-excluded station(s)/network(s) {sorted(EXCLUDED_STATIONS)} "
+                  f"before ranking")
+
         if cls == "noise":
             # Random, NOT sorted by trigger_on_cft -- see NOISE_SAMPLE_SEED note
             # in section 1: sorting by highest CFT surfaces the most anomalous

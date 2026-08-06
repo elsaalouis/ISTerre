@@ -58,19 +58,19 @@ RESCUE_CATALOG_RAW_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTE
 
 # ── Noise catalog (output of script 04d, optional 4th class) ──────────────────
 # Set to a 04d `noise_windows_<stamp>.csv` to add the "noise" class
-NOISE_CSV = None
+NOISE_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04d_noise_window_extraction\run_20260803_174514\noise_windows_20260803_174514.csv"
 
 # ── Regional catalog (output of script 04c, optional 5th class) ───────────────
 # Set to a 04c `regional_windows_<stamp>.csv` to add the "regional" class
-REGIONAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04c_regional_EQ_extraction\run_20260805_103100\regional_windows_20260805_103100.csv"
+REGIONAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04c_regional_EQ_extraction\run_20260805_135512\regional_windows_20260805_135512.csv"
 
 # ── Output directory ──────────────────────────────────────────────────────────
 OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\06c_HGB_classifier"
 
 # ── Classes ───────────────────────────────────────────────────────────────────
-TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise", "regional"]
-CLASS_ORDER    = ["earthquake", "rockslide", "ice quake", "noise", "regional"]
-CLASS_ABBR     = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq", "noise": "no", "regional": "re"}
+TARGET_CLASSES = ["earthquake", "regional", "rockslide", "ice quake", "noise"]
+CLASS_ORDER    = ["earthquake", "regional", "rockslide", "ice quake", "noise"]
+CLASS_ABBR     = {"earthquake": "eq", "regional": "re", "rockslide": "rs", "ice quake": "iq", "noise": "no"}
 
 # ── Feature set ───────────────────────────────────────────────────────────────
 FEATURE_IMPORTANCES_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03b_feature_selection\run_20260710_144246\feature_importances_20260710_144246.csv"
@@ -631,6 +631,10 @@ def save_cm_figure(cm, title, path):
     fig, ax = plt.subplots(figsize=(5, 4))
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=CLASS_ORDER)
     disp.plot(ax=ax, colorbar=True, cmap="Blues", values_format=".2f")
+    # Rotate x labels so they don't overlap each other -- with 5 classes
+    # (earthquake/rockslide/ice quake/noise/regional) the default horizontal
+    # labels are too wide for a 5in-wide figure and collide.
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right")
     ax.set_title(title, fontsize=10)
     plt.tight_layout()
     plt.savefig(path, dpi=150, bbox_inches="tight")

@@ -7,15 +7,21 @@ Date   : July 2026
 
 Goal
 ----
-Build a fixed-size 3-component spectrogram image dataset for CNN-based event-type classification (earthquake / rockslide / ice quake)
- -> starting from the quality-filtered detection windows already produced by 04a_sta_lta_catalog_windowing.py.
+Build a fixed-size 3-component spectrogram image dataset for CNN-based event-type
+classification (earthquake / rockslide / ice quake / noise / regional)
+ -> starting from the quality-filtered detection windows already produced by
+    04a_sta_lta_catalog_windowing.py (local classes), 04d_noise_window_extraction.py
+    (noise, 4th class) and 04c_regional_event_extraction.py (regional, 5th class).
 
  Training happens separately on Google Colab (07b_train_cnn_classifier_colab.ipynb)
  This script only extracts waveforms from the cluster, builds spectrogram images, and writes them to disk together with a manifest CSV, ready to be uploaded to Google Drive
 
 Pipeline
 --------
-  1. Load catalog_windows CSV (04a output), filter by TARGET_CLASSES + quality_ok
+  1. Load catalog_windows CSV (04a output) + optional NOISE_CSV (04d) + optional
+     REGIONAL_CSV (04c), filter by TARGET_CLASSES, apply the SAME explicit
+     SNR-based quality gate as 03c/03d/06b/06c to the local classes + regional
+     (noise skips it — see the FILTER_QUALITY comment in Section 1), concatenate
   2. For each row: fetch Z/N/E waveforms from SDS around the (already-refined) detection onset
                    remove instrument response -> velocity [m/s]
                    resample to a common rate
@@ -45,16 +51,46 @@ Next step: upload the run folder to Google Drive and point 07b_train_cnn_classif
 # -- Input CSV (output of 04a_sta_lta_catalog_windowing.py) -------------------
 CSV_PATH = "/data/failles/louisels/project/results/outputs_04a/all-99-features-recent+3C/catalog_windows_20260708_174019.csv"
 
+# -- Noise CSV (output of 04d_noise_window_extraction.py, optional 4th class) --
+# Set to a 04d noise_windows_<stamp>.csv to add the "noise" class, or None to
+# skip it and fall back to the original 3 classes. Cluster path inferred from
+# 04d's own OUTPUT_DIR/create_run_dir() convention + the run folder already in
+# use on the Windows side by 06b/06c (run_20260803_174514) — double-check this
+# matches the actual folder on the cluster (results/ is OneDrive-synced, so it
+# should, but verify before a long run) and update if a newer 04d run exists.
+NOISE_CSV = "/data/failles/louisels/project/results/outputs_04d/run_20260803_174514/noise_windows_20260803_174514.csv"
+
+# -- Regional CSV (output of 04c_regional_event_extraction.py, optional 5th class) --
+# Set to a 04c regional_windows_<stamp>.csv to add the "regional" class, or
+# None to skip it. Same cluster-path caveat as NOISE_CSV above.
+REGIONAL_CSV = "/data/failles/louisels/project/results/outputs_04c/run_20260805_135512/regional_windows_20260805_135512.csv"
+
 # -- Paths ---------------------------------------------------------------------
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
 OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_07a"
 
 # -- Classes to keep -------------------------------------------------------------
-TARGET_CLASSES = ["earthquake", "rockslide", "ice quake"]   # same as 06a_train_RF_classifier.py
+# 5 classes: the original 3 (earthquake/rockslide/ice quake, from CSV_PATH) plus
+# noise (04d, NOISE_CSV) and regional (04c, REGIONAL_CSV) — same class set as
+# 06b_compare_classifiers.py / 06c_train_HGB_classifier.py. Set NOISE_CSV and/or
+# REGIONAL_CSV to None above (and drop the corresponding name here) to build a
+# smaller-class dataset instead.
+TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise", "regional"]
 
 # -- Quality filtering -----------------------------------------------------------
-FILTER_QUALITY = True   # True -> keep only quality_ok == True rows (05a/05b thresholds, same as 06a)
+# FILTER_QUALITY=True applies the SAME explicit SNR-based gate as 03c/03d/06b/06c
+# (SNR>=SNR_MIN & SNR_full_median>=SNR_FULL_MEDIAN_MIN) to earthquake/rockslide/
+# ice quake (CSV_PATH) and regional (REGIONAL_CSV, which carries real computed
+# SNR from 04c's own detection pipeline) — NOT the catalog's quality_ok column,
+# which is stale (baked by 04a using the old 05a thresholds; 06b/06c already
+# made this same switch, see project memory). Noise (NOISE_CSV) skips this gate
+# entirely — 04d already guarantees each row is a real, locality-confirmed,
+# catalog-clear detection with no SNR question to ask (SNR columns are NaN by
+# construction there), same convention as 06b/06c.
+FILTER_QUALITY      = True
+SNR_MIN             = 1.70    # 05b Tier 2 — metric 'SNR'
+SNR_FULL_MEDIAN_MIN = 1.99    # 05b Tier 2 — metric 'SNR_full_median'
 
 # -- Waveform extraction: fixed window anchored on the (kurtosis-refined) onset --
 # det_starttime in the CSV is already the refined onset from 04a. The window is [onset - WINDOW_PRE_S, onset + WINDOW_POST_S]
@@ -120,7 +156,8 @@ from preprocessing import cosine_taper
 RUN_DIR, STAMP = create_run_dir(OUTPUT_DIR)
 log_file, log_path = setup_logging(
     RUN_DIR, "07a_spectrogram_dataset_build.py",
-    extra_info=(f"CSV: {CSV_PATH}  |  Classes: {TARGET_CLASSES}  |  "
+    extra_info=(f"CSV: {CSV_PATH}\nNOISE_CSV: {NOISE_CSV}\nREGIONAL_CSV: {REGIONAL_CSV}\n"
+                f"Classes: {TARGET_CLASSES}  |  "
                 f"Window: -{WINDOW_PRE_S}s..+{WINDOW_POST_S}s @ {TARGET_FS} Hz "
                 f"({NT} samples)")
 )
@@ -150,7 +187,7 @@ if client_fdsn is None:
 # =============================================================================
 
 print(f"\n{'='*65}")
-print("  STEP 1 — Loading catalog_windows CSV")
+print("  STEP 1 — Loading catalog CSV(s)")
 print(f"{'='*65}")
 
 if not os.path.isfile(CSV_PATH):
@@ -160,18 +197,36 @@ if not os.path.isfile(CSV_PATH):
     sys.exit(1)
 
 df = pd.read_csv(CSV_PATH, low_memory=False)
-print(f"Loaded {len(df):,} rows x {df.shape[1]} columns.")
+print(f"Loaded {len(df):,} rows x {df.shape[1]} columns from CSV_PATH.")
 
 df = df[df["event_type"].isin(TARGET_CLASSES)].copy()
 print(f"After class filter ({TARGET_CLASSES}): {len(df):,} rows.")
 
-if FILTER_QUALITY and "quality_ok" in df.columns:
+# -- Optional 5th class: regional (04c output), concatenated BEFORE the quality
+# gate below — unlike noise (added AFTER the gate further down, since noise
+# rows have SNR=NaN by construction), regional rows carry REAL computed SNR
+# from 04c's own detection pipeline and need to pass the SAME gate as the local
+# classes, not skip it. Same convention as 06b/06c.
+if REGIONAL_CSV is not None:
+    if os.path.isfile(REGIONAL_CSV):
+        df_regional = pd.read_csv(REGIONAL_CSV, low_memory=False)
+        df_regional = df_regional[df_regional["event_type"].isin(TARGET_CLASSES)].copy()
+        print(f"Loaded {len(df_regional):,} regional rows from {os.path.basename(REGIONAL_CSV)}.")
+        df = pd.concat([df, df_regional], ignore_index=True)
+    else:
+        print(f"[WARN] REGIONAL_CSV not found: {REGIONAL_CSV} — continuing without the regional class.")
+
+if FILTER_QUALITY:
     n_before = len(df)
-    df = df[df["quality_ok"] == True].copy()
-    print(f"After quality filter (quality_ok==True): {len(df):,} rows kept "
-          f"({n_before - len(df):,} dropped).")
-elif FILTER_QUALITY:
-    print("[WARN] 'quality_ok' column not found — skipping quality filter.")
+    # Explicit SNR-based gate (03c/03d/06b/06c), NOT the catalog's quality_ok
+    # column — see the FILTER_QUALITY comment in Section 1 for why.
+    if {"SNR", "SNR_full_median"}.issubset(df.columns):
+        mask_quality = (df["SNR"] >= SNR_MIN) & (df["SNR_full_median"] >= SNR_FULL_MEDIAN_MIN)
+        df = df[mask_quality].copy()
+        print(f"After quality filter (SNR>={SNR_MIN}, SNR_full_median>={SNR_FULL_MEDIAN_MIN}): "
+              f"{len(df):,} rows kept ({n_before - len(df):,} dropped).")
+    else:
+        print("[WARN] 'SNR'/'SNR_full_median' column(s) not found — skipping quality filter.")
 
 required_cols = ["event_time", "event_type", "network", "station", "channel", "det_starttime"]
 missing = [c for c in required_cols if c not in df.columns]
@@ -182,6 +237,20 @@ if missing:
 
 df = df.dropna(subset=required_cols).reset_index(drop=True)
 print(f"After dropping rows with missing key columns: {len(df):,} rows.")
+
+# -- Optional 4th class: noise (04d output), added AFTER the quality gate —
+# noise rows have SNR=NaN by construction (they'd fail the mask above); 04d
+# already guarantees each row is a real, locality-confirmed, catalog-clear
+# detection with no SNR question to ask. Same convention as 06b/06c.
+if NOISE_CSV is not None:
+    if os.path.isfile(NOISE_CSV):
+        df_noise = pd.read_csv(NOISE_CSV, low_memory=False)
+        df_noise = df_noise[df_noise["event_type"].isin(TARGET_CLASSES)].copy()
+        df_noise = df_noise.dropna(subset=required_cols).reset_index(drop=True)
+        print(f"Loaded {len(df_noise):,} noise rows from {os.path.basename(NOISE_CSV)}.")
+        df = pd.concat([df, df_noise], ignore_index=True)
+    else:
+        print(f"[WARN] NOISE_CSV not found: {NOISE_CSV} — continuing without the noise class.")
 
 if MAX_ROWS > 0:
     df = df.iloc[:MAX_ROWS].copy()

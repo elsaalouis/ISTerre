@@ -38,7 +38,7 @@ NOISE_CSV  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\
 
 # -- Regional CSV (output of script 04c, optional 5th class) -------------------
 # Set to a 04c `regional_windows_<stamp>.csv` to add the "regional" class
-REGIONAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04c_regional_EQ_extraction\run_20260805_103100\regional_windows_20260805_103100.csv"
+REGIONAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04c_regional_EQ_extraction\run_20260805_135512\regional_windows_20260805_135512.csv"
 
 # -- Output directory ----------------------------------------------------------
 OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\06b_compare_classifiers"
@@ -512,6 +512,10 @@ for cfg in CLASSIFIER_CONFIGS:
         fig, ax = plt.subplots(figsize=(5, 4))
         disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=CLASS_ORDER)
         disp.plot(ax=ax, colorbar=True, cmap="Blues", values_format=".2f")
+        # Rotate x labels so they don't overlap each other -- with 5 classes
+        # (earthquake/rockslide/ice quake/noise/regional) the default horizontal
+        # labels are too wide for a 5in-wide figure and collide.
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right")
         ax.set_title(
             f"{name}\n"
             f"Macro F1 = {macro_f1:.3f}   Acc = {acc:.3f}",

@@ -13,9 +13,9 @@ rockslide, ice quake, noise), but physically and operationally distinct from all
 
 Data sources
 ------------
-  Regional catalog     : RENASS / franceseisme.fr FDSN event webservice https://api.franceseisme.fr 
+  Regional catalog     : EMSC FDSN event webservice (obspy shortcut "EMSC" -> https://www.seismicportal.eu/fdsnws/event/1)
   Station inventory    : ISTerre FDSN server (same bounding box as 04d)
-  Waveforms            : ISTerre SDS archive 
+  Waveforms            : ISTerre SDS archive
 
 Pipeline
 --------
@@ -49,10 +49,7 @@ ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"          # station inventory (
 OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_04c"
 
 # -- Regional event catalog source ------------------------------------------
-# RENASS/franceseisme's own fdsnws-event endpoint — this is RENASS's core
-# mission (French/near-France regional seismicity), so coverage here should
-# be strong. Fallback if needed: "USGS" or "EMSC" (obspy built-in shortcuts).
-CATALOG_URL = "https://api.franceseisme.fr"
+CATALOG_URL = "EMSC"
 
 # -- Physical local/regional/teleseismic split (see docstring) --------------
 DIST_MIN_KM    = 150.0     # below this: local Pg/Sg, already covered by the existing classes
@@ -68,14 +65,14 @@ MASSIF_CENTER_LON = (LON_MIN + LON_MAX) / 2
 
 # -- Time range to sample from (must match the SDS archive's continuous span) --
 T_START = "2015-01-01"
-T_END   = "2026-08-01"
+T_END   = "2026-07-01"
 
 # -- Chunked catalog query (avoids FDSN server timeout on a 10+ year span) ---
 CHUNK_DAYS          = 90
 CATALOG_CACHE_FILE  = "/data/failles/louisels/project/results/regional_catalog_cache.xml"
 
 # -- Bound the run: cap total events processed (event x ~30-45 stations) ----
-N_EVENTS_CAP = 300     # if the catalog returns more, randomly subsample (reproducible via RANDOM_SEED)
+N_EVENTS_CAP = 10000
 RANDOM_SEED  = 42
 
 # -- TauPy predicted-arrival model ------------------------------------------
@@ -278,7 +275,8 @@ regional_events = query_catalog_by_distance_chunked(
 if not regional_events:
     print(f"\n[ERROR] No regional events found. If this is unexpected, check that "
           f"{CATALOG_URL} covers this distance/magnitude range (try CATALOG_URL="
-          f"'USGS' or 'EMSC' instead — both are built-in obspy shortcuts). Exiting.")
+          f"'USGS' instead, or back to 'https://api.franceseisme.fr' — see the "
+          f"docstring for why EMSC replaced it). Exiting.")
     sys.exit(1)
 
 print(f"[OK] {len(regional_events)} candidate regional event(s) found "
