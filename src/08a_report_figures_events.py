@@ -50,7 +50,7 @@ NOISE_CSV    = "/data/failles/louisels/project/results/outputs_04d/run_20260803_
 REGIONAL_CSV = "/data/failles/louisels/project/results/outputs_04c/run_20260805_135512/regional_windows_20260805_135512.csv"
 
 # -- Output ---------------------------------------------------------------------
-OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_08"
+OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_08a"
 
 # -- Cluster access (example gallery + average spectrogram + station map only) --
 SDS_ROOT    = "/data/sig/SDS"

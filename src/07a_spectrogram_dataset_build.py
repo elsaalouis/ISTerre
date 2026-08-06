@@ -52,17 +52,9 @@ Next step: upload the run folder to Google Drive and point 07b_train_cnn_classif
 CSV_PATH = "/data/failles/louisels/project/results/outputs_04a/all-99-features-recent+3C/catalog_windows_20260708_174019.csv"
 
 # -- Noise CSV (output of 04d_noise_window_extraction.py, optional 4th class) --
-# Set to a 04d noise_windows_<stamp>.csv to add the "noise" class, or None to
-# skip it and fall back to the original 3 classes. Cluster path inferred from
-# 04d's own OUTPUT_DIR/create_run_dir() convention + the run folder already in
-# use on the Windows side by 06b/06c (run_20260803_174514) — double-check this
-# matches the actual folder on the cluster (results/ is OneDrive-synced, so it
-# should, but verify before a long run) and update if a newer 04d run exists.
 NOISE_CSV = "/data/failles/louisels/project/results/outputs_04d/run_20260803_174514/noise_windows_20260803_174514.csv"
 
 # -- Regional CSV (output of 04c_regional_event_extraction.py, optional 5th class) --
-# Set to a 04c regional_windows_<stamp>.csv to add the "regional" class, or
-# None to skip it. Same cluster-path caveat as NOISE_CSV above.
 REGIONAL_CSV = "/data/failles/louisels/project/results/outputs_04c/run_20260805_135512/regional_windows_20260805_135512.csv"
 
 # -- Paths ---------------------------------------------------------------------
@@ -71,23 +63,9 @@ ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
 OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_07a"
 
 # -- Classes to keep -------------------------------------------------------------
-# 5 classes: the original 3 (earthquake/rockslide/ice quake, from CSV_PATH) plus
-# noise (04d, NOISE_CSV) and regional (04c, REGIONAL_CSV) — same class set as
-# 06b_compare_classifiers.py / 06c_train_HGB_classifier.py. Set NOISE_CSV and/or
-# REGIONAL_CSV to None above (and drop the corresponding name here) to build a
-# smaller-class dataset instead.
 TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise", "regional"]
 
 # -- Quality filtering -----------------------------------------------------------
-# FILTER_QUALITY=True applies the SAME explicit SNR-based gate as 03c/03d/06b/06c
-# (SNR>=SNR_MIN & SNR_full_median>=SNR_FULL_MEDIAN_MIN) to earthquake/rockslide/
-# ice quake (CSV_PATH) and regional (REGIONAL_CSV, which carries real computed
-# SNR from 04c's own detection pipeline) — NOT the catalog's quality_ok column,
-# which is stale (baked by 04a using the old 05a thresholds; 06b/06c already
-# made this same switch, see project memory). Noise (NOISE_CSV) skips this gate
-# entirely — 04d already guarantees each row is a real, locality-confirmed,
-# catalog-clear detection with no SNR question to ask (SNR columns are NaN by
-# construction there), same convention as 06b/06c.
 FILTER_QUALITY      = True
 SNR_MIN             = 1.70    # 05b Tier 2 — metric 'SNR'
 SNR_FULL_MEDIAN_MIN = 1.99    # 05b Tier 2 — metric 'SNR_full_median'
@@ -98,7 +76,7 @@ SNR_FULL_MEDIAN_MIN = 1.99    # 05b Tier 2 — metric 'SNR_full_median'
 # -- WINDOW_POST_S must comfortably cover the longest events (rockslide codas in particular can run long) or the spectrogram will cut off real signal
 TARGET_FS      = 100     # [Hz] common resampling rate for every trace
 WINDOW_PRE_S   = 5       # [s] seconds of window BEFORE the onset
-WINDOW_POST_S  = 55      # [s] seconds of window AFTER the onset
+WINDOW_POST_S  = 95      # [s] seconds of window AFTER the onset
 WINDOW_S       = WINDOW_PRE_S + WINDOW_POST_S
 NT             = int(WINDOW_S * TARGET_FS)          # fixed number of samples per trace
 

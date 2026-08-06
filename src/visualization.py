@@ -27,6 +27,8 @@ All figure-generating functions used across the pipeline scripts:
   - plot_average_spectrograms()  : "typical fingerprint" spectrogram per class (script 08)
   - plot_feature_distributions() : violin plots of a feature, one panel per class (script 08)
   - plot_snr_quality_by_class()  : SNR/quality violin plots with gate threshold  (script 08)
+  - plot_method_comparison_windowing() : classical vs spectrogram STA/LTA, side
+                                    by side on the same stations/event (script 08b)
 """
 
 import os
@@ -515,6 +517,212 @@ def plot_windowing(station_data, t_orig, thr_on, thr_off, etype, run_dir, freq_m
     safe_time = str(t_orig)[:19].replace(":", "-").replace("T", "_")
     safe_type = etype.replace(" ", "_")
     fname     = f"window_{safe_type}_{safe_time}.png"
+    out_path  = os.path.join(run_dir, fname)
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"    [SAVED] {fname}")
+
+
+
+# =============================================================================
+# CLASSICAL vs SPECTROGRAM STA/LTA — SIDE-BY-SIDE COMPARISON (script 08b)
+# =============================================================================
+
+def plot_method_comparison_windowing(
+    station_data, t_orig, etype, run_dir,
+    freq_min=1.0, freq_max=20.0,
+    classical_params=(5, 100, 2.0, 1.3),   # (sta_s, lta_s, thres_on, thres_off)
+    groult_params=(1, 15, 8.0, 2.0),       # (nsta, nlta, thr_on, thr_off)
+):
+    """
+    One figure for one catalog event -> one row per station, 3 columns:
+      Col 1 : velocity waveform (bandpass-filtered, freq_min-freq_max Hz),
+              full trace length. Shows BOTH methods' detected windows
+              overlaid directly on the same trace (classical = orange,
+              spectrogram/Groult = purple), plus the catalog P/S picks, so
+              the two windows can be compared at a glance against the true
+              wave arrival.
+      Col 2 : classical STA/LTA characteristic function (ratio of short-term
+              to long-term average of the raw waveform amplitude). Kept at
+              full trace length (unlike col 1) so the LTA warm-up/background
+              level stays visible for context.
+      Col 3 : Groult et al. (2026) spectrogram-based bidirectional STA/LTA
+              characteristic function (ratio computed on a spectral-energy
+              time series stacked over freq_min-freq_max Hz, not on the raw
+              amplitude) -- this is the key conceptual difference between the
+              two methods, made visible by putting the two CFTs side by side
+              on the same time axis. Also kept at full trace length.
+
+    Parameters
+    ----------
+    station_data : list of dicts, one per station:
+        {
+          'tr_filt'   : obspy.Trace — bandpass-filtered velocity [m/s]
+                        (freq_min-freq_max Hz), used for the waveform panel
+          'picks'     : dict {'P': UTCDateTime or None, 'S': UTCDateTime or None}
+                        (optional; omit or leave empty if no pick available)
+          'classical' : {'detections': {"Det_k": [UTCDateTime t_on, t_off]},
+                         't_cft': 1-D array [s, relative to trace start],
+                         'cft':   1-D array — STA/LTA ratio}
+          'groult'    : same structure as 'classical', but 'cft' is the
+                        DetecteurV3 sum_cft and 't_cft' its (coarser)
+                        spectrogram-step time axis
+        }
+    t_orig            : UTCDateTime — catalog origin time
+    etype             : str — event type label (title + output filename)
+    run_dir           : str — output directory
+    freq_min/freq_max : float — shared detection frequency band (title)
+    classical_params  : (sta_s, lta_s, thres_on, thres_off)
+    groult_params     : (nsta, nlta, thr_on, thr_off)
+    """
+    n = len(station_data)
+    if n == 0:
+        return
+
+    sta_s, lta_s, thres_on, thres_off = classical_params
+    nsta, nlta, thr_on, thr_off       = groult_params
+
+    COL_CLASSICAL = '#ff7f0e'   # orange
+    COL_GROULT    = '#9467bd'   # purple
+
+    fig, axes = plt.subplots(
+        n, 3,
+        figsize=(20, max(4, n * 2.6)),
+        gridspec_kw={'width_ratios': [3, 1.2, 1.2]},
+        sharey=False,
+    )
+    if n == 1:
+        axes = [axes]
+
+    fig.suptitle(
+        f"{etype.upper()}   |   {str(t_orig)[:19]}\n"
+        f"Classical STA/LTA (sta={sta_s}s lta={lta_s}s on={thres_on} off={thres_off})   "
+        f"vs   Groult spectrogram STA/LTA ({freq_min}-{freq_max} Hz, "
+        f"nsta={nsta} nlta={nlta} on={thr_on} off={thr_off})",
+        fontsize=13, fontweight='bold', y=1.02,
+    )
+
+    for row_idx, (ax_row, sd) in enumerate(zip(axes, station_data)):
+        ax_wave, ax_classical, ax_groult = ax_row
+
+        tr_filt = sd['tr_filt']
+        clas    = sd['classical']
+        grou    = sd['groult']
+        picks   = sd.get('picks', {}) or {}
+        p_pick  = picks.get('P')
+        s_pick  = picks.get('S')
+
+        t_start = tr_filt.stats.starttime
+        net     = tr_filt.stats.network
+        sta     = tr_filt.stats.station
+
+        t_wav    = tr_filt.times()
+        t_orig_s = t_orig - t_start
+        data_um  = tr_filt.data.astype(float) * 1e6   # m/s -> µm/s
+
+        # ── Waveform panel: both methods' windows on the same trace ──────────
+        ax_wave.plot(t_wav, data_um, 'k-', linewidth=0.5)
+        ax_wave.axhline(0, color='lightgrey', linewidth=0.3, zorder=0)
+        peak_um = np.max(np.abs(data_um)) or 1.0
+        ax_wave.set_ylim(-peak_um * 1.15, peak_um * 1.15)
+        ax_wave.tick_params(axis='y', labelsize=7)
+        ax_wave.axvline(t_orig_s, color='dimgrey', linewidth=1.5,
+                        linestyle='--', zorder=3)
+
+        for method_key, col, y_frac in [('classical', COL_CLASSICAL, 0.92),
+                                         ('groult',    COL_GROULT,    0.80)]:
+            dets = sd[method_key]['detections']
+            if not dets:
+                ax_wave.text(0.99, y_frac, f"{method_key}: NO DETECTION",
+                             transform=ax_wave.transAxes, ha='right', va='top',
+                             fontsize=7, color=col, fontweight='bold')
+                continue
+            for det_key, (t_on, t_off) in dets.items():
+                t_on_s, t_off_s = t_on - t_start, t_off - t_start
+                ax_wave.axvspan(t_on_s, t_off_s, alpha=0.18, color=col, zorder=1)
+                ax_wave.axvline(t_on_s,  color=col, linewidth=1.6, alpha=0.9, zorder=3)
+                ax_wave.axvline(t_off_s, color=col, linewidth=1.1, alpha=0.7,
+                                linestyle='--', zorder=3)
+
+        # Catalog P/S picks (same style as plot_windowing)
+        label_y = peak_um * 0.92
+        if p_pick is not None:
+            t_p_s = p_pick - t_start
+            ax_wave.axvline(t_p_s, color='red', linewidth=1.5, zorder=4)
+            ax_wave.text(t_p_s + 0.5, label_y, 'P', color='red',
+                         fontsize=9, fontweight='bold', va='top')
+        if s_pick is not None:
+            t_s_s = s_pick - t_start
+            ax_wave.axvline(t_s_s, color='blue', linewidth=1.5, zorder=4)
+            ax_wave.text(t_s_s + 0.5, label_y, 'S', color='blue',
+                         fontsize=9, fontweight='bold', va='top')
+
+        ax_wave.set_xlim(t_wav[0], t_wav[-1])
+        ax_wave.set_ylabel(
+            f"{net}.{sta}\nVelocity (µm/s)\n{freq_min}-{freq_max} Hz",
+            fontsize=10, fontweight='bold',
+            rotation=0, labelpad=65, va='center',
+        )
+
+        # ── CFT panels (one per method) ───────────────────────────────────────
+        for ax_cft, method_key, col, cft_thr_on, cft_thr_off, label in [
+            (ax_classical, 'classical', COL_CLASSICAL, thres_on, thres_off, 'STA/LTA ratio'),
+            (ax_groult,    'groult',    COL_GROULT,    thr_on,   thr_off,   'sum_cft'),
+        ]:
+            t_cft = sd[method_key]['t_cft']
+            cft   = sd[method_key]['cft']
+            if len(t_cft) > 0 and len(cft) > 0:
+                n_pts = min(len(t_cft), len(cft))
+                ax_cft.plot(t_cft[:n_pts], cft[:n_pts], color='steelblue', linewidth=0.8)
+
+            ax_cft.axhline(cft_thr_on,  color='red',        linewidth=1.2, linestyle='--', zorder=3)
+            ax_cft.axhline(cft_thr_off, color='darkorange', linewidth=1.0, linestyle=':',  zorder=3)
+
+            for det_key, (t_on, t_off) in sd[method_key]['detections'].items():
+                t_on_s, t_off_s = t_on - t_start, t_off - t_start
+                ax_cft.axvspan(t_on_s, t_off_s, alpha=0.18, color=col, zorder=1)
+                ax_cft.axvline(t_on_s,  color=col, linewidth=1.3, alpha=0.8, zorder=3)
+                ax_cft.axvline(t_off_s, color=col, linewidth=0.9, alpha=0.6,
+                               linestyle='--', zorder=3)
+
+            ax_cft.axvline(t_orig_s, color='dimgrey', linewidth=1.1, linestyle='--', zorder=3)
+            ax_cft.set_xlim(t_wav[0], t_wav[-1])
+            ax_cft.set_ylim(bottom=0)
+            ax_cft.set_ylabel(label, fontsize=8)
+            ax_cft.tick_params(axis='both', labelsize=8)
+
+            if row_idx == 0:
+                title = "Classical STA/LTA\n(raw amplitude)" if method_key == 'classical' \
+                        else "Groult spectrogram STA/LTA\n(spectral energy)"
+                ax_cft.set_title(title, fontsize=10, fontweight='bold', color=col)
+                ax_cft.legend(
+                    handles=[
+                        Line2D([0], [0], color='red', linestyle='--', linewidth=1.2,
+                               label=f'ON = {cft_thr_on}'),
+                        Line2D([0], [0], color='darkorange', linestyle=':', linewidth=1.0,
+                               label=f'OFF = {cft_thr_off}'),
+                    ],
+                    loc='upper right', fontsize=7.5, framealpha=0.85,
+                )
+
+    for ax in axes[-1]:
+        ax.set_xlabel("Time (s) relative to window start", fontsize=10, fontweight='bold')
+
+    legend_elements = [
+        Line2D([0], [0], color='dimgrey', linestyle='--', linewidth=1.5, label='Origin time'),
+        Line2D([0], [0], color='red',  linewidth=1.5, label='P pick'),
+        Line2D([0], [0], color='blue', linewidth=1.5, label='S pick'),
+        Patch(facecolor=COL_CLASSICAL, alpha=0.30, label='Classical STA/LTA window'),
+        Patch(facecolor=COL_GROULT,    alpha=0.30, label='Groult spectrogram STA/LTA window'),
+    ]
+    axes[0][0].legend(handles=legend_elements, loc='upper left', fontsize=8,
+                      framealpha=0.92, edgecolor='grey', ncol=2)
+
+    plt.tight_layout()
+
+    safe_time = str(t_orig)[:19].replace(":", "-").replace("T", "_")
+    safe_type = etype.replace(" ", "_")
+    fname     = f"method_comparison_{safe_type}_{safe_time}.png"
     out_path  = os.path.join(run_dir, fname)
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
