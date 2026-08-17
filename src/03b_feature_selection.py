@@ -12,10 +12,10 @@ Goal
 
 Pipeline
 --------
-  1. Load the catalog_windows CSV (output of script 04a)
-  2. Correlation analysis: Pearson and Spearman 99×99 heatmaps, cluster extraction (group features with |r| > CORR_THRESHOLD into clusters)
-  3. HGB feature importances: train HGB (same config as 06b) on all 99 features, rank them by permutation importance (how much Macro F1 drops when each feature is shuffled on the test set)
-  4. Feature subset experiments: for each subset (top-20 / top-40 / top-60 / all-99 / cluster-representatives), train HGB with event-stratified split + SMOTE → compare precision / recall / F1
+  1. Load the catalog_windows CSV (output of script 04a), optionally add noise/regional
+  2. Correlation analysis: Pearson and Spearman N×N heatmaps (N=99 or 103), cluster extraction (group features with |r| > CORR_THRESHOLD into clusters)
+  3. HGB feature importances: train HGB (same config as 06b) on all features, rank them by permutation importance (how much Macro F1 drops when each feature is shuffled on the test set)
+  4. Feature subset experiments: for each subset (top-20 / top-40 / top-60 / all / cluster-representatives), train HGB with event-stratified split + SMOTE → compare precision / recall / F1
   5. PCA exploration: cumulative explained variance, loadings of the first 3 principal components
 
 Output
@@ -42,11 +42,19 @@ Output
 # -- Input CSV (output of script 04a) -----------------------------------------
 CSV_PATH = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent+3C\catalog_windows_20260708_174019.csv"
 
+# -- Noise CSV (output of script 04d, optional 4th class) ----------------------
+# Set to a 04d `noise_windows_<stamp>.csv` to add the "noise" class
+NOISE_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04d_noise_window_extraction\run_20260803_174514\noise_windows_20260803_174514.csv"
+
+# -- Regional CSV (output of script 04c, optional 5th class) -------------------
+# Set to a 04c `regional_windows_<stamp>.csv` to add the "regional" class
+REGIONAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04c_regional_EQ_extraction\run_20260805_135512\regional_windows_20260805_135512.csv"
+
 # -- Output directory ----------------------------------------------------------
 OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03b_feature_selection"
 
 # -- Classes to keep -----------------------------------------------------------
-TARGET_CLASSES = ["earthquake", "rockslide", "ice quake"]
+TARGET_CLASSES = ["earthquake", "regional", "rockslide", "ice quake", "noise"]
 
 # -- Quality filtering ---------------------------------------------------------
 FILTER_QUALITY = True   # True → keep only quality_ok == True rows
@@ -158,6 +166,33 @@ if not os.path.isfile(CSV_PATH):
 df_raw = pd.read_csv(CSV_PATH)
 rename_legacy_columns(df_raw)
 print(f"Loaded {len(df_raw):,} rows × {df_raw.shape[1]} columns.")
+
+# -- Optional 4th class: noise (output of 04d) --------------------------------
+if NOISE_CSV is not None:
+    if os.path.isfile(NOISE_CSV):
+        df_noise = pd.read_csv(NOISE_CSV)
+        rename_legacy_columns(df_noise)
+        print(f"Loaded {len(df_noise):,} noise rows × {df_noise.shape[1]} columns "
+              f"from {os.path.basename(NOISE_CSV)}.")
+        df_raw = pd.concat([df_raw, df_noise], ignore_index=True)
+    else:
+        print(f"[WARN] NOISE_CSV not found: {NOISE_CSV} — continuing without the noise class.")
+
+# -- Optional 5th class: regional (output of 04c) ------------------------------
+# Same position as noise above (before the class/quality filter below) — this
+# script trusts each row's own precomputed `quality_ok` column (see Section 3
+# quality filter), and 04c bakes that column correctly with the current
+# pipeline-wide gate, so no before/after-gate ordering distinction is needed
+# here the way it is in 06b/06c (which recompute the SNR mask explicitly).
+if REGIONAL_CSV is not None:
+    if os.path.isfile(REGIONAL_CSV):
+        df_regional = pd.read_csv(REGIONAL_CSV)
+        rename_legacy_columns(df_regional)
+        print(f"Loaded {len(df_regional):,} regional rows × {df_regional.shape[1]} columns "
+              f"from {os.path.basename(REGIONAL_CSV)}.")
+        df_raw = pd.concat([df_raw, df_regional], ignore_index=True)
+    else:
+        print(f"[WARN] REGIONAL_CSV not found: {REGIONAL_CSV} — continuing without the regional class.")
 
 # -- Keep only target classes -------------------------------------------------
 df_raw = df_raw[df_raw["event_type"].isin(TARGET_CLASSES)].copy()
@@ -683,6 +718,8 @@ class_colors = {
     "earthquake": "#2166ac",
     "rockslide" : "#d6604d",
     "ice quake" : "#4dac26",
+    "noise"     : "#7f7f7f",
+    "regional"  : "#9467bd",
 }
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))

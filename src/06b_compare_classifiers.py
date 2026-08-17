@@ -44,9 +44,9 @@ REGIONAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\projec
 OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\06b_compare_classifiers"
 
 # -- Classes -------------------------------------------------------------------
-TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise", "regional"]
-CLASS_ORDER    = ["earthquake", "rockslide", "ice quake", "noise", "regional"]   # table / figure order
-CLASS_ABBR     = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq", "noise": "no", "regional": "re"}
+TARGET_CLASSES = ["earthquake", "regional", "rockslide", "ice quake", "noise"]
+CLASS_ORDER    = ["earthquake", "regional", "rockslide", "ice quake", "noise"]   # table / figure order
+CLASS_ABBR     = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq", "noise": "no"}
 
 # -- Feature set ---------------------------------------------------------------
 # TOP_N_FEATURES = None  → use ALL feature columns present in the catalog CSV

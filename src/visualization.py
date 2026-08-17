@@ -29,6 +29,16 @@ All figure-generating functions used across the pipeline scripts:
   - plot_snr_quality_by_class()  : SNR/quality violin plots with gate threshold  (script 08)
   - plot_method_comparison_windowing() : classical vs spectrogram STA/LTA, side
                                     by side on the same stations/event (script 08b)
+  - plot_spectrogram_rgb_example() : one CNN training input rendered as a single
+                                    R=Z/G=N/B=E composite image             (script 08c)
+  - plot_gradcam_example()       : raw Z-channel spectrogram + Grad-CAM overlay,
+                                    one CNN prediction                      (script 08c)
+
+NOTE: this module has NO TensorFlow dependency, on purpose -- scripts 01-06/08a/08b
+never need it installed just to import visualization.py. 08c computes Grad-CAM
+itself (TF-specific: gradient tape, conv-layer activations) and only ever hands
+plot_gradcam_example a plain numpy array (the already-computed CAM), never a
+TF tensor or a Keras model.
 """
 
 import os
@@ -38,6 +48,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from obspy import UTCDateTime
 from scipy.signal import welch, butter, filtfilt, spectrogram
+from scipy.interpolate import CubicSpline
 
 
 # =============================================================================
@@ -2120,4 +2131,136 @@ def plot_noise_diagnostic(tr_wave, cft, freq_axis, times_spec, spec_db,
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"    [SAVED] {fname}")
+
+
+
+# =============================================================================
+# CNN CLASSIFIER REPORT FIGURES (script 08c)
+# =============================================================================
+
+def _percentile_clip_to_unit(channel_db, pctl_lo, pctl_hi):
+    """Percentile-clip + min-max scale one 2-D dB array to [0, 1]."""
+    lo, hi = np.percentile(channel_db, [pctl_lo, pctl_hi])
+    if hi <= lo:
+        hi = lo + 1.0
+    return np.clip((channel_db - lo) / (hi - lo), 0.0, 1.0)
+
+
+def plot_spectrogram_rgb_example(freq_axis, time_axis, image_db, title_lines, out_path,
+                                  pctl_lo=1.0, pctl_hi=99.0):
+    """
+    Render one CNN training sample -- a (n_freq, n_time, 3) [Z, N, E] dB
+    spectrogram image, exactly as 07a_spectrogram_dataset_build.py builds it
+    and feeds it to the CNN -- as a single RGB-composite figure (R=Z, G=N,
+    B=E) instead of three separate grayscale panels, so it reads as "the
+    object the CNN actually sees" rather than three disconnected plots.
+
+    Each channel is percentile-clipped and min-max scaled to [0, 1]
+    INDEPENDENTLY before stacking into RGB -- Z/N/E can sit at very different
+    absolute dB levels (station orientation, ground coupling), so a single
+    shared scale across all three would wash out whichever channel happens to
+    be weaker. This is a display-only transform; it has no effect on what the
+    CNN was actually trained on (that used the (mean, std) z-score in
+    normalization_stats.npz, not this per-image percentile clip).
+
+    Parameters
+    ----------
+    freq_axis   : 1D array [Hz] — same for every sample (07a's freq_axis.npy)
+    time_axis   : 1D array [s]  — same for every sample (07a's time_axis.npy)
+    image_db    : 3D array (n_freq, n_time, 3), dB-scaled, channel order [Z, N, E]
+    title_lines : tuple of str (line1, line2)
+    out_path    : str — full path to save the PNG
+    pctl_lo/hi  : float — percentile clip bounds per channel (default 1-99)
+
+    Returns
+    -------
+    out_path : str
+    """
+    rgb = np.stack(
+        [_percentile_clip_to_unit(image_db[:, :, c], pctl_lo, pctl_hi) for c in range(3)],
+        axis=-1,
+    )
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.imshow(
+        rgb, aspect='auto', origin='lower',
+        extent=[time_axis[0], time_axis[-1], freq_axis[0], freq_axis[-1]],
+    )
+    ax.set_xlabel('Time (s)', fontsize=9)
+    ax.set_ylabel('Frequency (Hz)', fontsize=9)
+    ax.tick_params(labelsize=8)
+    ax.text(
+        0.01, 0.99, 'R = Z   G = N   B = E', transform=ax.transAxes,
+        ha='left', va='top', fontsize=7.5, color='white', fontweight='bold',
+        bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.45, edgecolor='none'),
+    )
+
+    line1, line2 = title_lines
+    fig.suptitle(f"{line1}\n{line2}", fontsize=10, fontweight='bold', y=0.98)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return out_path
+
+
+def plot_gradcam_example(freq_axis, time_axis, z_channel_db, cam, title_lines, out_path,
+                         cam_cmap='jet', cam_alpha=0.45):
+    """
+    Two-panel figure for one CNN prediction: raw Z-channel spectrogram (left)
+    and the same panel with a Grad-CAM overlay (right) -- shows which
+    time-frequency region of the input drove that prediction. Same visual
+    layout as 07b_train_cnn_classifier_colab.ipynb's Cell 14, generalized to
+    an arbitrary number of examples per class instead of exactly one.
+
+    This function is pure matplotlib/numpy -- the CAM array must already be
+    computed (0-1 normalized, shape (n_freq, n_time)) by the caller, which is
+    where the TensorFlow-specific work (gradient tape over the last Conv2D
+    layer's activations) lives. Keeps this module importable without
+    TensorFlow installed.
+
+    Parameters
+    ----------
+    freq_axis    : 1D array [Hz]
+    time_axis    : 1D array [s]
+    z_channel_db : 2D array (n_freq, n_time) — raw (unnormalized) Z-channel
+                   dB spectrogram, for display only
+    cam          : 2D array (n_freq, n_time), values in [0, 1] — the
+                   already-computed, already-normalized Grad-CAM heatmap
+    title_lines  : tuple of str (line1, line2)
+    out_path     : str — full path to save the PNG
+    cam_cmap     : str — colormap for the CAM overlay
+    cam_alpha    : float — overlay transparency
+
+    Returns
+    -------
+    out_path : str
+    """
+    extent = [time_axis[0], time_axis[-1], freq_axis[0], freq_axis[-1]]
+
+    fig, (ax_raw, ax_cam) = plt.subplots(1, 2, figsize=(10, 4.5))
+
+    ax_raw.imshow(z_channel_db, aspect='auto', origin='lower', cmap='viridis', extent=extent)
+    ax_raw.set_title('Z channel (raw dB)', fontsize=10)
+    ax_raw.set_xlabel('Time (s)', fontsize=9)
+    ax_raw.set_ylabel('Frequency (Hz)', fontsize=9)
+    ax_raw.tick_params(labelsize=8)
+
+    ax_cam.imshow(z_channel_db, aspect='auto', origin='lower', cmap='gray', extent=extent)
+    im = ax_cam.imshow(cam, aspect='auto', origin='lower', cmap=cam_cmap,
+                       alpha=cam_alpha, extent=extent)
+    ax_cam.set_title('Grad-CAM overlay', fontsize=10)
+    ax_cam.set_xlabel('Time (s)', fontsize=9)
+    ax_cam.tick_params(labelsize=8)
+    cbar = fig.colorbar(im, ax=ax_cam, shrink=0.85, pad=0.02)
+    cbar.set_label('Grad-CAM activation', fontsize=8)
+    cbar.ax.tick_params(labelsize=7)
+
+    line1, line2 = title_lines
+    fig.suptitle(f"{line1}\n{line2}", fontsize=10, fontweight='bold', y=1.02)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    return out_path
     return out_path
