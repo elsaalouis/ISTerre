@@ -63,7 +63,7 @@ ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
 OUTPUT_DIR  = "/data/failles/louisels/project/results/outputs_07a"
 
 # -- Classes to keep -------------------------------------------------------------
-TARGET_CLASSES = ["earthquake", "rockslide", "ice quake", "noise", "regional"]
+TARGET_CLASSES = ["earthquake", "regional", "rockslide", "ice quake", "noise"]
 
 # -- Quality filtering -----------------------------------------------------------
 FILTER_QUALITY      = True
@@ -71,10 +71,19 @@ SNR_MIN             = 1.70    # 05b Tier 2 — metric 'SNR'
 SNR_FULL_MEDIAN_MIN = 1.99    # 05b Tier 2 — metric 'SNR_full_median'
 
 # -- Waveform extraction: fixed window anchored on the (kurtosis-refined) onset --
-# det_starttime in the CSV is already the refined onset from 04a. The window is [onset - WINDOW_PRE_S, onset + WINDOW_POST_S]
-# ADAPT THESE to the data: check the det_duration_s distribution in the CSV first 
-# -- WINDOW_POST_S must comfortably cover the longest events (rockslide codas in particular can run long) or the spectrogram will cut off real signal
-TARGET_FS      = 100     # [Hz] common resampling rate for every trace
+#    True:   extend to 80 Hz, only meaningful for stations natively sampled >= 200 Hz (~28% of station/channels around Mont-Blanc)
+#    False:  keep 45 Hz baseline, include more stations around Mont-Blanc massif
+HIGH_FREQ_MODE = True
+
+if HIGH_FREQ_MODE:
+    TARGET_FS     = 200     # [Hz] -- reaches FREQ_MAX_KEEP=80 Hz; catalog filtered to natively >=200 Hz stations only, see Section 3
+    SPEC_NFFT     = 512     # nfft >= nperseg (400 samples @ 200Hz); same 0.39 Hz/bin resolution as the baseline below
+    FREQ_MAX_KEEP = 80.0    # [Hz] drop bins above this (avoid Nyquist-edge artifacts at fs=200)
+else:
+    TARGET_FS     = 100     # [Hz] validated baseline -- matches the 3 runs that gave macro F1 = 0.80 +/- 0.02
+    SPEC_NFFT     = 256
+    FREQ_MAX_KEEP = 45.0    # [Hz] drop bins above this (avoid Nyquist-edge artifacts at fs=100)
+
 WINDOW_PRE_S   = 5       # [s] seconds of window BEFORE the onset
 WINDOW_POST_S  = 95      # [s] seconds of window AFTER the onset
 WINDOW_S       = WINDOW_PRE_S + WINDOW_POST_S
@@ -89,8 +98,6 @@ HORIZONTAL_SUFFIXES = [("N", "E"), ("2", "1")]
 # Fixed in samples (not seconds) because TARGET_FS is constant -> every image comes out with exactly the same (n_freq, n_time) shape, no resizing needed
 SPEC_NPERSEG_S = 2.0     # [s] STFT segment length
 SPEC_NOVERLAP_FRAC = 0.75   # fraction of SPEC_NPERSEG_S overlapping between segments
-SPEC_NFFT      = 256     # zero-padded FFT length (>= nperseg for frequency resolution)
-FREQ_MAX_KEEP  = 45.0    # [Hz] drop bins above this (avoid Nyquist-edge artifacts at fs=100)
 
 SPEC_NPERSEG   = int(SPEC_NPERSEG_S * TARGET_FS)
 SPEC_NOVERLAP  = int(SPEC_NPERSEG * SPEC_NOVERLAP_FRAC)
@@ -280,6 +287,65 @@ if inventory is None:
 
 print(f"\nInventory ready: {len(networks) - len(failed_networks)}/{len(networks)} "
       f"network(s) loaded.")
+
+# -- STEP 1c — Native channel sample rate check (cheap, from inventory metadata only,
+# no SDS waveform fetch needed) -- catches the case where TARGET_FS/FREQ_MAX_KEEP asks
+# for frequency content a channel was never physically sampled to capture, BEFORE
+# spending time on the full extraction loop below.
+print(f"\n{'='*65}")
+print(f"  STEP 1c — Checking native channel sample rates (TARGET_FS={TARGET_FS} Hz)")
+print(f"{'='*65}")
+
+unique_chans = df[["network", "station", "channel"]].drop_duplicates()
+native_rates = {}
+for _, r in unique_chans.iterrows():
+    try:
+        sel = inventory.select(network=r["network"], station=r["station"], channel=r["channel"])
+        chans_found = [c for net in sel.networks for sta in net.stations for c in sta.channels]
+        if chans_found:
+            native_rates[(r["network"], r["station"], r["channel"])] = chans_found[0].sample_rate
+    except Exception:
+        pass
+
+if native_rates:
+    for (net, sta, chan), sr in sorted(native_rates.items()):
+        flag = ("  <-- BELOW TARGET_FS: resample() will only interpolate here, "
+                 "no real energy above this channel's true Nyquist") if sr < TARGET_FS else ""
+        print(f"  {net}.{sta}.{chan:<4s}  native = {sr:6.1f} Hz{flag}")
+    min_native = min(native_rates.values())
+    if min_native < TARGET_FS:
+        print(f"\n[WARN] Some channel(s) have native sample rate < TARGET_FS={TARGET_FS} Hz. "
+              f"FREQ_MAX_KEEP={FREQ_MAX_KEEP} Hz will show near-empty bins for those channels "
+              f"above their true Nyquist (native_rate / 2). Lowest native rate seen: "
+              f"{min_native:.1f} Hz (true Nyquist {min_native/2:.1f} Hz). Check this is "
+              f"expected -- e.g. only a minority of stations, or a class you don't care about "
+              f"resolving above ~{min_native/2:.0f} Hz -- before running the full extraction.")
+    else:
+        print(f"\n[OK] Every channel's native sample rate >= TARGET_FS={TARGET_FS} Hz -- "
+              f"resampling will not need to fabricate high-frequency content.")
+else:
+    print("[WARN] Could not resolve native sample rates from inventory metadata for any "
+          "channel in the catalog -- skipping this check (extraction will proceed regardless).")
+
+# -- HIGH_FREQ_MODE station filter -- keep only stations natively sampled >= TARGET_FS,
+# so every image's FREQ_MAX_KEEP=80 Hz content is real, not interpolated filler that
+# could let the CNN key off network/station identity instead of the actual signal.
+if HIGH_FREQ_MODE:
+    keep_mask = df.apply(
+        lambda r: native_rates.get((r["network"], r["station"], r["channel"]), 0) >= TARGET_FS,
+        axis=1,
+    )
+    n_before = len(df)
+    df = df[keep_mask].reset_index(drop=True)
+    print(f"\n[HIGH_FREQ_MODE] Restricting catalog to stations natively >= {TARGET_FS} Hz: "
+          f"{len(df):,}/{n_before:,} rows kept ({n_before - len(df):,} dropped).")
+    print("Class distribution after high-frequency station filter:")
+    for cls, n in df["event_type"].value_counts().items():
+        print(f"  {cls:<20s}  {n:6,} rows")
+    if len(df) == 0:
+        print("\n[ERROR] No rows left after the HIGH_FREQ_MODE station filter. Exiting.")
+        log_file.close()
+        sys.exit(1)
 
 
 

@@ -11,43 +11,6 @@ End-to-end validation of the CNN branch (07a/07b) on a RAW CONTINUOUS STREAM,
 never chained before on data the pipeline hasn't already seen as pre-curated
 catalog windows.
 
-WHY THIS SCRIPT NOW USES STA/LTA DETECTION (v2 -- it didn't at first)
-------------------------------------------------------------------------
-The first version of this script deliberately skipped detection entirely: it
-computed a spectrogram on a fixed-hop continuous sliding window over the WHOLE
-raw stream and classified every window directly, letting the CNN's 'noise'
-class do the separating. In practice this produced predictions dominated by
-'rockslide' (83-93%) instead of the expected mostly-noise distribution -- a
-systematic bias, not just noisy/uncertain predictions. Two compounding causes:
-
-  1. Onset-alignment mismatch: 07a/07b only ever trained the CNN on windows
-     anchored at [-WINDOW_PRE_S, +WINDOW_POST_S] around a real (kurtosis-
-     refined) onset -- the true onset always sits ~5s into the window. A
-     continuous sliding window has no such anchoring; the model was being fed
-     inputs unlike anything it saw in training.
-  2. Preprocessing mismatch: v1's full-day response removal used the
-     pre_filt-based approach from preprocessing.preprocess_day() (needed to
-     avoid amplifying broadband noise across 24h), but 07a's actual per-EVENT
-     training windows were built with plain remove_response(pre_filt=None,
-     water_level=60) on short ~100s segments -- a materially different
-     frequency response than what the model was trained to normalize.
-
-v2 fixes both by going back to a real detector (Groult et al. 2026
-spectrogram-based STA/LTA, same method + parameters as
-02b_spectrogram_sta_lta_detection.py's catalog-less scanner) to find candidate
-onsets, and then building each CNN input window EXACTLY the way 07a does for
-training data: a fresh short-window fetch + remove_response(pre_filt=None,
-water_level=60), anchored so the onset sits ~WINDOW_PRE_S seconds into the
-window. Spectrograms are only computed for detected windows now, not the
-entire continuous trace -- far cheaper too.
-
-Note on the 'noise' class in this design: since STA/LTA only fires on
-above-threshold energy bursts, most ambient background is filtered out before
-the CNN ever sees it. 'noise' predictions here mostly mean "STA/LTA triggered
-on something that isn't a real event" (a spurious/cultural trigger), not
-"ambient background in general" the way 04d's training 'noise' class was
-built. Worth keeping in mind when reading the class distribution.
-
 TWO PHASES, RUN SEPARATELY -- why
 -----------------------------------
 The ISTerre cluster's Python cannot get a clean TensorFlow install: the
@@ -75,7 +38,7 @@ Typical usage
   1. On the cluster : RUN_EXTRACTION=True,  RUN_CLASSIFICATION=False
                        -> produces EXTRACTION_DIR/packed/*.npz
   2. Copy EXTRACTION_DIR (or at least its packed/ subfolder) to your local
-     machine, e.g. into the OneDrive results folder.
+     machine, e.g. into the local results folder.
   3. Locally         : RUN_EXTRACTION=False, RUN_CLASSIFICATION=True
                        EXTRACTION_DIR pointed at the local copy
                        -> produces predictions_<month>.csv + review images
@@ -105,59 +68,56 @@ Output layout
 # =============================================================================
 
 # -- Run mode -- see the module docstring "TWO PHASES" section for why -----------
-RUN_EXTRACTION     = True    # Phase 1 -- cluster: fetch/preprocess/window/spectrogram, no TF import
+RUN_EXTRACTION     = False    # Phase 1 -- cluster: fetch/preprocess/window/spectrogram, no TF import
 RUN_CLASSIFICATION = True    # Phase 2 -- local: load packed spectrograms + model, classify
-# (both True together still works for a small local-only smoke test, if you
-# ever have SDS access AND a working TensorFlow in the same place)
 
 # -- Interchange directory between the two phases ---------------------------------
-# Phase 1 writes packed per-station-day spectrogram archives here (under
-# EXTRACTION_DIR/packed/). Copy that folder from the cluster to your local
-# machine, then repoint EXTRACTION_DIR at the local copy before Phase 2.
-EXTRACTION_DIR = "/data/failles/louisels/project/results/outputs_09a_packed"
+# Phase 1 writes packed per-station-day spectrogram archives here
+EXTRACTION_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\09a_continuous_data_test"
 
 # -- Paths (Phase 1 only -- cluster) ----------------------------------------------
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
 
 # -- Output for THIS invocation's own log + (Phase 2 only) predictions/review imgs -
-OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_09a"
+OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\09a_continuous_data_test"
 
 # -- Trained CNN model (Phase 2 only -- local, downloaded from Google Drive) -----
-# From run_log_20260812_130248 -- a representative 5-class custom-CNN result
-# (acc 91%, macro F1 0.82), NOT cherry-picked as the single best of the 3 repeats.
-# MUST come from the SAME run as NORM_STATS_PATH below -- mixing model weights
-# from one run with normalization stats from another will silently corrupt
-# every prediction. Adjust these two paths to wherever you put them locally.
-MODEL_PATH      = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\cnn_models\run_20260812_130248\spectrogram_cnn_final.keras"
-NORM_STATS_PATH = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\cnn_models\run_20260812_130248\normalization_stats.npz"
+MODEL_PATH      = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\07b_cnn_classifier\5classes_80Hz_20260818_100256\spectrogram_cnn_final.keras"
+NORM_STATS_PATH = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\07b_cnn_classifier\5classes_80Hz_20260818_100256\normalization_stats.npz"
 
-# -- Class order -- MUST exactly match CLASS_NAMES in 07b's Cell 3 at the time ---
-# this model was trained (baked into the Dense(5) output index order; get this
-# wrong and every prediction is silently mislabeled). Confirmed against the
-# "Label encoding" line printed at the top of run_log_20260812_130248.txt:
-#   {'earthquake': 0, 'regional': 1, 'rockslide': 2, 'ice quake': 3, 'noise': 4}
+# -- Class order ------------------------------------------------------------------
+# MUST exactly match CLASS_NAMES in 07b's Cell 3 at the time this model was trained
 CLASS_NAMES = ['earthquake', 'regional', 'rockslide', 'ice quake', 'noise']
 
-# -- Spatial bounding box (Mont Blanc massif -- same box used everywhere else
-#    in this project: 01/02b/03a/04a/04c/04d/06c/08a/08b) -- Phase 1 only ---------
+# -- Spatial bounding box (Mont Blanc massif --------------------------------------
 LAT_MIN, LAT_MAX = 45.5, 46.0
 LON_MIN, LON_MAX = 6.5,  7.2
 
-# -- Channel selection (Phase 1 only) ----------------------------------------------
+# -- Channel selection (Phase 1 only) ---------------------------------------------
 Z_CHANNEL = "??Z"
 HORIZONTAL_SUFFIXES = [("N", "E"), ("2", "1")]   # same fallback convention as 07a
 
-# -- Months to scan (Phase 1 only) -- EDIT to your exact dates; each entry is
-# [T_START, T_END) (T_END exclusive, ISO date strings). Confirmed: SDS archive
-# has continuous data reaching 2026 -- no coverage concern for these. --------------
+# -- Months to scan (Phase 1 only) ------------------------------------------------
 MONTHS_TO_SCAN = [
     ("2025-01-01", "2025-02-01"),   # January
-    ("2025-07-01", "2025-08-01"),   # a summer month
+    ("2025-07-01", "2025-08-01"),   # July
 ]
 
+# -- High-frequency mode -- MUST match whatever 07a/07b used to build+train the model MODEL_PATH points at below
+# extend the spectrograms frequency window from 45 Hz (False -> baseline) to 80 Hz (True -> high freq mode)
+HIGH_FREQ_MODE = True
+
+if HIGH_FREQ_MODE:
+    TARGET_FS     = 200     # [Hz] reaches FREQ_MAX_KEEP=80 Hz
+    SPEC_NFFT     = 512     # nfft >= nperseg (400 samples @ 200Hz); same 0.39 Hz/bin resolution as the baseline below
+    FREQ_MAX_KEEP = 80.0    # [Hz]
+else:
+    TARGET_FS     = 100     # [Hz] validated baseline
+    SPEC_NFFT     = 256
+    FREQ_MAX_KEEP = 45.0    # [Hz]
+
 # -- Window / spectrogram parameters -- MUST match 07a EXACTLY (same trained model) --
-TARGET_FS      = 100
 WINDOW_PRE_S   = 5      # kept for documentation only -- there is no onset here,
 WINDOW_POST_S  = 95     # window length is just WINDOW_PRE_S + WINDOW_POST_S = 100 s
 WINDOW_S       = WINDOW_PRE_S + WINDOW_POST_S
@@ -165,18 +125,12 @@ NT             = int(WINDOW_S * TARGET_FS)
 
 SPEC_NPERSEG_S      = 2.0
 SPEC_NOVERLAP_FRAC  = 0.75
-SPEC_NFFT           = 256
-FREQ_MAX_KEEP       = 45.0
 SPEC_NPERSEG        = int(SPEC_NPERSEG_S * TARGET_FS)
 SPEC_NOVERLAP       = int(SPEC_NPERSEG * SPEC_NOVERLAP_FRAC)
 
 # -- Detection: spectrogram-based STA/LTA (Groult et al. 2026), Phase 1 only ------
-# Same method + parameters as 02b_spectrogram_sta_lta_detection.py's catalog-less
-# scanner -- proven values already used elsewhere in this project, not re-tuned
-# here. Spectrograms are now only built for detected events, not every window,
-# so this drives both compute AND storage cost (far less of either than v1).
 DET_FREQ_MIN  = 1.0
-DET_FREQ_MAX  = 20.0    # covers ice quakes and quarry blasts with energy above 10 Hz
+DET_FREQ_MAX  = 20.0    # covers ice quakes with energy above 10 Hz
 DET_NSTA      = 1       # STA window length [s]
 DET_NLTA      = 15      # LTA window length [s]
 DET_THR_ON    = 8.0     # STA/LTA ratio to trigger event onset
@@ -189,36 +143,34 @@ DET_MIN_EVENT_DUR_SEC = 5.0     # discard detections shorter than this
 DET_MIN_TRACE_SEC     = 120.0   # minimum day-segment length to attempt detection at all
 
 # -- Packed spectrogram storage dtype (Phase 1 writes / Phase 2 reads) ------------
-PACK_DTYPE = "float16"   # halves size vs float32, same convention as
-                         # 07a_consolidate_for_colab.py's PACK_DTYPE
+PACK_DTYPE = "float16"   # halves size vs float32, same convention as 07a_consolidate_for_colab.py's PACK_DTYPE
+
+# -- Consolidation (Phase 1 only) -- combine one month's per-station-day packed
+# files into ONE compressed archive, same idea as 07a_consolidate_for_colab.py.
+# Per-station-day files are kept too (Phase 1's skip/resume logic depends on
+# them existing) -- only the consolidated file needs to be copied off the cluster.
+CONSOLIDATE_PER_MONTH = True
 
 # -- Classification batch size (matches BATCH_SIZE used in 07b training) ----------
 BATCH_SIZE = 128
 
-# -- Review image saving policy (Phase 2 only -- now that the predicted class is
-#    actually known, unlike Phase 1 which must keep everything) -------------------
+# -- Review image saving policy (Phase 2 only) ------------------------------------
 SAVE_IMAGES_FOR_NONNOISE = True    # save every window NOT predicted as 'noise'
-SAVE_EVERY_NTH_NOISE     = 2000    # + 1 in every N noise-predicted windows, as a
-                                    # background sanity sample (0 = save none)
+SAVE_EVERY_NTH_NOISE     = 5      
 
-# -- Review gallery (Phase 2 only) -- render a sample of the saved review images
-#    as PNGs (RGB composite, R=Z G=N B=E), so you can actually look at what the
-#    model is calling each class without opening .npz files by hand ------------
+# -- Review gallery (Phase 2 only) -------------------------------------------------
 PLOT_REVIEW_GALLERY = True
 N_GALLERY_PER_CLASS = 10    # how many examples per predicted class to plot
-                            # (0 = skip that class); picks the HIGHEST-CONFIDENCE
-                            # examples first (highest max-probability), so you're
-                            # looking at the model's clearest calls, not a random draw
+
+# -- Probability summary plot (Phase 2 only) ----------------------------------------
+PLOT_PROBABILITY_SUMMARY = True   # confidence boxplot + mean-probability-vector heatmap per month
 
 # -- Checkpointing (Phase 1: station-days, Phase 2: packed files) -----------------
 CHECKPOINT_EVERY_STATION_DAYS = 5
 CHECKPOINT_EVERY_PACKED_FILES = 20
 
 # -- SMOKE TEST (Phase 1 only) -- strongly recommended before the full run --------
-# Restricts every month to MAX_DAYS_SMOKE_TEST day(s) and MAX_STATIONS_SMOKE_TEST
-# station(s), so the printed timing + storage estimate reflects a real, small run
-# you can extrapolate from before committing hours of cluster time / hundreds of
-# GB of storage to the full MONTHS_TO_SCAN.
+# Restricts every month to MAX_DAYS_SMOKE_TEST day(s) and MAX_STATIONS_SMOKE_TEST station(s)
 SMOKE_TEST              = True
 MAX_DAYS_SMOKE_TEST     = 1
 MAX_STATIONS_SMOKE_TEST = 1
@@ -251,7 +203,7 @@ log_file, log_path = setup_logging(
                 f"EXTRACTION_DIR: {EXTRACTION_DIR}  |  DET_THR_ON={DET_THR_ON}  |  SMOKE_TEST={SMOKE_TEST}")
 )
 
-packed_dir = os.path.join(EXTRACTION_DIR, "packed")
+packed_dir = os.path.join(EXTRACTION_DIR)
 os.makedirs(packed_dir, exist_ok=True)
 
 if not RUN_EXTRACTION and not RUN_CLASSIFICATION:
@@ -292,6 +244,28 @@ if RUN_EXTRACTION:
         sys.exit(1)
 
     station_list = build_station_list_from_inventory(inventory)
+
+    # -- HIGH_FREQ_MODE station filter -- keep only stations natively sampled >=
+    # TARGET_FS, same reasoning as 07a's catalog filter (see Section 1 comment).
+    if HIGH_FREQ_MODE:
+        n_before = len(station_list)
+        filtered = []
+        for net, sta, loc, chan in station_list:
+            try:
+                sel = inventory.select(network=net, station=sta, channel=chan)
+                chans_found = [c for n_ in sel.networks for s_ in n_.stations for c in s_.channels]
+                sr = chans_found[0].sample_rate if chans_found else 0
+            except Exception:
+                sr = 0
+            if sr >= TARGET_FS:
+                filtered.append((net, sta, loc, chan))
+            else:
+                print(f"  [SKIP] {net}.{sta}.{loc}.{chan} — native {sr:.0f} Hz < "
+                      f"TARGET_FS={TARGET_FS} Hz (HIGH_FREQ_MODE)")
+        station_list = filtered
+        print(f"\n[HIGH_FREQ_MODE] Station filter: {len(station_list)}/{n_before} "
+              f"station(s) natively >= {TARGET_FS} Hz kept.")
+
     if SMOKE_TEST:
         station_list = station_list[:MAX_STATIONS_SMOKE_TEST]
 
@@ -331,12 +305,17 @@ if RUN_CLASSIFICATION:
     review_dir = os.path.join(RUN_DIR, "review_images")
     os.makedirs(review_dir, exist_ok=True)
 
-    if PLOT_REVIEW_GALLERY:
+    if PLOT_REVIEW_GALLERY or PLOT_PROBABILITY_SUMMARY:
         from run_setup import set_matplotlib_defaults
-        from visualization import plot_spectrogram_rgb_example
+        import matplotlib.pyplot as plt
         set_matplotlib_defaults()
-        gallery_dir = os.path.join(RUN_DIR, "review_gallery")
-        os.makedirs(gallery_dir, exist_ok=True)
+        if PLOT_REVIEW_GALLERY:
+            from visualization import plot_spectrogram_rgb_example
+            gallery_dir = os.path.join(RUN_DIR, "review_gallery")
+            os.makedirs(gallery_dir, exist_ok=True)
+        if PLOT_PROBABILITY_SUMMARY:
+            summary_dir = os.path.join(RUN_DIR, "probability_summary")
+            os.makedirs(summary_dir, exist_ok=True)
 
 
 
@@ -541,6 +520,134 @@ def _emit_row(meta, img_f32, label_idx, proba, rows_list):
     rows_list.append(row)
 
 
+def consolidate_month_packed_files(packed_dir, month_tag):
+    """
+    Phase 1 only, run once per month right after that month's station-day
+    loop finishes. Globs every per-station-day spec_<net>_<sta>_<YYYYMMDD>.npz
+    in packed_dir whose "day" field falls in this month, and concatenates
+    them into ONE compressed archive: packed_dir/consolidated_<month_tag>.npz
+    -- same idea as 07a_consolidate_for_colab.py bundling train/test/val into
+    single files, so there's one thing to copy off the cluster instead of one
+    file per station-day. Per-station-day scalar metadata (network/station/
+    location/channel/day) becomes a per-window array here so Phase 2 can
+    still tell which detection came from which station-day. The individual
+    per-station-day files are left in place -- Phase 1's skip/resume logic
+    (the `if os.path.isfile(out_path)` check) depends on them existing.
+    """
+    candidates = sorted(glob.glob(os.path.join(packed_dir, "spec_*.npz")))
+    imgs, ws, we, snr_v, snr_fm, nets, stas, locs, chans, days = [], [], [], [], [], [], [], [], [], []
+
+    for fpath in candidates:
+        try:
+            with np.load(fpath, allow_pickle=False) as d:
+                day = str(d["day"])
+                if day[:7] != month_tag:
+                    continue
+                n = d["images"].shape[0]
+                imgs.append(d["images"])
+                ws.append(d["window_start"])
+                we.append(d["window_end"])
+                snr_v.append(d["snr"])
+                snr_fm.append(d["snr_full_median"])
+                nets.append(np.full(n, str(d["network"])))
+                stas.append(np.full(n, str(d["station"])))
+                locs.append(np.full(n, str(d["location"])))
+                chans.append(np.full(n, str(d["channel"])))
+                days.append(np.full(n, day))
+        except Exception as e:
+            print(f"  [WARN] consolidate: could not read {os.path.basename(fpath)}: {e}")
+
+    if not imgs:
+        print(f"  [WARN] consolidate: no packed files found for month {month_tag} -- skipping.")
+        return None
+
+    out_path = os.path.join(packed_dir, f"consolidated_{month_tag}.npz")
+    np.savez_compressed(
+        out_path,
+        images=np.concatenate(imgs, axis=0),
+        window_start=np.concatenate(ws), window_end=np.concatenate(we),
+        snr=np.concatenate(snr_v), snr_full_median=np.concatenate(snr_fm),
+        network=np.concatenate(nets), station=np.concatenate(stas),
+        location=np.concatenate(locs), channel=np.concatenate(chans),
+        day=np.concatenate(days),
+    )
+    n_total = sum(a.shape[0] for a in imgs)
+    size_mb = os.path.getsize(out_path) / 1e6
+    print(f"  [CONSOLIDATED] {month_tag}: {n_total} window(s) from {len(imgs)} station-day file(s) "
+          f"-> {os.path.basename(out_path)} ({size_mb:.1f} MB)")
+    return out_path
+
+
+def plot_probability_summary(df_month, class_names, month_tag, out_dir):
+    """
+    Phase 2 only. Two-panel figure per month, built directly from the
+    proba_<class> columns already in the predictions CSV -- makes the
+    model's confidence/confusion visible without digging through the raw
+    numbers.
+
+    Left panel  : boxplot of the WINNING probability (the value argmax was
+                  actually taken on), grouped by predicted class. A class
+                  sitting near chance level (1 / n_classes) most of the time
+                  is a class this validation run can't be trusted on yet.
+    Right panel : heatmap of the MEAN full probability vector for each
+                  predicted class (rows = predicted class, cols = probability
+                  mass on each class). A confusion-matrix stand-in for
+                  continuous data with no ground truth -- real off-diagonal
+                  mass in a row means that class is being confused with
+                  another one even when it "wins" the argmax.
+    """
+    proba_cols = [f"proba_{c.replace(' ', '_')}" for c in class_names]
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+    # -- Left: winning-probability boxplot by predicted class --------------
+    ax = axes[0]
+    data, labels_present = [], []
+    for c in class_names:
+        col = f"proba_{c.replace(' ', '_')}"
+        vals = df_month.loc[df_month["predicted_class"] == c, col]
+        if len(vals) > 0:
+            data.append(vals.values)
+            labels_present.append(f"{c}\n(n={len(vals)})")
+    if data:
+        ax.boxplot(data, labels=labels_present, showmeans=True)
+    ax.axhline(1.0 / len(class_names), color="gray", linestyle="--", linewidth=1,
+               label=f"chance level (1/{len(class_names)})")
+    ax.set_ylabel("Winning probability")
+    ax.set_title(f"Confidence by predicted class — {month_tag}")
+    ax.set_ylim(0, 1.02)
+    ax.legend(fontsize=8, loc="lower right")
+    ax.tick_params(axis="x", labelsize=8)
+
+    # -- Right: mean full probability vector per predicted class -----------
+    ax = axes[1]
+    present_classes = [c for c in class_names if (df_month["predicted_class"] == c).any()]
+    matrix = np.array([
+        df_month.loc[df_month["predicted_class"] == c, proba_cols].mean().values
+        for c in present_classes
+    ])
+    im = ax.imshow(matrix, vmin=0, vmax=1, cmap="viridis", aspect="auto")
+    ax.set_xticks(range(len(class_names)))
+    ax.set_xticklabels(class_names, rotation=45, ha="right", fontsize=8)
+    ax.set_yticks(range(len(present_classes)))
+    ax.set_yticklabels(present_classes, fontsize=8)
+    ax.set_xlabel("Probability mass on class")
+    ax.set_ylabel("Predicted class")
+    ax.set_title("Mean probability vector by predicted class")
+    for i in range(len(present_classes)):
+        for j in range(len(class_names)):
+            ax.text(j, i, f"{matrix[i, j]:.2f}", ha="center", va="center",
+                     color="white" if matrix[i, j] < 0.5 else "black", fontsize=7)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    fig.suptitle(f"Predicted-class probability summary — {month_tag}", fontsize=11)
+    fig.tight_layout()
+    out_path = os.path.join(out_dir, f"probability_summary_{month_tag}.png")
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"  [SAVED] Probability summary -> {out_path}")
+
+
 
 # =============================================================================
 # SECTION 5A — PHASE 1: EXTRACTION (cluster, no TensorFlow)
@@ -712,6 +819,9 @@ if RUN_EXTRACTION:
         print(f"\n  [DONE] Month {month_tag}: {n_events_total} event(s) across "
               f"{n_station_days} station-day(s) -> packed files in {packed_dir}/")
 
+        if CONSOLIDATE_PER_MONTH:
+            consolidate_month_packed_files(packed_dir, month_tag)
+
     print(f"\n[PHASE 1 COMPLETE] Packed spectrograms -> {packed_dir}/")
     print(f"  Copy this folder to your local machine, then run Phase 2 with")
     print(f"  RUN_EXTRACTION=False, RUN_CLASSIFICATION=True, and EXTRACTION_DIR")
@@ -725,11 +835,22 @@ if RUN_EXTRACTION:
 
 if RUN_CLASSIFICATION:
 
-    packed_files = sorted(glob.glob(os.path.join(packed_dir, "*.npz")))
-    print(f"\n{'='*70}")
-    print(f"  PHASE 2 — CLASSIFICATION")
-    print(f"  {len(packed_files)} packed station-day file(s) found in {packed_dir}")
-    print(f"{'='*70}")
+    # Prefer consolidated monthly archives (see CONSOLIDATE_PER_MONTH in Section 1)
+    # over raw per-station-day files -- never both, that would double-count.
+    consolidated_files = sorted(glob.glob(os.path.join(packed_dir, "consolidated_*.npz")))
+    if consolidated_files:
+        packed_files = consolidated_files
+        print(f"\n{'='*70}")
+        print(f"  PHASE 2 — CLASSIFICATION")
+        print(f"  {len(packed_files)} consolidated monthly archive(s) found in {packed_dir}")
+        print(f"{'='*70}")
+    else:
+        packed_files = sorted(glob.glob(os.path.join(packed_dir, "spec_*.npz")))
+        print(f"\n{'='*70}")
+        print(f"  PHASE 2 — CLASSIFICATION")
+        print(f"  {len(packed_files)} packed station-day file(s) found in {packed_dir} "
+              f"(no consolidated_*.npz found -- see CONSOLIDATE_PER_MONTH in Section 1)")
+        print(f"{'='*70}")
 
     if not packed_files:
         print(f"\n[WARN] No packed .npz files found in {packed_dir}. "
@@ -746,31 +867,39 @@ if RUN_CLASSIFICATION:
             ends   = d["window_end"]
             snrs   = d["snr"]              if "snr" in d.files              else None
             snr_fm = d["snr_full_median"]  if "snr_full_median" in d.files  else None
-            net    = str(d["network"])
-            sta    = str(d["station"])
-            loc    = str(d["location"])
-            chan   = str(d["channel"])
-            day    = str(d["day"])
+
+            n = images.shape[0]
+            # network/station/location/channel/day are scalars in a per-station-day
+            # file, but per-window arrays in a consolidated_*.npz -- normalize both
+            # to a length-n array here so the rest of the loop doesn't care which.
+            def _per_window(key):
+                val = np.atleast_1d(d[key])
+                return val if val.shape[0] == n else np.full(n, str(val.reshape(-1)[0]))
+            nets  = _per_window("network")
+            stas  = _per_window("station")
+            locs  = _per_window("location")
+            chans = _per_window("channel")
+            days  = _per_window("day")
 
         if images.shape[1:] != (N_FREQ, N_TIME, 3):
             print(f"  [SKIP] {os.path.basename(fpath)} — shape mismatch "
                   f"{images.shape[1:]} != ({N_FREQ}, {N_TIME}, 3)")
             continue
 
-        month_tag = day[:7]
-        rows_by_month.setdefault(month_tag, [])
-
-        n = images.shape[0]
         for b0 in range(0, n, BATCH_SIZE):
             b1 = min(b0 + BATCH_SIZE, n)
             batch = images[b0:b1].astype(np.float32)
             labels, proba = classify_batch(batch)
             for i in range(b1 - b0):
+                idx = b0 + i
+                month_tag = str(days[idx])[:7]
+                rows_by_month.setdefault(month_tag, [])
                 meta = {
-                    "network": net, "station": sta, "location": loc, "channel": chan,
-                    "day": day, "window_start": str(starts[b0 + i]), "window_end": str(ends[b0 + i]),
-                    "snr": float(snrs[b0 + i]) if snrs is not None else None,
-                    "snr_full_median": float(snr_fm[b0 + i]) if snr_fm is not None else None,
+                    "network": str(nets[idx]), "station": str(stas[idx]),
+                    "location": str(locs[idx]), "channel": str(chans[idx]),
+                    "day": str(days[idx]), "window_start": str(starts[idx]), "window_end": str(ends[idx]),
+                    "snr": float(snrs[idx]) if snrs is not None else None,
+                    "snr_full_median": float(snr_fm[idx]) if snr_fm is not None else None,
                 }
                 _emit_row(meta, batch[i], labels[i], proba[i], rows_by_month[month_tag])
 
@@ -798,6 +927,9 @@ if RUN_CLASSIFICATION:
             n_c = int(vc.get(c, 0))
             pct = 100 * n_c / max(len(df_month), 1)
             print(f"    {c:<12s} {n_c:8,d}  ({pct:5.1f}%)")
+
+        if PLOT_PROBABILITY_SUMMARY:
+            plot_probability_summary(df_month, CLASS_NAMES, month_tag, summary_dir)
 
     # ---- Review gallery: render the N most confident review images per class ----
     if PLOT_REVIEW_GALLERY and N_GALLERY_PER_CLASS > 0:
