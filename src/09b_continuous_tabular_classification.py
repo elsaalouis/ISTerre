@@ -7,66 +7,24 @@ Date   : August 2026
 
 Goal
 ----
-End-to-end validation of the CHAPTER 3 branch (scalar-feature HGB classifier,
-06a/06b/06c) on a RAW CONTINUOUS STREAM, never chained before on data the
-pipeline hasn't already seen as pre-curated catalog windows.
-
-This is the tabular-feature counterpart of 09a_continuous_spectrogram_
-classification.py, which did the same thing for the CNN branch (chapter 4).
-Same idea, same MONTHS_TO_SCAN, same underlying Groult et al. (2026)
-continuous-scan detector -- so the two runs are directly comparable for the
-chapter 5 synthesis ("does AI outperform conventional detection?").
-
-Why ONE script instead of 09a's two phases
--------------------------------------------
-09a is split into RUN_EXTRACTION / RUN_CLASSIFICATION because TensorFlow
-cannot be cleanly installed in the cluster's Python (see 09a's docstring).
-Nothing here needs TensorFlow -- scikit-learn/imbalanced-learn install fine
-in the same environment used for SDS/FDSN access, so extraction (needs SDS)
-and classification (needs the training CSVs + sklearn) can run in the same
-process. The RUN_EXTRACTION / RUN_CLASSIFICATION toggle is kept anyway,
-purely for workflow convenience -- extraction is the slow, cluster-bound
-step, while classification is cheap to re-run (e.g. testing a different
-TOP_N_FEATURES or SNR gate) without re-scanning a month of continuous data.
-
-There is no saved trained model to load (06c never persists one -- it
-retrains from scratch every run and only saves figures/metrics). So Section
-5B here retrains the exact "final classifier" described in the report
-(chapter 3.4): HGB, Top-60 features, trained on the quality-gated catalog
-PLUS the DeepDenoiser-rescued ice-quake events (06c's "Run B"). Retraining
-is cheap (seconds), and an internal held-out-test evaluation is printed and
-plotted first, as a sanity check that this run reproduces the report's
-numbers (accuracy 95.5%, macro F1 0.847) before applying the model to new
-unlabelled data.
-
-Windowing note
---------------
-Unlike the CNN branch's fixed 100 s window, the scalar-feature classifier's
-single strongest feature is `duration` (Table 2, rank 1, ΔF1=+0.232) --
-using a fixed-length window here would destroy the very signal the model
-relies on most. So detections keep their natural variable length: features
-are extracted from [t_on - PAD_SEC, t_off + PAD_SEC], exactly as 04a did
-when building the training catalog.
+End-to-end validation of the scalar-feature HGB classifier, on a RAW CONTINUOUS STREAM, 
+never chained before on data the pipeline hasn't already seen as pre-curated catalog windows
 
 TWO PHASES (kept for workflow convenience, see above) -----------------------
-  Phase 1 -- EXTRACTION (needs SDS/FDSN):
+  Phase 1 -- EXTRACTION (needs SDS/FDSN + the saved model's feature list):
     per station-day, run the same continuous STA/LTA scan as 09a Phase 1,
-    then for each detected event extract the 99 Maggi/Hibert Z-features +
-    4 polarization features (103 total, matching the training catalog's 3C
-    mode) + 7 SNR measures -> one CSV per station-day, consolidated per
-    month.
+    then for each detected event extract ONLY the features MODEL_PATH's
+    saved bundle actually uses (Top-60, not the full 99+4) + 7 SNR measures
+    -> one CSV per station-day, consolidated per month. The N/E fetch +
+    polarization computation is skipped entirely when none of those features
+    are in the model's list (checked once at startup, see NEED_3C).
 
-  Phase 2 -- CLASSIFICATION (needs the training catalog CSVs + sklearn):
-    (a) retrain the final HGB classifier (06c Run B recipe) and sanity-check
-        it against the report's reference numbers,
+  Phase 2 -- CLASSIFICATION (needs the saved model bundle + sklearn):
+    (a) load the fixed model bundle saved by 06c,
     (b) classify every extracted continuous-data window,
     (c) write predictions_<month>.csv + a probability summary figure +
-        (optional, needs SDS again) a small waveform review gallery.
-
-There is no scoring against ground truth here -- exactly like 09a, the
-output is meant for visual/plausibility review: does the class distribution
-look sane (mostly noise/rare events), do the review waveforms for non-noise
-predictions actually look like real events, etc.
+        (optional, needs SDS again) a waveform+spectrogram review gallery,
+        same 2-panel style as 08a's report figures.
 
 Output layout
 -------------
@@ -76,8 +34,6 @@ Output layout
                                              read by Phase 2
       consolidated_<month>.csv           <- Phase 1, one file per scanned month
   outputs_09b/run_YYYYMMDD_HHMMSS/    (this invocation's own log + phase-2 output)
-      fig_reference_confusion_<stamp>.png  <- Phase 2a: sanity check vs report
-      model_cache_<stamp>.joblib           <- Phase 2a: trained model+imputer+features
       predictions_<month_tag>.csv          <- Phase 2b: one row per classified detection
       probability_summary/*.png            <- Phase 2c
       review_waveforms/*.png               <- Phase 2d (optional, needs SDS)
@@ -91,19 +47,19 @@ Output layout
 # =============================================================================
 
 # -- Run mode -- see the module docstring for why this split is kept ---------
-RUN_EXTRACTION     = False   # Phase 1 -- needs SDS/FDSN, no sklearn dependency
+RUN_EXTRACTION     = True   # Phase 1 -- needs SDS/FDSN, no sklearn dependency
 RUN_CLASSIFICATION = True    # Phase 2 -- needs the training CSVs + sklearn/imblearn
 
 # -- Interchange directory between the two phases -----------------------------
 # Phase 1 writes per-station-day + consolidated feature CSVs here
-EXTRACTION_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\09b_continuous_data_test\run_20260818_090000"
+EXTRACTION_DIR = "/data/failles/louisels/project/results/outputs_09b/feature_csv"
 
 # -- Paths (Phase 1 -- SDS/FDSN) -----------------------------------------------
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
 
 # -- Output for THIS invocation's own log + Phase 2 outputs -------------------
-OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\09b_continuous_data_test\run_20260818_090000"
+OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_09b"
 
 # -- Spatial bounding box (Mont Blanc massif, same as everywhere else) --------
 LAT_MIN, LAT_MAX = 45.5, 46.0
@@ -117,7 +73,6 @@ HORIZONTAL_SUFFIXES = [("N", "E"), ("2", "1")]   # same fallback convention as 0
 # directly comparable on identical raw data.
 MONTHS_TO_SCAN = [
     ("2025-01-01", "2025-02-01"),   # January
-    ("2025-07-01", "2025-08-01"),   # July
 ]
 
 # -- Detection: spectrogram-based STA/LTA (Groult et al. 2026), Phase 1 -------
@@ -137,7 +92,11 @@ DET_MIN_TRACE_SEC     = 120.0   # minimum day-segment length to attempt detectio
 
 # -- Feature extraction window (Phase 1) -- variable length, matches 04a ------
 PAD_SEC = 5        # seconds added before t_on and after t_off, same as 04a
-LOAD_3C = True     # fetch N/E for polarization features -> 103 features (matches training)
+LOAD_3C = True     # master switch for polarization features; the ACTUAL decision
+                   # (NEED_3C) also checks whether MODEL_PATH's saved feature list
+                   # contains a polarization feature at all -- set this False to
+                   # force-skip the N/E fetch even if the model happens to use one
+                   # (features.py fills NaN, the model's own imputer handles it)
 
 # -- Checkpointing / resume (Phase 1: per station-day file existence) ---------
 CONSOLIDATE_PER_MONTH = True   # bundle each month's per-station-day CSVs into one file
@@ -147,49 +106,32 @@ SMOKE_TEST              = True
 MAX_DAYS_SMOKE_TEST     = 1
 MAX_STATIONS_SMOKE_TEST = 1
 
+MODEL_PATH = "/data/failles/louisels/project/results/outputs_06c/IQ_rescue_raw_ablation_noise_regional_20260818_152559/hgb_final_model_20260818_152559.joblib"
 
-# ------------------------------------------------------------------------------
-# Phase 2a — training data for the FINAL chapter-3 classifier
-# Identical paths/hyperparameters to 06c's "Run B" (original + denoised
-# rescued ice quakes) -- this IS the model chapter 3.4 reports as final:
-# HGB, Top-60 features, accuracy 95.5%, macro F1 0.847.
-# ------------------------------------------------------------------------------
-ORIGINAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent+3C\catalog_windows_20260708_174019.csv"
-RESCUE_CATALOG_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03d_rescue_feature_extraction\stricter_IQ100_20260722_145529\rescue_catalog_20260722_145529.csv"
-NOISE_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04d_noise_window_extraction\run_20260803_174514\noise_windows_20260803_174514.csv"
-REGIONAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04c_regional_EQ_extraction\run_20260805_135512\regional_windows_20260805_135512.csv"
+CLASS_ORDER  = ["earthquake", "regional", "rockslide", "ice quake", "noise"]   # display order only
+CLASS_COLORS = {"earthquake": "#1f77b4", "rockslide": "#d62728",
+                "ice quake": "#2ca02c", "noise": "#7f7f7f", "regional": "#9467bd"}
 
-TARGET_CLASSES = ["earthquake", "regional", "rockslide", "ice quake", "noise"]
-CLASS_ORDER    = ["earthquake", "regional", "rockslide", "ice quake", "noise"]
-CLASS_ABBR     = {"earthquake": "eq", "regional": "re", "rockslide": "rs", "ice quake": "iq", "noise": "no"}
-CLASS_COLORS   = {"earthquake": "#1f77b4", "rockslide": "#d62728",
-                  "ice quake": "#2ca02c", "noise": "#7f7f7f", "regional": "#9467bd"}
-
-FEATURE_IMPORTANCES_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03b_feature_selection\run_20260710_144246\feature_importances_20260710_144246.csv"
-TOP_N_FEATURES          = 60   # matches chapter 3.1's "Top-60" result (best macro F1 in Table 3)
-
-SNR_MIN             = 1.70    # 05b Tier 2 gate, same as 06c
-SNR_FULL_MEDIAN_MIN = 1.99
-
-TEST_SIZE    = 0.20
-RANDOM_STATE = 42
-SMOTE_K      = 5
-
-HGB_N_EST     = 200
-HGB_MAX_DEPTH = 6
-HGB_LR        = 0.1
-
-# -- Model cache (Phase 2a) -- avoids retraining on every re-run of Phase 2b/c/d --
-USE_CACHED_MODEL = True
-MODEL_CACHE_PATH = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\09b_continuous_data_test\hgb_final_model_cache.joblib"
-
-# -- Phase 2d: review waveform gallery (optional, needs SDS) ------------------
-SAVE_REVIEW_WAVEFORMS   = True
+# -- Phase 2d: review waveform+spectrogram gallery (optional, needs SDS) ------
+SAVE_REVIEW_WAVEFORMS    = True
 SAVE_IMAGES_FOR_NONNOISE = True    # save every window NOT predicted as 'noise'
 SAVE_EVERY_NTH_NOISE     = 5
 N_GALLERY_PER_CLASS      = 10
-REVIEW_PAD_SEC           = 10      # extra context padding around the window, display only
-REVIEW_FREQ_MIN, REVIEW_FREQ_MAX = 1.0, 20.0
+
+REVIEW_PRE_S       = 10     # seconds BEFORE the detection onset shown in the figure
+REVIEW_WINDOW_S    = 100    # total fixed display window [s] -- matches 08a's FIXED_WINDOW_S
+REVIEW_TARGET_FS   = 200    # [Hz] resample target before the spectrogram, matches 08a
+REVIEW_FETCH_PAD_S = 60     # extra context fetched (not shown) so filtering has run-in room
+REVIEW_WAVE_FREQMIN, REVIEW_WAVE_FREQMAX = 1.0, 20.0
+
+REVIEW_SPEC_NPERSEG_S     = 2.0     # [s] STFT segment length
+REVIEW_SPEC_NOVERLAP_FRAC = 0.75
+REVIEW_SPEC_NFFT          = 512
+REVIEW_FREQ_MAX_KEEP      = 95.0    # [Hz] 95% of Nyquist at REVIEW_TARGET_FS=200Hz
+REVIEW_SPEC_VMIN, REVIEW_SPEC_VMAX = -200, -120   # dB color scale, matches 08a
+REVIEW_SPEC_NPERSEG  = int(REVIEW_SPEC_NPERSEG_S * REVIEW_TARGET_FS)
+REVIEW_SPEC_NOVERLAP = int(REVIEW_SPEC_NPERSEG * REVIEW_SPEC_NOVERLAP_FRAC)
+REVIEW_PSD_FLOOR_EPS = 1e-20   # same floor as 07a/08a: guards log(0) without swallowing signal
 
 # -- Probability summary plot (Phase 2c) ---------------------------------------
 PLOT_PROBABILITY_SUMMARY = True
@@ -242,7 +184,29 @@ if RUN_EXTRACTION:
     from preprocessing import preprocess_day
     from detecteurV3_fonctions import DetecteurV3   # Groult et al. 2026 -- third-party, do not modify
     from detection import compute_snr, merge_window_events
-    from features import FEATURE_NAMES_3C, N_FEATURES_3C, extract_features
+    from features import FEATURE_NAMES_3C, extract_features, POLARIZATION_NAMES
+
+    # Only extract the features the saved model actually uses (Top-60, not all 103) -- both cheaper to store
+    try:
+        import joblib as _joblib_extract
+    except ImportError:
+        print("[ERROR] joblib is required to read the saved model's feature list. Exiting.")
+        log_file.close()
+        sys.exit(1)
+    if not os.path.isfile(MODEL_PATH):
+        print(f"[ERROR] MODEL_PATH not found: {MODEL_PATH}")
+        print("        Run 06c_train_HGB_classifier.py once with SAVE_FINAL_MODEL=True,")
+        print("        then point MODEL_PATH at the hgb_final_model_<stamp>.joblib it writes.")
+        log_file.close()
+        sys.exit(1)
+    _FEAT_NAMES = list(_joblib_extract.load(MODEL_PATH)["features"])
+    N_FEATURES  = len(_FEAT_NAMES)
+    NEED_3C     = LOAD_3C and any(f in POLARIZATION_NAMES for f in _FEAT_NAMES)
+    print(f"\n[OK] Extracting only the {N_FEATURES} feature(s) the saved model at "
+          f"{MODEL_PATH} actually uses.")
+    print(f"     Polarization fetch (N/E, 3C): {'enabled' if NEED_3C else 'skipped'} "
+          f"({'a polarization feature is' if NEED_3C else 'no polarization feature is'} "
+          f"in that list).")
 
     client_sds  = connect_sds(SDS_ROOT)
     client_fdsn = connect_fdsn(ISTERRE_URL)
@@ -269,32 +233,44 @@ if RUN_EXTRACTION:
     for net, sta, loc, chan in station_list:
         print(f"  {net}.{sta}.{loc}.{chan}")
 
-    _FEAT_NAMES = FEATURE_NAMES_3C if LOAD_3C else FEATURE_NAMES_3C[:99]
-    N_FEATURES  = N_FEATURES_3C    if LOAD_3C else 99
 
-
-# --------- Phase 2 setup: sklearn/imblearn (no TensorFlow anywhere here) -----
+# --------- Phase 2 setup: load the fixed model bundle (no TensorFlow, no ------
+# training here -- see the module docstring "Model source" section) ----------
 if RUN_CLASSIFICATION:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from sklearn.ensemble import HistGradientBoostingClassifier
-    from sklearn.metrics import (
-        classification_report, accuracy_score,
-        confusion_matrix, ConfusionMatrixDisplay,
-    )
-    from sklearn.model_selection import train_test_split
-    from sklearn.impute import SimpleImputer
-    from imblearn.over_sampling import SMOTE
+    from scipy.signal import spectrogram as scipy_spectrogram
     try:
         import joblib
     except ImportError:
-        joblib = None
-        print("[WARN] joblib not importable -- model caching disabled for this run.")
+        print("[ERROR] joblib is required to load the saved model bundle. Exiting.")
+        log_file.close()
+        sys.exit(1)
 
-    from features import FEATURE_NAMES, FEATURE_NAMES_3C, rename_legacy_columns
     from run_setup import set_matplotlib_defaults
+    from visualization import plot_waveform_spectrogram_example
     set_matplotlib_defaults()
+
+    if not os.path.isfile(MODEL_PATH):
+        print(f"[ERROR] MODEL_PATH not found: {MODEL_PATH}")
+        print("        Run 06c_train_HGB_classifier.py once with SAVE_FINAL_MODEL=True,")
+        print("        then point MODEL_PATH at the hgb_final_model_<stamp>.joblib it writes.")
+        log_file.close()
+        sys.exit(1)
+
+    print(f"\n[LOAD] Model bundle : {MODEL_PATH}")
+    _bundle = joblib.load(MODEL_PATH)
+    final_model    = _bundle["model"]
+    final_imputer  = _bundle["imputer"]
+    final_features = _bundle["features"]
+    _metrics       = _bundle.get("metrics", {})
+    print(f"[OK] Loaded '{_bundle.get('run_label', '?')}' classifier "
+          f"(trained {_bundle.get('trained_on', '?')} by {_bundle.get('source_script', '?')})")
+    print(f"     acc={_metrics.get('acc', float('nan')):.3f}  "
+          f"macro F1={_metrics.get('macro_f1', float('nan')):.3f}  "
+          f"n_features={len(final_features)}")
+    print(f"     Classes (model order): {list(final_model.classes_)}")
 
     summary_dir = os.path.join(RUN_DIR, "probability_summary")
     os.makedirs(summary_dir, exist_ok=True)
@@ -414,13 +390,26 @@ if RUN_EXTRACTION:
         tr_filt_local.filter('bandpass', freqmin=DET_FREQ_MIN,
                              freqmax=min(DET_FREQ_MAX, 0.9 * nyq), corners=4, zerophase=True)
 
+        # Only fetch N/E (and pay for the polarization computation inside
+        # extract_features) when the saved model actually uses a polarization
+        # feature -- NEED_3C is decided once, at startup, from MODEL_PATH's
+        # own feature list (see Phase 1 setup above).
         data_3c = None
-        if LOAD_3C:
+        if NEED_3C:
             data_3c = _fetch_3c_array(client_sds, net, sta, chan, t_cut_on, t_cut_off,
                                       tr_cut.data, fs)
 
-        feats = extract_features(tr_cut.data, fs, data_3c=data_3c)
-        snr   = compute_snr(tr_filt_local, t_on, t_off)
+        # extract_features() always computes the full 99 Z-features in one
+        # monolithic call (seismic_params.calculate_all_attributes, third-party,
+        # can't be asked for a subset) + 4 more if data_3c is given -- so we
+        # still compute everything NEED_3C implies, then keep only the columns
+        # _FEAT_NAMES (the model's Top-N) actually needs. This is where the
+        # real saving happens: skipping the N/E fetch above when NEED_3C is
+        # False, not the Z-feature computation itself (which can't be split).
+        full_names = FEATURE_NAMES_3C if NEED_3C else FEATURE_NAMES_3C[:99]
+        feats      = extract_features(tr_cut.data, fs, data_3c=data_3c)
+        feat_dict  = dict(zip(full_names, feats))
+        snr        = compute_snr(tr_filt_local, t_on, t_off)
 
         row = {
             "network": net, "station": sta, "location": loc, "channel": chan,
@@ -430,8 +419,8 @@ if RUN_EXTRACTION:
             "trigger_on_cft": round(trigger_cft, 4),
             **snr,
         }
-        for fname, fval in zip(_FEAT_NAMES, feats):
-            row[fname] = fval
+        for fname in _FEAT_NAMES:
+            row[fname] = feat_dict.get(fname, np.nan)
         return row
 
 
@@ -625,174 +614,7 @@ if RUN_EXTRACTION:
 
 
 # =============================================================================
-# SECTION 5 — PHASE 2a: TRAIN THE FINAL CHAPTER-3 CLASSIFIER (06c "Run B")
-# =============================================================================
-
-def train_final_classifier():
-    """
-    Reproduces 06c's Run B exactly: original quality-gated catalog (+ regional,
-    + noise) combined with the DeepDenoiser-rescued ice-quake events, Top-60
-    features by permutation importance, event-stratified 80/20 split, SMOTE on
-    the training fold, HistGradientBoostingClassifier. This IS the model
-    chapter 3.4 of the report calls "the final classifier".
-
-    Returns
-    -------
-    model, imputer, features : fitted sklearn objects + the ordered feature list
-    """
-    print(f"\n{'='*70}")
-    print(f"  PHASE 2a — Training the final chapter-3 classifier (06c Run B recipe)")
-    print(f"{'='*70}")
-
-    orig = pd.read_csv(ORIGINAL_CSV, low_memory=False)
-    orig = rename_legacy_columns(orig)
-    orig = orig[orig["event_type"].isin(TARGET_CLASSES)].copy()
-
-    if REGIONAL_CSV is not None and os.path.exists(str(REGIONAL_CSV)):
-        regional = pd.read_csv(REGIONAL_CSV, low_memory=False)
-        regional = rename_legacy_columns(regional)
-        regional = regional[regional["event_type"].isin(TARGET_CLASSES)].copy()
-        orig = pd.concat([orig, regional], ignore_index=True)
-        print(f"  Regional catalog added (pre-gate): {len(regional):,} rows")
-
-    mask = (orig["SNR"] >= SNR_MIN) & (orig["SNR_full_median"] >= SNR_FULL_MEDIAN_MIN)
-    orig = orig[mask].copy()
-    z_feat_cols = [f for f in FEATURE_NAMES if f in orig.columns]
-    orig = orig.dropna(subset=z_feat_cols).copy()
-    print(f"  Original(+regional) after quality gate: {len(orig):,} rows")
-
-    if NOISE_CSV is not None and os.path.exists(str(NOISE_CSV)):
-        noise = pd.read_csv(NOISE_CSV, low_memory=False)
-        noise = rename_legacy_columns(noise)
-        z_feat_cols_noise = [f for f in FEATURE_NAMES if f in noise.columns]
-        noise = noise.dropna(subset=z_feat_cols_noise).copy()
-        orig = pd.concat([orig, noise], ignore_index=True)
-        print(f"  Noise catalog added: {len(noise):,} rows")
-
-    has_rescue = RESCUE_CATALOG_CSV is not None and os.path.exists(str(RESCUE_CATALOG_CSV))
-    if has_rescue:
-        rescue = pd.read_csv(RESCUE_CATALOG_CSV, low_memory=False)
-        rescue = rename_legacy_columns(rescue)
-        rescue = rescue[rescue["event_type"].isin(TARGET_CLASSES)].copy()
-        z_feat_cols_r = [f for f in FEATURE_NAMES if f in rescue.columns]
-        rescue = rescue.dropna(subset=z_feat_cols_r).copy()
-        print(f"  DeepDenoiser-rescued ice quakes added: {len(rescue):,} rows")
-    else:
-        rescue = pd.DataFrame()
-        print(f"  [WARN] RESCUE_CATALOG_CSV not found — training WITHOUT the rescued "
-              f"events (this will NOT match the report's 0.847 macro F1 reference).")
-
-    combined = pd.concat([orig, rescue], ignore_index=True) if has_rescue else orig.copy()
-    print(f"\n  Combined training dataset: {len(combined):,} rows")
-    for cls in CLASS_ORDER:
-        n = (combined["event_type"] == cls).sum()
-        print(f"    {cls:<12} {n:>6,}  ({100*n/len(combined):.1f} %)")
-
-    if FEATURE_IMPORTANCES_CSV is not None and os.path.exists(FEATURE_IMPORTANCES_CSV):
-        imp_df   = pd.read_csv(FEATURE_IMPORTANCES_CSV)
-        features = imp_df["feature"].head(TOP_N_FEATURES).tolist()
-        print(f"\n  Loaded Top-{TOP_N_FEATURES} features from: {FEATURE_IMPORTANCES_CSV}")
-    else:
-        raise FileNotFoundError(
-            f"FEATURE_IMPORTANCES_CSV not found: {FEATURE_IMPORTANCES_CSV}. "
-            f"This is required to reproduce the report's Top-60 feature set."
-        )
-    missing = [f for f in features if f not in combined.columns]
-    if missing:
-        raise ValueError(f"Features missing from combined catalog: {missing}")
-
-    events = combined[["event_time", "event_type"]].drop_duplicates("event_time")
-    train_ev, test_ev = train_test_split(
-        events["event_time"], test_size=TEST_SIZE,
-        stratify=events["event_type"], random_state=RANDOM_STATE,
-    )
-    train_mask = combined["event_time"].isin(train_ev)
-    test_mask  = combined["event_time"].isin(test_ev)
-
-    X_tr_raw = combined.loc[train_mask, features].values
-    y_tr_raw = combined.loc[train_mask, "event_type"].values
-    X_te     = combined.loc[test_mask,  features].values
-    y_te     = combined.loc[test_mask,  "event_type"].values
-    print(f"\n  Train: {train_mask.sum():,} rows  |  Test: {test_mask.sum():,} rows")
-
-    imputer  = SimpleImputer(strategy="median")
-    X_tr_raw = imputer.fit_transform(X_tr_raw)
-    X_te     = imputer.transform(X_te)
-
-    sm = SMOTE(k_neighbors=SMOTE_K, random_state=RANDOM_STATE)
-    X_tr, y_tr = sm.fit_resample(X_tr_raw, y_tr_raw)
-    print(f"  After SMOTE: {len(X_tr):,} rows")
-
-    model = HistGradientBoostingClassifier(
-        max_iter=HGB_N_EST, max_depth=HGB_MAX_DEPTH,
-        learning_rate=HGB_LR, early_stopping=True,
-        n_iter_no_change=15, random_state=RANDOM_STATE,
-    )
-    t0 = time.time()
-    model.fit(X_tr, y_tr)
-    elapsed = time.time() - t0
-
-    y_pred   = model.predict(X_te)
-    report   = classification_report(y_te, y_pred, labels=CLASS_ORDER,
-                                     target_names=CLASS_ORDER, output_dict=True, zero_division=0)
-    acc      = accuracy_score(y_te, y_pred)
-    macro_f1 = report["macro avg"]["f1-score"]
-
-    print(f"\n  [SANITY CHECK vs report chapter 3.4] Accuracy={acc:.3f}  MacroF1={macro_f1:.3f}  "
-          f"Time={elapsed:.1f}s")
-    print(f"  Report reference: accuracy=0.955, macro F1=0.847, ice-quake F1=0.490")
-    for cls in CLASS_ORDER:
-        print(f"    {CLASS_ABBR[cls].upper()}-F1={report[cls]['f1-score']:.3f}  "
-              f"(precision={report[cls]['precision']:.3f}  recall={report[cls]['recall']:.3f})")
-
-    cm = confusion_matrix(y_te, y_pred, labels=CLASS_ORDER, normalize="true")
-    fig, ax = plt.subplots(figsize=(5.5, 4.5))
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=CLASS_ORDER)
-    disp.plot(ax=ax, colorbar=True, cmap="Blues", values_format=".2f")
-    ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right")
-    ax.set_title(f"HGB — Original + rescued (reference)\nMacroF1={macro_f1:.3f}  Acc={acc:.3f}",
-                fontsize=10)
-    plt.tight_layout()
-    ref_path = os.path.join(RUN_DIR, f"fig_reference_confusion_{STAMP}.png")
-    plt.savefig(ref_path, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"  [SAVED] {ref_path}")
-
-    if joblib is not None and USE_CACHED_MODEL:
-        try:
-            os.makedirs(os.path.dirname(MODEL_CACHE_PATH), exist_ok=True)
-            joblib.dump({"model": model, "imputer": imputer, "features": features,
-                        "acc": acc, "macro_f1": macro_f1}, MODEL_CACHE_PATH)
-            print(f"  [CACHED] Trained model -> {MODEL_CACHE_PATH}")
-        except Exception as e:
-            print(f"  [WARN] Could not write model cache: {e}")
-
-    return model, imputer, features
-
-
-if RUN_CLASSIFICATION:
-    _cached = None
-    if USE_CACHED_MODEL and joblib is not None and os.path.isfile(MODEL_CACHE_PATH):
-        try:
-            _cached = joblib.load(MODEL_CACHE_PATH)
-            print(f"\n[LOAD] Using cached model from {MODEL_CACHE_PATH} "
-                  f"(acc={_cached['acc']:.3f}, macro F1={_cached['macro_f1']:.3f}). "
-                  f"Delete this file or set USE_CACHED_MODEL=False to retrain.")
-        except Exception as e:
-            print(f"[WARN] Could not load model cache ({e}) — retraining.")
-            _cached = None
-
-    if _cached is not None:
-        final_model, final_imputer, final_features = (
-            _cached["model"], _cached["imputer"], _cached["features"]
-        )
-    else:
-        final_model, final_imputer, final_features = train_final_classifier()
-
-
-
-# =============================================================================
-# SECTION 6 — PHASE 2b/2c/2d: CLASSIFY CONTINUOUS DATA + REVIEW OUTPUTS
+# SECTION 5 — CLASSIFY CONTINUOUS DATA + REVIEW OUTPUTS
 # =============================================================================
 
 def plot_probability_summary(df_month, class_names, month_tag, out_dir):
@@ -849,47 +671,121 @@ def plot_probability_summary(df_month, class_names, month_tag, out_dir):
     print(f"  [SAVED] Probability summary -> {out_path}")
 
 
-def plot_review_waveform(client_sds, inventory, row, cls_name, top_proba, out_path):
+def _fetch_padded_trace(client_sds, inventory, net, sta, chan, det_start,
+                        pre_s, window_s, target_fs, fetch_pad_s):
     """
-    Re-fetch and plot the padded waveform for one classified detection --
-    the tabular-branch equivalent of 09a's spectrogram review image. Needs
-    SDS access; caller should catch exceptions and skip gracefully.
+    Literal copy of 08a_report_figures_events.py's _fetch_padded_trace() --
+    kept as a copy (not an import) for the same reason as this script's other
+    copied helpers: no hidden dependency on 08a's own CONFIGURATION section.
+    Fetches a window LARGER than needed (fetch_pad_s of extra context each
+    side) so response removal / filtering have run-in room before the region
+    actually shown in the figure.
+
+    Returns
+    -------
+    (trace, t_on, t_off, None) on success, (None, None, None, reason_str) on failure.
     """
-    from obspy import UTCDateTime
     from preprocessing import build_station_times_df, remove_response_or_fallback
 
-    t_on  = UTCDateTime(row["window_start"]) - REVIEW_PAD_SEC
-    t_off = UTCDateTime(row["window_end"])   + REVIEW_PAD_SEC
+    t_on    = det_start - pre_s
+    t_off   = t_on + window_s
+    t_on_p  = t_on - fetch_pad_s
+    t_off_p = t_off + fetch_pad_s
+    try:
+        st_raw = client_sds.get_waveforms(net, sta, "*", chan, t_on_p, t_off_p)
+        if len(st_raw) == 0:
+            return None, None, None, "no waveform in SDS"
+        st_raw.merge(method=1, fill_value="interpolate")
 
-    st_raw = client_sds.get_waveforms(row["network"], row["station"], "*", row["channel"], t_on, t_off)
-    if len(st_raw) == 0:
+        sdf    = build_station_times_df(st_raw, t_on_p, t_off_p)
+        st_vel = remove_response_or_fallback(st_raw, inventory, sdf)
+        if len(st_vel) == 0:
+            return None, None, None, "response removal failed"
+
+        tr = st_vel[0].copy()
+        if abs(tr.stats.sampling_rate - target_fs) > 0.5:
+            tr.resample(target_fs)
+
+        if not np.all(np.isfinite(tr.data)) or np.max(np.abs(tr.data)) == 0:
+            return None, None, None, "degenerate trace (NaN/Inf/all-zero)"
+        return tr, t_on, t_off, None
+    except Exception as e:
+        return None, None, None, str(e)
+
+
+def _trim_to_fixed_length(tr, t_on, t_off, target_fs, window_s):
+    """Literal copy of 08a's _trim_to_fixed_length() -- trim a COPY of tr to
+    exactly [t_on, t_off] -> exactly window_s*target_fs samples."""
+    tr = tr.copy()
+    tr.trim(t_on, t_off, pad=True, fill_value=0)
+    nt = int(round(window_s * target_fs))
+    if len(tr.data) < nt:
+        tr.data = np.pad(tr.data, (0, nt - len(tr.data)))
+    elif len(tr.data) > nt:
+        tr.data = tr.data[:nt]
+    return tr
+
+
+def plot_review_waveform(client_sds, inventory, row, cls_name, top_proba, out_path):
+    """
+    Same 2-panel style (bandpassed waveform + broadband dB spectrogram) as
+    08a's report figure gallery, via visualization.plot_waveform_spectrogram_
+    example() -- the tabular-branch review image now looks the same as the
+    training-catalog example figures, just with predicted class/probability
+    standing in for the (unknown, here) true class and catalog distance.
+    Needs SDS access; caller should catch exceptions and skip gracefully.
+    """
+    from obspy import UTCDateTime
+
+    det_start = UTCDateTime(row["window_start"])
+
+    tr_padded, t_on, t_off, err = _fetch_padded_trace(
+        client_sds, inventory, row["network"], row["station"], row["channel"], det_start,
+        REVIEW_PRE_S, REVIEW_WINDOW_S, REVIEW_TARGET_FS, REVIEW_FETCH_PAD_S,
+    )
+    if tr_padded is None:
         return False
-    st_raw.merge(fill_value=0)
 
-    sdf    = build_station_times_df(st_raw, t_on, t_off)
-    st_vel = remove_response_or_fallback(st_raw, inventory, sdf)
-    if len(st_vel) == 0:
+    # -- broadband copy for the spectrogram: trim only, no filtering ---------
+    tr_broadband = _trim_to_fixed_length(tr_padded, t_on, t_off, REVIEW_TARGET_FS, REVIEW_WINDOW_S)
+    if not (np.all(np.isfinite(tr_broadband.data)) and np.max(np.abs(tr_broadband.data)) > 0):
         return False
 
-    tr = st_vel[0].copy()
-    nyq = tr.stats.sampling_rate / 2
-    tr.filter("bandpass", freqmin=REVIEW_FREQ_MIN, freqmax=min(REVIEW_FREQ_MAX, 0.9 * nyq),
-              corners=4, zerophase=True)
+    # -- waveform panel: bandpass the PADDED trace first, trim after ---------
+    tr_wave_padded = tr_padded.copy()
+    nyq = tr_wave_padded.stats.sampling_rate / 2.0
+    tr_wave_padded.filter("bandpass", freqmin=REVIEW_WAVE_FREQMIN,
+                          freqmax=min(REVIEW_WAVE_FREQMAX, 0.9 * nyq),
+                          corners=4, zerophase=True)
+    tr_wave = _trim_to_fixed_length(tr_wave_padded, t_on, t_off, REVIEW_TARGET_FS, REVIEW_WINDOW_S)
 
-    t_axis = tr.times() - REVIEW_PAD_SEC   # 0 = window_start
-    dur    = UTCDateTime(row["window_end"]) - UTCDateTime(row["window_start"])
+    # -- spectrogram: broadband (unfiltered) ----------------------------------
+    f_full, t_full, Sxx = scipy_spectrogram(
+        tr_broadband.data, fs=tr_broadband.stats.sampling_rate, window="hann",
+        nperseg=REVIEW_SPEC_NPERSEG, noverlap=REVIEW_SPEC_NOVERLAP, nfft=REVIEW_SPEC_NFFT,
+        scaling="density", mode="psd",
+    )
+    freq_mask = f_full <= REVIEW_FREQ_MAX_KEEP
+    freq_axis = f_full[freq_mask]
+    Sxx_db    = 10 * np.log10(Sxx[freq_mask, :] + REVIEW_PSD_FLOOR_EPS)
 
-    fig, ax = plt.subplots(figsize=(9, 3.2))
-    ax.plot(t_axis, tr.data * 1e6, lw=0.6, color=CLASS_COLORS.get(cls_name, "black"))
-    ax.axvspan(0, dur, color="grey", alpha=0.15)
-    ax.set_ylabel("Velocity (µm/s)")
-    ax.set_xlabel("Time (s), 0 = detection onset")
-    ax.set_title(f"{row['network']}.{row['station']}  {row['window_start'][:19]}Z\n"
-                f"predicted = {cls_name}  (p={top_proba:.2f})  duration={dur:.1f}s",
-                fontsize=10, fontweight="bold")
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close()
+    snr_val   = row.get("SNR", np.nan)
+    snr_str   = f"SNR={snr_val:.2f}" if pd.notna(snr_val) else "SNR=n/a"
+    title_l1  = f"{cls_name} (predicted, p={top_proba:.2f}) — {str(row['window_start'])[:19]}"
+    title_l2  = f"{row['network']}.{row['station']} | {snr_str} | duration={row.get('duration_s', float('nan')):.1f}s"
+
+    plot_waveform_spectrogram_example(
+        times_wave     = tr_wave.times() - REVIEW_PRE_S,
+        wave_data      = tr_wave.data,
+        times_spec     = t_full - REVIEW_PRE_S,
+        freq_axis      = freq_axis,
+        spec_db        = Sxx_db,
+        det_duration_s = row.get("duration_s", 0.0),
+        title_lines    = (title_l1, title_l2),
+        out_path       = out_path,
+        spec_vmin      = REVIEW_SPEC_VMIN,
+        spec_vmax      = REVIEW_SPEC_VMAX,
+    )
     return True
 
 
@@ -1032,7 +928,7 @@ if RUN_CLASSIFICATION:
 
 
 # =============================================================================
-# SECTION 7 — END
+# SECTION 6 — END
 # =============================================================================
 
 print(f"\n{'='*70}")

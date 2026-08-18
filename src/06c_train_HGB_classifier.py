@@ -108,6 +108,10 @@ HGB_LR        = 0.1
 # RF — baseline comparison
 RF_N_EST      = 200
 
+# ── Save the final trained model (for downstream scripts, e.g. 09b) ───────────
+SAVE_FINAL_MODEL = True
+SAVE_MODEL_RUN   = "B"   # "B" = original + denoised rescued; falls back to "A" automatically if Run B didn't run
+
 # ── Example waveform gallery (optional QC figure) ──────────────────────────────
 # catalog_windows_<stamp>.csv only stores the 99/103 SCALAR features per row,
 # not the raw signal — this re-fetches the actual waveform from the SDS
@@ -152,6 +156,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.impute import SimpleImputer
 from imblearn.over_sampling import SMOTE
 from obspy import UTCDateTime
+import joblib
 
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SRC_DIR)
@@ -465,7 +470,9 @@ print(f"  n_features = {len(features)}")
 def train_and_eval(df, label, features, smote_k, test_size, rs):
     """
     Full pipeline: event-stratified split → SMOTE → HGB + RF → metrics dict.
-    Returns (results_dict, cm_hgb, cm_rf, X_test, y_test) for plotting.
+    Returns (results_dict, cms_dict, X_test, y_test, models_dict, imputer) for
+    plotting AND for persisting the fitted model (models_dict/imputer are the
+    fitted objects themselves, not just their metrics).
     """
     # ── Split by unique events ─────────────────────────────────────────────────
     events = df[["event_time", "event_type"]].drop_duplicates("event_time")
@@ -505,7 +512,8 @@ def train_and_eval(df, label, features, smote_k, test_size, rs):
     print(f"  After SMOTE: {len(X_tr):,} rows")
 
     results = {"label": label, "n_train_raw": train_mask.sum(), "n_test": test_mask.sum()}
-    cms = {}
+    cms    = {}
+    models = {}
 
     for name, short, model in [
         ("Hist. GradBoost", "HGB",
@@ -550,9 +558,10 @@ def train_and_eval(df, label, features, smote_k, test_size, rs):
             },
             "train_time_s": round(elapsed, 2),
         }
-        cms[short] = confusion_matrix(y_te, y_pred, labels=CLASS_ORDER, normalize="true")
+        cms[short]    = confusion_matrix(y_te, y_pred, labels=CLASS_ORDER, normalize="true")
+        models[short] = model
 
-    return results, cms, X_te, y_te
+    return results, cms, X_te, y_te, models, _imp
 
 
 # =============================================================================
@@ -567,7 +576,7 @@ out_A = train_and_eval(orig, "A — Original only", features, SMOTE_K, TEST_SIZE
 if out_A is None:
     print("[ERROR] Run A failed. Aborting.")
     sys.exit(1)
-results_A, cms_A, Xte_A, yte_A = out_A
+results_A, cms_A, Xte_A, yte_A, models_A, imputer_A = out_A
 
 
 # =============================================================================
@@ -576,6 +585,8 @@ results_A, cms_A, Xte_A, yte_A = out_A
 
 results_B = None
 cms_B     = None
+models_B  = None
+imputer_B = None
 
 if has_rescue:
     print(f"\n{'='*65}")
@@ -583,7 +594,7 @@ if has_rescue:
     print(f"{'='*65}")
     out_B = train_and_eval(combined, "B — Original + rescued", features, SMOTE_K, TEST_SIZE, RANDOM_STATE)
     if out_B is not None:
-        results_B, cms_B, Xte_B, yte_B = out_B
+        results_B, cms_B, Xte_B, yte_B, models_B, imputer_B = out_B
     else:
         print("  [WARN] Run B failed — skipping comparison figure.")
 else:
@@ -601,6 +612,8 @@ else:
 
 results_C = None
 cms_C     = None
+models_C  = None
+imputer_C = None
 
 if has_rescue_raw:
     print(f"\n{'='*65}")
@@ -609,13 +622,61 @@ if has_rescue_raw:
     out_C = train_and_eval(combined_raw, "C — Original + raw rescued (ablation)",
                             features, SMOTE_K, TEST_SIZE, RANDOM_STATE)
     if out_C is not None:
-        results_C, cms_C, Xte_C, yte_C = out_C
+        results_C, cms_C, Xte_C, yte_C, models_C, imputer_C = out_C
     else:
         print("  [WARN] Run C failed — skipping ablation comparison.")
 else:
     print(f"\n  [INFO] No raw-ablation catalog loaded — skipping Run C.")
     print(f"         To enable, set RESCUE_CATALOG_RAW_CSV at the top of this script")
     print(f"         (produced by 03d as rescue_catalog_raw_<stamp>.csv).")
+
+
+# =============================================================================
+# SECTION 7c — SAVE THE FINAL TRAINED MODEL
+# =============================================================================
+# Persists ONE fitted HGB classifier as a joblib bundle, so downstream scripts
+# (09b) can load a fixed, already-trained model instead of retraining it
+# inline — the tabular-branch equivalent of 07b saving its .keras checkpoint.
+
+if SAVE_FINAL_MODEL:
+    print(f"\n{'='*65}")
+    print("  STEP 4c — Save final model")
+    print(f"{'='*65}")
+
+    _run_registry = {
+        "A": ("A — Original only",                results_A, models_A, imputer_A),
+        "B": ("B — Original + denoised rescued",   results_B, models_B, imputer_B),
+        "C": ("C — Original + raw rescued (ablation)", results_C, models_C, imputer_C),
+    }
+
+    _save_run = SAVE_MODEL_RUN if _run_registry.get(SAVE_MODEL_RUN, (None,))[1] is not None else "A"
+    _label, _results, _models, _imputer = _run_registry[_save_run]
+
+    if _results is None or _models is None:
+        print(f"  [WARN] Requested run '{SAVE_MODEL_RUN}' (and fallback 'A') both "
+              f"unavailable — no model saved.")
+    else:
+        if _save_run != SAVE_MODEL_RUN:
+            print(f"  [WARN] SAVE_MODEL_RUN='{SAVE_MODEL_RUN}' did not run — "
+                  f"saving Run '{_save_run}' instead.")
+
+        model_path = os.path.join(RUN_DIR, f"hgb_final_model_{STAMP}.joblib")
+        joblib.dump({
+            "model":       _models["HGB"],
+            "imputer":     _imputer,
+            "features":    features,
+            "class_order": CLASS_ORDER,
+            "run_label":   _label,
+            "metrics":     {k: v for k, v in _results["HGB"].items()},
+            "trained_on":  STAMP,
+            "source_script": "06c_train_HGB_classifier.py",
+        }, model_path)
+
+        print(f"  [SAVED] Final model ({_label}) -> {model_path}")
+        print(f"          acc={_results['HGB']['acc']:.3f}  "
+              f"macro F1={_results['HGB']['macro_f1']:.3f}  "
+              f"n_features={len(features)}")
+        print(f"          Point 09b's MODEL_PATH at this file to apply it to new data.")
 
 
 # =============================================================================
