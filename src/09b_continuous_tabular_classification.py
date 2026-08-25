@@ -26,6 +26,48 @@ TWO PHASES (kept for workflow convenience, see above) -----------------------
         (optional, needs SDS again) a waveform+spectrogram review gallery,
         same 2-panel style as 08a's report figures.
 
+CROSS-STATION COINCIDENCE (added -- Elsa's question: "is STA/LTA detection
+checked between stations")
+-------------------------------------------------------------------------
+Answer was NO before this: Phase 1 ran DetecteurV3 completely independently
+per station, one at a time, with zero awareness of what any other station
+saw at the same time. Since a real (non-noise) event on the Mont-Blanc
+massif should register on more than one station, Phase 1 now cross-
+references every detected window's onset against every OTHER station's
+onsets for the SAME day, within +/-COINCIDENCE_TOLERANCE_S seconds (Section
+1), and writes two extra columns per window: n_other_stations_within_tol and
+other_stations_within_tol (a "net.sta,net.sta,..." list). These carry
+through consolidate_month_csvs() and Phase 2's predictions_<month>.csv
+unchanged (see meta_cols in the classification section below).
+
+IMPORTANT -- this only ANNOTATES, it never DROPS a window here. Classification
+hasn't happened yet at Phase 1 time, so there's no way to know here whether a
+single-station detection is a spurious noise trigger or a legitimate near-
+source event (rockslide/ice quake are spatially localized processes that can
+genuinely register on only 1-2 nearby stations even when real -- see
+08g_multistation_coincidence_check.py's own docstring for the full
+reasoning). Filtering by class is a deliberate DOWNSTREAM decision on the
+predictions CSV (08g does exactly this, class-aware, and is now largely
+redundant with this native annotation for a fresh run -- it's still useful
+against OLDER predictions CSVs that predate this change, or to double-check).
+
+The check is per-day, network-wide, single fixed tolerance -- not distance-
+scaled, and a detection within COINCIDENCE_TOLERANCE_S of local midnight
+could in principle miss a corroborating pick that landed just after midnight
+on the adjacent day (day is the unit Phase 1 already scans in; the tolerance
+is tiny next to a day, so this is a minor edge effect, not ignored so much as
+accepted). Sanity-check COINCIDENCE_TOLERANCE_S against real station spacing
+before leaning on the annotated counts for the report.
+
+SCHEMA UPGRADE / RE-RUNNING PHASE 1 -- a feats_<net>_<sta>_<day>.csv written
+before this change has no n_other_stations_within_tol column. Phase 1's
+skip/resume check now looks for that column specifically: an old file
+without it gets [REDO] (re-detected, not silently left stale and skipped),
+a file already carrying it gets [SKIP-DETECT] (its onsets are still reused
+for that day's coincidence check against other stations, just without
+re-touching SDS or re-running DetecteurV3 for it). Re-running Phase 1 over
+MONTHS_TO_SCAN after this change is therefore expected and safe either way.
+
 Output layout
 -------------
   EXTRACTION_DIR/
@@ -89,6 +131,15 @@ DET_WINDOW_SEC  = 10 * 60   # 10-minute sliding processing window for the detect
 DET_OVERLAP_SEC = 1  * 60   # 1-minute overlap between consecutive detector windows
 DET_MIN_EVENT_DUR_SEC = 5.0     # discard detections shorter than this
 DET_MIN_TRACE_SEC     = 120.0   # minimum day-segment length to attempt detection at all
+
+# -- Cross-station coincidence (Phase 1) -- see module docstring's CROSS-STATION
+# COINCIDENCE section. +/-seconds around each detection's onset within which ANOTHER
+# station's detection (any station, checked before classification even exists) counts
+# as corroborating -- ANNOTATES every window (n_other_stations_within_tol /
+# other_stations_within_tol), does not drop anything itself. Single network-wide
+# value, not distance-scaled -- sanity-check against your station geometry. Same
+# value as 09a's own COINCIDENCE_TOLERANCE_S, kept identical so both chapters agree.
+COINCIDENCE_TOLERANCE_S = 20
 
 # -- Feature extraction window (Phase 1) -- variable length, matches 04a ------
 PAD_SEC = 5        # seconds added before t_on and after t_off, same as 04a
@@ -160,7 +211,8 @@ RUN_DIR, STAMP = create_run_dir(OUTPUT_DIR)
 log_file, log_path = setup_logging(
     RUN_DIR, "09b_continuous_tabular_classification.py",
     extra_info=(f"RUN_EXTRACTION={RUN_EXTRACTION}  RUN_CLASSIFICATION={RUN_CLASSIFICATION}  |  "
-                f"EXTRACTION_DIR: {EXTRACTION_DIR}  |  DET_THR_ON={DET_THR_ON}  |  SMOKE_TEST={SMOKE_TEST}")
+                f"EXTRACTION_DIR: {EXTRACTION_DIR}  |  DET_THR_ON={DET_THR_ON}  |  "
+                f"COINCIDENCE_TOLERANCE_S={COINCIDENCE_TOLERANCE_S}  |  SMOKE_TEST={SMOKE_TEST}")
 )
 
 os.makedirs(EXTRACTION_DIR, exist_ok=True)
@@ -183,7 +235,7 @@ if RUN_EXTRACTION:
     from catalog_helpers import build_station_list_from_inventory
     from preprocessing import preprocess_day
     from detecteurV3_fonctions import DetecteurV3   # Groult et al. 2026 -- third-party, do not modify
-    from detection import compute_snr, merge_window_events
+    from detection import compute_snr, merge_window_events, compute_cross_station_coincidence
     from features import FEATURE_NAMES_3C, extract_features, POLARIZATION_NAMES
 
     # Only extract the features the saved model actually uses (Top-60, not all 103) -- both cheaper to store
@@ -368,24 +420,48 @@ if RUN_EXTRACTION:
         t_cut_on  = max(t_on  - PAD_SEC, day_start)
         t_cut_off = min(t_off + PAD_SEC, day_end)
 
+        # SNR margin: compute_snr() needs a noise window *outside* [t_on, t_off]
+        # on at least one side (roughly duration-sized for SNR_full_mean/median/
+        # s2n_median, 5s for the picking metrics) to be meaningful. Fetching only
+        # PAD_SEC=5s of margin (the same window used for feature extraction,
+        # matching 04a exactly) starves that: for any event longer than ~5s,
+        # compute_snr's noise-window slices fall outside the fetched trace and
+        # it silently falls back to noise==signal, i.e. SNR~1.0 regardless of
+        # the true signal strength -- exactly the suspiciously-flat SNR=0.86/
+        # 1.02/1.25 values seen in the review gallery even for visibly strong
+        # bursts. Fetch a wider window for SNR only; the feature-extraction
+        # window handed to extract_features() below stays exactly PAD_SEC,
+        # unchanged, so it still matches 04a's training-time convention.
+        snr_pad   = min(max(30.0, 1.5 * (t_off - t_on)), 120.0)
+        t_snr_on  = max(t_on  - snr_pad, day_start)
+        t_snr_off = min(t_off + snr_pad, day_end)
+
         try:
-            st_raw = client_sds.get_waveforms(net, sta, loc if loc else "*", chan, t_cut_on, t_cut_off)
+            st_raw = client_sds.get_waveforms(net, sta, loc if loc else "*", chan, t_snr_on, t_snr_off)
         except Exception:
             return None
         if len(st_raw) == 0:
             return None
         st_raw.merge(method=1, fill_value="interpolate")
 
-        sdf    = build_station_times_df(st_raw, t_cut_on, t_cut_off)
+        sdf    = build_station_times_df(st_raw, t_snr_on, t_snr_off)
         st_vel = remove_response_or_fallback(st_raw, inventory, sdf)
         if len(st_vel) == 0:
             return None
-        tr_cut = st_vel[0]
+        tr_wide = st_vel[0]
+        if tr_wide.stats.npts < 10:
+            return None
+        fs = tr_wide.stats.sampling_rate
+
+        # Feature-extraction window: exactly [t_on-PAD_SEC, t_off+PAD_SEC], sliced
+        # from the same response-removed trace -- identical to what a narrow
+        # PAD_SEC-only fetch would have produced, so extract_features() below is
+        # completely unaffected by this fix.
+        tr_cut = tr_wide.slice(t_cut_on, t_cut_off)
         if tr_cut.stats.npts < 10:
             return None
-        fs = tr_cut.stats.sampling_rate
 
-        tr_filt_local = tr_cut.copy()
+        tr_filt_local = tr_wide.copy()
         nyq = fs / 2
         tr_filt_local.filter('bandpass', freqmin=DET_FREQ_MIN,
                              freqmax=min(DET_FREQ_MAX, 0.9 * nyq), corners=4, zerophase=True)
@@ -420,7 +496,14 @@ if RUN_EXTRACTION:
             **snr,
         }
         for fname in _FEAT_NAMES:
-            row[fname] = feat_dict.get(fname, np.nan)
+            val = feat_dict.get(fname, np.nan)
+            # Some ratio/log-style features (e.g. eratio_*, ediff_*) can blow
+            # up to +/-inf on degenerate, near-zero-energy continuous-data
+            # windows -- a scenario curated catalog training data rarely hits
+            # but raw unlabeled scanning does. SimpleImputer only fills NaN,
+            # not inf, so write NaN here to keep it fillable downstream in
+            # Phase 2 (and to keep feats_*.csv itself free of literal inf).
+            row[fname] = val if np.isfinite(val) else np.nan
         return row
 
 
@@ -491,7 +574,20 @@ if RUN_EXTRACTION:
             day_start = day_utc
             day_end   = day_utc + 86400
 
+            # ---- PASS 1: STA/LTA-detect EVERY station for this day first --------------
+            # (see module docstring's CROSS-STATION COINCIDENCE section). Coincidence
+            # needs every station's onsets for the SAME day at once, so feature
+            # extraction (extract_window_row, needs its own fresh SDS fetch per event)
+            # is deferred to PASS 3 below -- PASS 1 only detects and remembers each
+            # event's (t_on, t_off, trigger_cft, trace_bounds), or reuses onsets from an
+            # already-extracted file so it can still corroborate other stations without
+            # re-touching SDS.
+            station_day_events  = {}   # station_key -> [(t_on, t_off, trigger_cft, trace_bounds), ...]
+            station_needs_write = set()
+            station_timing      = {}
+
             for net, sta, loc, chan in station_list:
+                station_key = f"{net}.{sta}"
                 t_station_day = time.time()
 
                 out_fname = f"feats_{net}_{sta}_{day_utc.strftime('%Y%m%d')}.csv"
@@ -499,8 +595,31 @@ if RUN_EXTRACTION:
                 n_station_days += 1
 
                 if os.path.isfile(out_path):
-                    print(f"  [SKIP] {day_str} {net}.{sta} — already extracted ({out_fname})")
-                    continue
+                    has_coincidence = False
+                    _read_error = None
+                    try:
+                        _existing_cols = pd.read_csv(out_path, nrows=0).columns
+                        has_coincidence = "n_other_stations_within_tol" in _existing_cols
+                    except Exception as e:
+                        # truncated/corrupted file (e.g. an interrupted previous run) --
+                        # fall back to treating it as stale rather than crashing the loop.
+                        _read_error = e
+                    if has_coincidence:
+                        # already extracted under the coincidence-aware schema -- reuse
+                        # its onsets for PASS 2 below (so it still corroborates OTHER
+                        # stations) without re-fetching SDS or re-running DetecteurV3.
+                        onsets = [UTCDateTime(s) for s in
+                                  pd.read_csv(out_path, usecols=["window_start"])["window_start"]]
+                        station_day_events[station_key] = [(t_on, None, None, None) for t_on in onsets]
+                        print(f"  [SKIP-DETECT] {day_str} {net}.{sta} — already extracted "
+                              f"({out_fname}), reusing {len(onsets)} onset(s) for coincidence")
+                        continue
+                    elif _read_error is not None:
+                        print(f"  [REDO] {day_str} {net}.{sta} — {out_fname} unreadable "
+                              f"({_read_error}), re-detecting")
+                    else:
+                        print(f"  [REDO] {day_str} {net}.{sta} — {out_fname} predates the "
+                              f"cross-station coincidence check, re-detecting")
 
                 try:
                     st = client_sds.get_waveforms(net, sta, "*", chan, day_start, day_end)
@@ -515,7 +634,7 @@ if RUN_EXTRACTION:
                 except Exception:
                     st.merge(fill_value=0)
 
-                day_rows = []
+                day_events = []   # list of (t_on, t_off, trigger_cft, trace_bounds)
 
                 for tr_raw in st:
                     seg_dur = tr_raw.stats.endtime - tr_raw.stats.starttime
@@ -577,17 +696,45 @@ if RUN_EXTRACTION:
                             break
                         win_start = win_end - DET_OVERLAP_SEC
 
-                    # ---- Feature + SNR extraction for each detected event --------
-                    # (fresh short SDS fetch per event, see extract_window_row docstring
-                    # for why this doesn't just slice tr_vel/tr_filt above)
+                    trace_bounds = (tr_vel.stats.starttime, tr_vel.stats.endtime)
                     for ev_key, (t_on, t_off) in total_events.items():
-                        row = extract_window_row(
-                            client_sds, inventory, net, sta, loc, chan,
-                            (tr_vel.stats.starttime, tr_vel.stats.endtime),
-                            t_on, t_off, total_thresholds[ev_key][0], day_str,
-                        )
-                        if row is not None:
-                            day_rows.append(row)
+                        day_events.append((t_on, t_off, total_thresholds[ev_key][0], trace_bounds))
+
+                station_day_events[station_key] = day_events
+                station_needs_write.add(station_key)
+                station_timing[station_key] = t_station_day
+
+            # ---- PASS 2: cross-station coincidence for this day's onsets --------------
+            coincidence_by_station = compute_cross_station_coincidence(
+                station_day_events, COINCIDENCE_TOLERANCE_S
+            )
+
+            # ---- PASS 3: feature-extract (needs its own SDS fetch, see
+            # extract_window_row's docstring) + write output for stations detected this
+            # run (SKIP-DETECT stations above are already fully extracted -- nothing to
+            # do for them) ---------------------------------------------------------------
+            for net, sta, loc, chan in station_list:
+                station_key = f"{net}.{sta}"
+                if station_key not in station_needs_write:
+                    continue
+
+                t_station_day = station_timing[station_key]
+                day_events    = station_day_events[station_key]
+                coinc         = coincidence_by_station[station_key]
+
+                out_fname = f"feats_{net}_{sta}_{day_utc.strftime('%Y%m%d')}.csv"
+                out_path  = os.path.join(EXTRACTION_DIR, out_fname)
+
+                day_rows = []
+                for (t_on, t_off, trigger_cft, trace_bounds), (n_other, other_str) in zip(day_events, coinc):
+                    row = extract_window_row(
+                        client_sds, inventory, net, sta, loc, chan,
+                        trace_bounds, t_on, t_off, trigger_cft, day_str,
+                    )
+                    if row is not None:
+                        row["n_other_stations_within_tol"] = int(n_other)
+                        row["other_stations_within_tol"]   = other_str
+                        day_rows.append(row)
 
                 dt = time.time() - t_station_day
 
@@ -597,8 +744,9 @@ if RUN_EXTRACTION:
 
                 pd.DataFrame(day_rows).to_csv(out_path, index=False)
                 n_events_total += len(day_rows)
+                n_multi = sum(1 for r in day_rows if r["n_other_stations_within_tol"] >= 1)
                 print(f"  {day_str} {net}.{sta:<6s}  {len(day_rows):4d} event(s) detected+extracted "
-                      f"in {dt:6.1f}s")
+                      f"({n_multi}/{len(day_rows)} multi-station) in {dt:6.1f}s")
 
         print(f"\n  [DONE] Month {month_tag}: {n_events_total} event(s) across "
               f"{n_station_days} station-day(s) -> feature CSVs in {EXTRACTION_DIR}/")
@@ -726,7 +874,7 @@ def _trim_to_fixed_length(tr, t_on, t_off, target_fs, window_s):
     return tr
 
 
-def plot_review_waveform(client_sds, inventory, row, cls_name, top_proba, out_path):
+def plot_review_waveform(client_sds, inventory, row, cls_name, top_proba, out_path, calibrated=True):
     """
     Same 2-panel style (bandpassed waveform + broadband dB spectrogram) as
     08a's report figure gallery, via visualization.plot_waveform_spectrogram_
@@ -734,6 +882,14 @@ def plot_review_waveform(client_sds, inventory, row, cls_name, top_proba, out_pa
     training-catalog example figures, just with predicted class/probability
     standing in for the (unknown, here) true class and catalog distance.
     Needs SDS access; caller should catch exceptions and skip gracefully.
+
+    calibrated : bool -- False when called with inventory=None (FDSN down).
+    remove_response_or_fallback() already degrades gracefully to cleaned-but-
+    uncalibrated raw counts in that case (see preprocessing.py), so this
+    still produces a usable figure -- shape/duration/frequency content are
+    still roughly indicative, only the amplitude axis is not true ground
+    velocity. This flag just controls the title annotation so that's obvious
+    at a glance rather than silently mislabeled.
     """
     from obspy import UTCDateTime
 
@@ -769,9 +925,29 @@ def plot_review_waveform(client_sds, inventory, row, cls_name, top_proba, out_pa
     freq_axis = f_full[freq_mask]
     Sxx_db    = 10 * np.log10(Sxx[freq_mask, :] + REVIEW_PSD_FLOOR_EPS)
 
+    # REVIEW_SPEC_VMIN/VMAX are tuned for CALIBRATED m/s amplitudes. Raw
+    # digitizer counts run ~10^6-10^9x larger (the same scale factor as the
+    # 04a units-bug investigation), so their PSD in dB lands far above that
+    # fixed range -- every pixel saturates to vmax, i.e. a uniformly red
+    # spectrogram, not a meaningful one. When uncalibrated, auto-scale from
+    # this window's own dB range instead, so the relative time-frequency
+    # STRUCTURE (still physically meaningful for a shape/pattern check,
+    # unlike absolute amplitude) is actually visible.
+    if calibrated:
+        spec_vmin, spec_vmax = REVIEW_SPEC_VMIN, REVIEW_SPEC_VMAX
+    else:
+        _finite = Sxx_db[np.isfinite(Sxx_db)]
+        if _finite.size:
+            spec_vmin, spec_vmax = np.percentile(_finite, [5, 99.5])
+            if spec_vmax - spec_vmin < 1e-6:
+                spec_vmax = spec_vmin + 1.0
+        else:
+            spec_vmin, spec_vmax = REVIEW_SPEC_VMIN, REVIEW_SPEC_VMAX
+
     snr_val   = row.get("SNR", np.nan)
     snr_str   = f"SNR={snr_val:.2f}" if pd.notna(snr_val) else "SNR=n/a"
-    title_l1  = f"{cls_name} (predicted, p={top_proba:.2f}) — {str(row['window_start'])[:19]}"
+    cal_tag   = "" if calibrated else "  [UNCALIBRATED — raw counts, not m/s]"
+    title_l1  = f"{cls_name} (predicted, p={top_proba:.2f}) — {str(row['window_start'])[:19]}{cal_tag}"
     title_l2  = f"{row['network']}.{row['station']} | {snr_str} | duration={row.get('duration_s', float('nan')):.1f}s"
 
     plot_waveform_spectrogram_example(
@@ -783,8 +959,8 @@ def plot_review_waveform(client_sds, inventory, row, cls_name, top_proba, out_pa
         det_duration_s = row.get("duration_s", 0.0),
         title_lines    = (title_l1, title_l2),
         out_path       = out_path,
-        spec_vmin      = REVIEW_SPEC_VMIN,
-        spec_vmax      = REVIEW_SPEC_VMAX,
+        spec_vmin      = spec_vmin,
+        spec_vmax      = spec_vmax,
     )
     return True
 
@@ -813,7 +989,8 @@ if RUN_CLASSIFICATION:
     meta_cols = ["network", "station", "location", "channel", "day",
                 "window_start", "window_end", "duration_s", "trigger_on_cft",
                 "SNR", "SNR_picking_5_5", "SNR_picking_3_3", "SNR_picking_1_3",
-                "SNR_full_mean", "SNR_full_median", "SNR_s2n_median"]
+                "SNR_full_mean", "SNR_full_median", "SNR_s2n_median",
+                "n_other_stations_within_tol", "other_stations_within_tol"]
 
     rows_by_month = {}
     _noise_review_counter = [0]
@@ -829,7 +1006,12 @@ if RUN_CLASSIFICATION:
                   f"{missing_feats[:5]}{'...' if len(missing_feats) > 5 else ''}")
             continue
 
-        X = df_feat[final_features].values
+        X = df_feat[final_features].values.astype(float)
+        n_inf = int(np.isinf(X).sum())
+        if n_inf:
+            X[np.isinf(X)] = np.nan
+            print(f"         [WARN] {n_inf} infinite feature value(s) in "
+                  f"{os.path.basename(fpath)} -> treated as missing (imputed).")
         X = final_imputer.transform(X)
         proba = final_model.predict_proba(X)
         labels_idx = np.argmax(proba, axis=1)
@@ -873,55 +1055,75 @@ if RUN_CLASSIFICATION:
         _client_sds  = connect_sds(SDS_ROOT)
         _client_fdsn = connect_fdsn(ISTERRE_URL)
 
-        if _client_sds is None or _client_fdsn is None:
-            print("  [WARN] SDS/FDSN unavailable — skipping review waveform gallery "
+        if _client_sds is None:
+            # Only SDS is a hard requirement -- it's where the actual waveform
+            # samples live. FDSN/inventory is needed for CALIBRATED (m/s)
+            # amplitudes, but remove_response_or_fallback() already degrades
+            # gracefully to cleaned, uncalibrated raw counts when
+            # inventory=None (see preprocessing.py) -- so an FDSN outage no
+            # longer has to block the review gallery entirely, only its
+            # amplitude calibration. See the inventory fetch below.
+            print("  [WARN] SDS unavailable — skipping review waveform gallery "
                   "(this step only works on the cluster / with VPN access).")
         else:
             all_rows_df = pd.concat([pd.DataFrame(r) for r in rows_by_month.values()], ignore_index=True)
-            _t_min = pd.to_datetime(all_rows_df["window_start"]).min()
-            _t_max = pd.to_datetime(all_rows_df["window_end"]).max()
-            _inventory = fetch_inventory(
-                _client_fdsn, str(_t_min.date()), str((_t_max + pd.Timedelta(days=1)).date()),
-                lat_min=LAT_MIN, lat_max=LAT_MAX, lon_min=LON_MIN, lon_max=LON_MAX,
-            )
+
+            _inventory = None
+            if _client_fdsn is not None:
+                _t_min = pd.to_datetime(all_rows_df["window_start"]).min()
+                _t_max = pd.to_datetime(all_rows_df["window_end"]).max()
+                _inventory = fetch_inventory(
+                    _client_fdsn, str(_t_min.date()), str((_t_max + pd.Timedelta(days=1)).date()),
+                    lat_min=LAT_MIN, lat_max=LAT_MAX, lon_min=LON_MIN, lon_max=LON_MAX,
+                )
+
             if _inventory is None:
-                print("  [WARN] Inventory fetch failed — skipping review waveform gallery.")
+                print("  [WARN] No instrument inventory (FDSN unreachable or inventory fetch")
+                print("         failed) -- continuing with UNCALIBRATED raw-counts waveforms.")
+                print("         Shape/duration/frequency content are still roughly indicative;")
+                print("         amplitude/true ground velocity are NOT. Figures are tagged")
+                print("         'UNCALIBRATED' in the title and '_UNCAL' in the filename --")
+                print("         rerun once FDSN is back for calibrated figures.")
             else:
-                by_class = {c: [] for c in CLASS_ORDER}
-                for _, r in all_rows_df.iterrows():
-                    cls = r["predicted_class"]
-                    proba_col = f"proba_{str(cls).replace(' ', '_')}"
-                    top_p = float(r.get(proba_col, np.nan))
-                    save = False
-                    if cls != "noise" and SAVE_IMAGES_FOR_NONNOISE:
-                        save = True
-                    elif cls == "noise" and SAVE_EVERY_NTH_NOISE > 0:
-                        _noise_review_counter[0] += 1
-                        save = (_noise_review_counter[0] % SAVE_EVERY_NTH_NOISE == 0)
-                    if save and cls in by_class:
-                        by_class[cls].append((top_p, r))
+                print(f"  [OK] Instrument inventory fetched -- figures will be calibrated ground velocity.")
 
-                for cls, items in by_class.items():
-                    if not items:
+            by_class = {c: [] for c in CLASS_ORDER}
+            for _, r in all_rows_df.iterrows():
+                cls = r["predicted_class"]
+                proba_col = f"proba_{str(cls).replace(' ', '_')}"
+                top_p = float(r.get(proba_col, np.nan))
+                save = False
+                if cls != "noise" and SAVE_IMAGES_FOR_NONNOISE:
+                    save = True
+                elif cls == "noise" and SAVE_EVERY_NTH_NOISE > 0:
+                    _noise_review_counter[0] += 1
+                    save = (_noise_review_counter[0] % SAVE_EVERY_NTH_NOISE == 0)
+                if save and cls in by_class:
+                    by_class[cls].append((top_p, r))
+
+            for cls, items in by_class.items():
+                if not items:
+                    continue
+                items.sort(key=lambda x: -x[0])
+                n_plotted = 0
+                for rank, (p, r) in enumerate(items[:N_GALLERY_PER_CLASS], 1):
+                    safe_time  = str(r["window_start"]).replace(":", "").replace("-", "").replace(".", "")
+                    cal_suffix = "" if _inventory is not None else "_UNCAL"
+                    out_png = os.path.join(
+                        review_dir,
+                        f"{cls.replace(' ', '_')}_{rank:02d}_{r['network']}_{r['station']}_{safe_time}{cal_suffix}.png",
+                    )
+                    try:
+                        ok = plot_review_waveform(_client_sds, _inventory, r, cls, p, out_png,
+                                                  calibrated=(_inventory is not None))
+                        if ok:
+                            n_plotted += 1
+                    except Exception:
                         continue
-                    items.sort(key=lambda x: -x[0])
-                    n_plotted = 0
-                    for rank, (p, r) in enumerate(items[:N_GALLERY_PER_CLASS], 1):
-                        safe_time = str(r["window_start"]).replace(":", "").replace("-", "").replace(".", "")
-                        out_png = os.path.join(
-                            review_dir,
-                            f"{cls.replace(' ', '_')}_{rank:02d}_{r['network']}_{r['station']}_{safe_time}.png",
-                        )
-                        try:
-                            ok = plot_review_waveform(_client_sds, _inventory, r, cls, p, out_png)
-                            if ok:
-                                n_plotted += 1
-                        except Exception:
-                            continue
-                    print(f"    {cls:<12s} {n_plotted:3d}/{min(len(items), N_GALLERY_PER_CLASS)} "
-                          f"waveform(s) plotted (of {len(items)} candidate(s))")
+                print(f"    {cls:<12s} {n_plotted:3d}/{min(len(items), N_GALLERY_PER_CLASS)} "
+                      f"waveform(s) plotted (of {len(items)} candidate(s))")
 
-                print(f"  [SAVED] Review waveform gallery -> {review_dir}/")
+            print(f"  [SAVED] Review waveform gallery -> {review_dir}/")
 
     print(f"\n[PHASE 2 COMPLETE] Predictions + review outputs -> {RUN_DIR}/")
 

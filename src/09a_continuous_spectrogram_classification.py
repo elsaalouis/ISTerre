@@ -48,6 +48,49 @@ visual/plausibility review: does the class distribution look sane (mostly
 noise/rare events), do spectrograms saved for non-noise predictions actually
 look like real events, etc.
 
+CROSS-STATION COINCIDENCE (added -- Elsa's question: "is STA/LTA detection
+checked between stations")
+-------------------------------------------------------------------------
+Answer was NO before this: Phase 1 ran DetecteurV3 completely independently
+per station, one at a time, with zero awareness of what any other station
+saw at the same time. Since a real (non-noise) event on the Mont-Blanc
+massif should register on more than one station, Phase 1 now cross-
+references every detected window's onset against every OTHER station's
+onsets for the SAME day, within +/-COINCIDENCE_TOLERANCE_S seconds (Section
+1), and writes two extra fields per window: n_other_stations_within_tol and
+other_stations_within_tol (a "net.sta,net.sta,..." list). These carry
+through consolidate_month_packed_files() and Phase 2's predictions_
+<month>.csv unchanged, same proba_<class>-style convention as the rest of
+this pipeline.
+
+IMPORTANT -- this only ANNOTATES, it never DROPS a window here. Classification
+hasn't happened yet at Phase 1 time, so there's no way to know here whether a
+single-station detection is a spurious noise trigger or a legitimate near-
+source event (rockslide/ice quake are spatially localized processes that can
+genuinely register on only 1-2 nearby stations even when real -- see
+08g_multistation_coincidence_check.py's own docstring for the full
+reasoning). Filtering by class is a deliberate DOWNSTREAM decision on the
+predictions CSV (08g does exactly this, class-aware, and is now largely
+redundant with this native annotation for a fresh run -- it's still useful
+against OLDER predictions CSVs that predate this change, or to double-check).
+
+The check is per-day, network-wide, single fixed tolerance -- not distance-
+scaled, and a detection within COINCIDENCE_TOLERANCE_S of local midnight
+could in principle miss a corroborating pick that landed just after midnight
+on the adjacent day (day is the unit Phase 1 already scans in; the tolerance
+is tiny next to a day, so this is a minor edge effect, not ignored so much as
+accepted). Sanity-check COINCIDENCE_TOLERANCE_S against real station spacing
+before leaning on the annotated counts for the report.
+
+SCHEMA UPGRADE / RE-RUNNING PHASE 1 -- a packed spec_<net>_<sta>_<day>.npz
+written before this change has no n_other_stations_within_tol field. Phase
+1's skip/resume check now looks for that field specifically: an old file
+without it gets [REDO] (re-detected, not silently left stale and skipped),
+a file already carrying it gets [SKIP-DETECT] (its onsets are still reused
+for that day's coincidence check against other stations, just without
+re-fetching SDS or re-running DetecteurV3 for it). Re-running Phase 1 over
+MONTHS_TO_SCAN after this change is therefore expected and safe either way.
+
 Output layout
 -------------
   EXTRACTION_DIR/
@@ -73,18 +116,18 @@ RUN_CLASSIFICATION = True    # Phase 2 -- local: load packed spectrograms + mode
 
 # -- Interchange directory between the two phases ---------------------------------
 # Phase 1 writes packed per-station-day spectrogram archives here
-EXTRACTION_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\09a_continuous_data_test"
+EXTRACTION_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\09a_continuous_data_test\2025-08_45Hz"
 
 # -- Paths (Phase 1 only -- cluster) ----------------------------------------------
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
 
 # -- Output for THIS invocation's own log + (Phase 2 only) predictions/review imgs -
-OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\09a_continuous_data_test"
+OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\09a_continuous_data_test\2025-08_45Hz"
 
 # -- Trained CNN model (Phase 2 only -- local, downloaded from Google Drive) -----
-MODEL_PATH      = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\07b_cnn_classifier\5classes_80Hz_20260818_100256\spectrogram_cnn_final.keras"
-NORM_STATS_PATH = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\07b_cnn_classifier\5classes_80Hz_20260818_100256\normalization_stats.npz"
+MODEL_PATH      = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\07b_cnn_classifier\5classes_45Hz_20260812_130248\spectrogram_cnn_final.keras"
+NORM_STATS_PATH = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\07b_cnn_classifier\5classes_45Hz_20260812_130248\normalization_stats.npz"
 
 # -- Class order ------------------------------------------------------------------
 # MUST exactly match CLASS_NAMES in 07b's Cell 3 at the time this model was trained
@@ -106,7 +149,7 @@ MONTHS_TO_SCAN = [
 
 # -- High-frequency mode -- MUST match whatever 07a/07b used to build+train the model MODEL_PATH points at below
 # extend the spectrograms frequency window from 45 Hz (False -> baseline) to 80 Hz (True -> high freq mode)
-HIGH_FREQ_MODE = True
+HIGH_FREQ_MODE = False
 
 if HIGH_FREQ_MODE:
     TARGET_FS     = 200     # [Hz] reaches FREQ_MAX_KEEP=80 Hz
@@ -142,6 +185,14 @@ DET_OVERLAP_SEC = 1  * 60   # 1-minute overlap between consecutive detector wind
 DET_MIN_EVENT_DUR_SEC = 5.0     # discard detections shorter than this
 DET_MIN_TRACE_SEC     = 120.0   # minimum day-segment length to attempt detection at all
 
+# -- Cross-station coincidence (Phase 1 only) -- see module docstring's CROSS-STATION
+# COINCIDENCE section. +/-seconds around each detection's onset within which ANOTHER
+# station's detection (any station, checked before classification even exists) counts
+# as corroborating -- ANNOTATES every window (n_other_stations_within_tol /
+# other_stations_within_tol), does not drop anything itself. Single network-wide
+# value, not distance-scaled -- sanity-check against your station geometry.
+COINCIDENCE_TOLERANCE_S = 20
+
 # -- Packed spectrogram storage dtype (Phase 1 writes / Phase 2 reads) ------------
 PACK_DTYPE = "float16"   # halves size vs float32, same convention as 07a_consolidate_for_colab.py's PACK_DTYPE
 
@@ -171,7 +222,7 @@ CHECKPOINT_EVERY_PACKED_FILES = 20
 
 # -- SMOKE TEST (Phase 1 only) -- strongly recommended before the full run --------
 # Restricts every month to MAX_DAYS_SMOKE_TEST day(s) and MAX_STATIONS_SMOKE_TEST station(s)
-SMOKE_TEST              = True
+SMOKE_TEST              = False
 MAX_DAYS_SMOKE_TEST     = 1
 MAX_STATIONS_SMOKE_TEST = 1
 
@@ -200,7 +251,8 @@ RUN_DIR, STAMP = create_run_dir(OUTPUT_DIR)
 log_file, log_path = setup_logging(
     RUN_DIR, "09a_continuous_spectrogram_classification.py",
     extra_info=(f"RUN_EXTRACTION={RUN_EXTRACTION}  RUN_CLASSIFICATION={RUN_CLASSIFICATION}  |  "
-                f"EXTRACTION_DIR: {EXTRACTION_DIR}  |  DET_THR_ON={DET_THR_ON}  |  SMOKE_TEST={SMOKE_TEST}")
+                f"EXTRACTION_DIR: {EXTRACTION_DIR}  |  DET_THR_ON={DET_THR_ON}  |  "
+                f"COINCIDENCE_TOLERANCE_S={COINCIDENCE_TOLERANCE_S}  |  SMOKE_TEST={SMOKE_TEST}")
 )
 
 packed_dir = os.path.join(EXTRACTION_DIR)
@@ -224,7 +276,7 @@ if RUN_EXTRACTION:
     from catalog_helpers import build_station_list_from_inventory
     from preprocessing import cosine_taper, preprocess_day
     from detecteurV3_fonctions import DetecteurV3   # Groult et al. 2026 -- third-party, do not modify
-    from detection import compute_snr, merge_window_events
+    from detection import compute_snr, merge_window_events, compute_cross_station_coincidence
 
     client_sds  = connect_sds(SDS_ROOT)
     client_fdsn = connect_fdsn(ISTERRE_URL)
@@ -536,6 +588,7 @@ def consolidate_month_packed_files(packed_dir, month_tag):
     """
     candidates = sorted(glob.glob(os.path.join(packed_dir, "spec_*.npz")))
     imgs, ws, we, snr_v, snr_fm, nets, stas, locs, chans, days = [], [], [], [], [], [], [], [], [], []
+    n_other_l, other_str_l = [], []
 
     for fpath in candidates:
         try:
@@ -554,6 +607,17 @@ def consolidate_month_packed_files(packed_dir, month_tag):
                 locs.append(np.full(n, str(d["location"])))
                 chans.append(np.full(n, str(d["channel"])))
                 days.append(np.full(n, day))
+                # Cross-station coincidence fields (see module docstring) -- fall back
+                # to "not computed" sentinels for a packed file written before this was
+                # added, so an old file lying around alongside new ones doesn't crash
+                # consolidation (Phase 1's own skip/redo logic keeps this from happening
+                # under normal use, but consolidation can be re-run independently).
+                if "n_other_stations_within_tol" in d.files:
+                    n_other_l.append(d["n_other_stations_within_tol"])
+                    other_str_l.append(d["other_stations_within_tol"])
+                else:
+                    n_other_l.append(np.full(n, -1, dtype=np.int32))
+                    other_str_l.append(np.full(n, ""))
         except Exception as e:
             print(f"  [WARN] consolidate: could not read {os.path.basename(fpath)}: {e}")
 
@@ -570,6 +634,8 @@ def consolidate_month_packed_files(packed_dir, month_tag):
         network=np.concatenate(nets), station=np.concatenate(stas),
         location=np.concatenate(locs), channel=np.concatenate(chans),
         day=np.concatenate(days),
+        n_other_stations_within_tol=np.concatenate(n_other_l),
+        other_stations_within_tol=np.concatenate(other_str_l),
     )
     n_total = sum(a.shape[0] for a in imgs)
     size_mb = os.path.getsize(out_path) / 1e6
@@ -686,7 +752,17 @@ if RUN_EXTRACTION:
             day_start = day_utc
             day_end   = day_utc + 86400
 
+            # ---- PASS 1: STA/LTA-detect EVERY station for this day first --------------
+            # (see module docstring's CROSS-STATION COINCIDENCE section). Coincidence
+            # needs every station's onsets for the SAME day at once, so nothing gets
+            # packed/written yet -- just detected, or reused from an already-packed
+            # file so it can still corroborate other stations without re-fetching SDS.
+            station_day_events  = {}   # station_key -> [(t_on, t_off, snr_dict), ...]
+            station_needs_write = set()
+            station_timing      = {}
+
             for net, sta, loc, chan in station_list:
+                station_key = f"{net}.{sta}"
                 t_station_day = time.time()
 
                 out_fname = f"spec_{net}_{sta}_{day_utc.strftime('%Y%m%d')}.npz"
@@ -694,8 +770,31 @@ if RUN_EXTRACTION:
                 n_station_days += 1
 
                 if os.path.isfile(out_path):
-                    print(f"  [SKIP] {day_str} {net}.{sta} — already packed ({out_fname})")
-                    continue
+                    has_coincidence = False
+                    _read_error = None
+                    try:
+                        with np.load(out_path, allow_pickle=False) as _existing:
+                            has_coincidence = "n_other_stations_within_tol" in _existing.files
+                            if has_coincidence:
+                                # already packed under the coincidence-aware schema -- reuse
+                                # its onsets for PASS 2 below (so it still corroborates OTHER
+                                # stations) without re-fetching SDS or re-running DetecteurV3.
+                                onsets = [UTCDateTime(s) - WINDOW_PRE_S for s in _existing["window_start"]]
+                    except Exception as e:
+                        # truncated/corrupted file (e.g. an interrupted previous run) --
+                        # fall back to treating it as stale rather than crashing the loop.
+                        _read_error = e
+                    if has_coincidence:
+                        station_day_events[station_key] = [(t_on, None, None) for t_on in onsets]
+                        print(f"  [SKIP-DETECT] {day_str} {net}.{sta} — already packed "
+                              f"({out_fname}), reusing {len(onsets)} onset(s) for coincidence")
+                        continue
+                    elif _read_error is not None:
+                        print(f"  [REDO] {day_str} {net}.{sta} — {out_fname} unreadable "
+                              f"({_read_error}), re-detecting")
+                    else:
+                        print(f"  [REDO] {day_str} {net}.{sta} — {out_fname} predates the "
+                              f"cross-station coincidence check, re-detecting")
 
                 # ---- Load full-day Z, detect candidate events -----------------------
                 try:
@@ -775,10 +874,34 @@ if RUN_EXTRACTION:
                         snr = compute_snr(tr_filt, ev_on, ev_off)
                         day_events.append((ev_on, ev_off, snr))
 
+                station_day_events[station_key] = day_events
+                station_needs_write.add(station_key)
+                station_timing[station_key] = t_station_day
+
+            # ---- PASS 2: cross-station coincidence for this day's onsets --------------
+            coincidence_by_station = compute_cross_station_coincidence(
+                station_day_events, COINCIDENCE_TOLERANCE_S
+            )
+
+            # ---- PASS 3: build spectrograms + write output for stations detected this
+            # run (SKIP-DETECT stations above are already fully packed -- nothing to do) -
+            for net, sta, loc, chan in station_list:
+                station_key = f"{net}.{sta}"
+                if station_key not in station_needs_write:
+                    continue
+
+                t_station_day = station_timing[station_key]
+                day_events    = station_day_events[station_key]
+                coinc         = coincidence_by_station[station_key]
+
+                out_fname = f"spec_{net}_{sta}_{day_utc.strftime('%Y%m%d')}.npz"
+                out_path  = os.path.join(packed_dir, out_fname)
+
                 # ---- For each detected event: build ONE 07a-style spectrogram window --
                 images, starts, ends, snr_vals, snr_full_med = [], [], [], [], []
+                n_other_list, other_stations_list = [], []
 
-                for ev_on, ev_off, snr in day_events:
+                for (ev_on, ev_off, snr), (n_other, other_str) in zip(day_events, coinc):
                     w_start = ev_on - WINDOW_PRE_S
                     w_end   = w_start + WINDOW_S
 
@@ -797,6 +920,8 @@ if RUN_EXTRACTION:
                     ends.append(str(w_end))
                     snr_vals.append(float(snr.get('SNR', np.nan)))
                     snr_full_med.append(float(snr.get('SNR_full_median', np.nan)))
+                    n_other_list.append(int(n_other))
+                    other_stations_list.append(other_str)
 
                 dt = time.time() - t_station_day
 
@@ -809,12 +934,16 @@ if RUN_EXTRACTION:
                          images=images_arr,
                          window_start=np.array(starts), window_end=np.array(ends),
                          snr=np.array(snr_vals), snr_full_median=np.array(snr_full_med),
+                         n_other_stations_within_tol=np.array(n_other_list, dtype=np.int32),
+                         other_stations_within_tol=np.array(other_stations_list),
+                         coincidence_tolerance_s=np.array(COINCIDENCE_TOLERANCE_S),
                          network=net, station=sta, location=loc, channel=chan, day=day_str)
 
                 size_mb = os.path.getsize(out_path) / 1e6
                 n_events_total += len(images)
+                n_multi = sum(1 for x in n_other_list if x >= 1)
                 print(f"  {day_str} {net}.{sta:<6s}  {len(images):4d} event(s) detected+packed "
-                      f"({size_mb:6.1f} MB) in {dt:6.1f}s")
+                      f"({n_multi}/{len(images)} multi-station, {size_mb:6.1f} MB) in {dt:6.1f}s")
 
         print(f"\n  [DONE] Month {month_tag}: {n_events_total} event(s) across "
               f"{n_station_days} station-day(s) -> packed files in {packed_dir}/")
@@ -867,6 +996,8 @@ if RUN_CLASSIFICATION:
             ends   = d["window_end"]
             snrs   = d["snr"]              if "snr" in d.files              else None
             snr_fm = d["snr_full_median"]  if "snr_full_median" in d.files  else None
+            n_other_sta = d["n_other_stations_within_tol"] if "n_other_stations_within_tol" in d.files else None
+            other_sta   = d["other_stations_within_tol"]   if "other_stations_within_tol"   in d.files else None
 
             n = images.shape[0]
             # network/station/location/channel/day are scalars in a per-station-day
@@ -900,6 +1031,8 @@ if RUN_CLASSIFICATION:
                     "day": str(days[idx]), "window_start": str(starts[idx]), "window_end": str(ends[idx]),
                     "snr": float(snrs[idx]) if snrs is not None else None,
                     "snr_full_median": float(snr_fm[idx]) if snr_fm is not None else None,
+                    "n_other_stations_within_tol": int(n_other_sta[idx]) if n_other_sta is not None else None,
+                    "other_stations_within_tol": str(other_sta[idx]) if other_sta is not None else None,
                 }
                 _emit_row(meta, batch[i], labels[i], proba[i], rows_by_month[month_tag])
 

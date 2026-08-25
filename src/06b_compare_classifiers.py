@@ -30,7 +30,7 @@ Outputs
 # =============================================================================
 
 # -- Input CSV (output of script 04a) -----------------------------------------
-CSV_PATH   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent+3C\catalog_windows_20260708_174019.csv"
+CSV_PATH   = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent+3C\catalog_windows_20260819_171211.csv"
 
 # -- Noise CSV (output of script 04d, optional 4th class) ----------------------
 # Set to a 04d `noise_windows_<stamp>.csv` to add the "noise" class
@@ -46,7 +46,7 @@ OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\
 # -- Classes -------------------------------------------------------------------
 TARGET_CLASSES = ["earthquake", "regional", "rockslide", "ice quake", "noise"]
 CLASS_ORDER    = ["earthquake", "regional", "rockslide", "ice quake", "noise"]   # table / figure order
-CLASS_ABBR     = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq", "noise": "no"}
+CLASS_ABBR     = {"earthquake": "eq", "regional": "re", "rockslide": "rs", "ice quake": "iq", "noise": "no"}
 
 # -- Feature set ---------------------------------------------------------------
 # TOP_N_FEATURES = None  → use ALL feature columns present in the catalog CSV
@@ -79,6 +79,11 @@ RANDOM_STATE = 42
 
 # -- SMOTE ---------------------------------------------------------------------
 SMOTE_K = 5
+
+# ── Earthquake over-prediction rebalancing (optional experiment) ──────────────
+EARTHQUAKE_REBALANCE_MODE    = "sample_weight"   # None | "undersample" | "sample_weight"
+EARTHQUAKE_UNDERSAMPLE_RATIO = 2.0    # used only if mode == "undersample"
+EARTHQUAKE_SAMPLE_WEIGHT     = 0.5    # used only if mode == "sample_weight"
 
 # -- Classifier hyperparameters ------------------------------------------------
 
@@ -142,7 +147,7 @@ RUN_DIR, STAMP = create_run_dir(OUTPUT_DIR)
 log_file, log_path = setup_logging(
     RUN_DIR,
     script_name="06b_compare_classifiers.py",
-    extra_info=f"CSV: {CSV_PATH}",
+    extra_info=f"CSV: {CSV_PATH}\nEARTHQUAKE_REBALANCE_MODE: {EARTHQUAKE_REBALANCE_MODE}",
 )
 
 
@@ -275,6 +280,30 @@ train_events, test_events = train_test_split(
 train_mask = df["event_time"].isin(train_events)
 test_mask  = df["event_time"].isin(test_events)
 
+# -- Optional earthquake row-level undersampling (mirrors 06c) ---------------
+# Applied AFTER train_mask/test_mask are fixed, so it only ever removes rows
+# already confined to the training set -- no leakage into test. Compares
+# against the next-largest REAL class by training rows, excluding noise
+# (its row count is an arbitrary 04d sample budget, not an organic frequency).
+if EARTHQUAKE_REBALANCE_MODE == "undersample":
+    train_types  = df.loc[train_mask, "event_type"]
+    eq_train_idx = train_types.index[train_types == "earthquake"]
+    other_row_counts = train_types[
+        ~train_types.isin(["earthquake", "noise"])
+    ].value_counts()
+    if len(eq_train_idx) > 0 and len(other_row_counts) > 0:
+        target_n = int(round(EARTHQUAKE_UNDERSAMPLE_RATIO * other_row_counts.max()))
+        if len(eq_train_idx) > target_n >= 1:
+            _rng     = np.random.RandomState(RANDOM_STATE)
+            keep_idx = _rng.choice(eq_train_idx, size=target_n, replace=False)
+            drop_idx = eq_train_idx.difference(keep_idx)
+            train_mask.loc[drop_idx] = False
+            print(f"  [REBALANCE] earthquake training ROWS "
+                  f"undersampled {len(eq_train_idx):,} -> {target_n:,} "
+                  f"({EARTHQUAKE_UNDERSAMPLE_RATIO}x next-largest real "
+                  f"training class by rows = {other_row_counts.max():,} "
+                  f"[{other_row_counts.idxmax()}] rows)")
+
 X_train_raw = df.loc[train_mask, features].values
 y_train_raw = df.loc[train_mask, "event_type"].values
 X_test      = df.loc[test_mask,  features].values
@@ -303,6 +332,16 @@ print(f"After SMOTE: {len(X_train):,} rows")
 for cls in CLASS_ORDER:
     n = (y_train == cls).sum()
     print(f"  {cls:<22} {n:>6,}")
+
+# -- Optional earthquake sample_weight down-weighting (mirrors 06c) ----------
+# Not all classifiers below accept sample_weight at fit() time (KNN and MLP
+# don't) -- flagged per-classifier via "supports_sample_weight" in Section 6,
+# applied only where supported.
+sample_weight_train = None
+if EARTHQUAKE_REBALANCE_MODE == "sample_weight":
+    sample_weight_train = np.where(y_train == "earthquake", EARTHQUAKE_SAMPLE_WEIGHT, 1.0)
+    print(f"  [REBALANCE] earthquake sample_weight={EARTHQUAKE_SAMPLE_WEIGHT} vs 1.0 for other classes "
+          f"({int((y_train == 'earthquake').sum()):,} / {len(y_train):,} training rows affected)")
 
 
 
@@ -337,6 +376,7 @@ CLASSIFIER_CONFIGS = [
         "svm_subsample": False,
         "color":         "#1f77b4",
         "skip":          False,
+        "supports_sample_weight": True,
     },
 
     {   # ── Histogram Gradient Boosting ─────────────────────────────────────
@@ -354,6 +394,7 @@ CLASSIFIER_CONFIGS = [
         "svm_subsample": False,
         "color":         "#ff7f0e",
         "skip":          False,
+        "supports_sample_weight": True,
     },
 
     {   # ── K-Nearest Neighbours ────────────────────────────────────────────
@@ -368,6 +409,7 @@ CLASSIFIER_CONFIGS = [
         "svm_subsample": False,
         "color":         "#2ca02c",
         "skip":          False,
+        "supports_sample_weight": False,   # KNeighborsClassifier.fit() has no sample_weight param
     },
 
     {   # ── SVM with RBF kernel ─────────────────────────────────────────────
@@ -383,6 +425,7 @@ CLASSIFIER_CONFIGS = [
         "svm_subsample": True,          # training rows are capped at SVM_MAX_ROWS
         "color":         "#d62728",
         "skip":          False,
+        "supports_sample_weight": True,
     },
 
     {   # ── MLP (Multi-Layer Perceptron) ─────────────────────────────────────
@@ -401,6 +444,7 @@ CLASSIFIER_CONFIGS = [
         "color":         "#9467bd",
         "skip":          False,
         "encode_labels": True,   # MLP early_stopping calls np.isnan() on predictions → fails with string labels
+        "supports_sample_weight": False,   # MLPClassifier.fit() has no sample_weight param
     },
 ]
 
@@ -442,6 +486,7 @@ for cfg in CLASSIFIER_CONFIGS:
         # ── Prepare training data ────────────────────────────────────────────
         X_fit = X_train.copy()   # copies to not affect the originals for the next classifier
         y_fit = y_train.copy()
+        weight_fit = sample_weight_train.copy() if sample_weight_train is not None else None
 
         # SVM subsampling — stratified to preserve class balance
         if cfg["svm_subsample"] and SVM_MAX_ROWS is not None and len(X_fit) > SVM_MAX_ROWS:
@@ -455,6 +500,8 @@ for cfg in CLASSIFIER_CONFIGS:
             keep_idx = np.array(keep_idx)
             X_fit    = X_fit[keep_idx]    # slice to keep only those rows
             y_fit    = y_fit[keep_idx]
+            if weight_fit is not None:
+                weight_fit = weight_fit[keep_idx]   # keep weights aligned with the subsampled rows
             print(f"  SVM subsampled: {len(X_fit):,} rows "
                   f"({n_per_cls:,} per class, from {len(X_train):,} SMOTE rows)")
 
@@ -478,8 +525,13 @@ for cfg in CLASSIFIER_CONFIGS:
             y_test_enc = y_test
 
         # ── Train ────────────────────────────────────────────────────────────
-        t0         = time.time()
-        model.fit(X_fit_sc, y_fit_enc)     # sklearn universal interface: every classifier accepts the same call
+        t0 = time.time()
+        if weight_fit is not None and cfg.get("supports_sample_weight", False):
+            model.fit(X_fit_sc, y_fit_enc, sample_weight=weight_fit)
+        else:
+            if weight_fit is not None:
+                print(f"  [REBALANCE] {name} has no sample_weight support — trained without it")
+            model.fit(X_fit_sc, y_fit_enc)     # sklearn universal interface: every classifier accepts the same call
         train_time = time.time() - t0  # wall-clock training time
         t_str      = f"{train_time:.1f}s" if train_time < 60 else f"{train_time/60:.1f}m"
         print(f"  Training time : {t_str}  ({len(X_fit):,} training rows)")
@@ -654,6 +706,7 @@ res_df = pd.DataFrame([
     {
         "classifier":   r["name"],
         "n_features":   len(features),
+        "earthquake_rebalance_mode": EARTHQUAKE_REBALANCE_MODE,
         "accuracy":     round(r["acc"],        4),
         "macro_f1":     round(r["macro_f1"],   4),
         **{

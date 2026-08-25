@@ -498,3 +498,75 @@ def merge_window_events(total_events, total_thresholds, new_events, new_threshol
         total_thresholds[f"Event_{offset + k}"] = new_thresholds[ev_key]
 
     return total_events, total_thresholds
+
+
+
+# =============================================================================
+# CROSS-STATION COINCIDENCE (scripts 09a/09b)
+# =============================================================================
+
+def compute_cross_station_coincidence(station_events, tolerance_s):
+    """
+    Cross-reference detection onset times across stations, network-wide, to
+    find which detections are corroborated by at least one OTHER station
+    within +/-tolerance_s seconds -- the check behind 09a/09b's Phase 1
+    "does this detection register on more than one station on the massif"
+    annotation (see their own module docstrings' CROSS-STATION COINCIDENCE
+    section for the full reasoning and caveats -- single network-wide
+    tolerance, no distance/apparent-velocity scaling, onset-only matching).
+
+    This ANNOTATES every detection with how many other stations corroborate
+    it -- it does not decide what to keep. Whether/which classes get
+    filtered on this basis is a downstream, class-aware decision (single-
+    station is expected and legitimate for near-source classes like
+    rockslide/ice quake -- see the caller's own docstring), deliberately not
+    made here.
+
+    Parameters
+    ----------
+    station_events : dict {station_key: [(t_on, t_off, ...), ...]} -- station_key
+                     is any hashable per-station identifier (typically
+                     (network, station, location, channel)); each event tuple's
+                     first element must be an obspy UTCDateTime (or anything
+                     float()-convertible to POSIX seconds) -- only t_on is
+                     used for matching. Extra tuple elements (t_off, snr, ...)
+                     are ignored here, so callers can pass their own richer
+                     per-event tuples straight through.
+    tolerance_s    : float -- +/- window, in seconds, around each detection's
+                     onset within which another station's onset counts as
+                     corroborating.
+
+    Returns
+    -------
+    dict {station_key: [(n_other_stations, other_stations_str), ...]}, one
+    entry per input event, in the SAME order as station_events[station_key]
+    -- safe to zip() directly against the caller's own event list.
+    """
+    all_t, all_key, all_station = [], [], []
+    for station_key, events in station_events.items():
+        for i, event in enumerate(events):
+            t_on = event[0]
+            all_t.append(float(t_on))
+            all_key.append((station_key, i))
+            all_station.append(station_key)
+
+    out = {station_key: [None] * len(events) for station_key, events in station_events.items()}
+    if not all_t:
+        return out
+
+    order      = np.argsort(all_t, kind="stable")
+    t_sorted   = np.asarray(all_t)[order]
+    key_sorted = [all_key[i] for i in order]
+    sta_sorted = [all_station[i] for i in order]
+
+    left  = np.searchsorted(t_sorted, t_sorted - tolerance_s, side="left")
+    right = np.searchsorted(t_sorted, t_sorted + tolerance_s, side="right")
+
+    for pos in range(len(t_sorted)):
+        lo, hi = left[pos], right[pos]
+        others = set(sta_sorted[lo:hi]) - {sta_sorted[pos]}
+        station_key, i = key_sorted[pos]
+        other_str = ",".join(str(s) for s in sorted(others, key=str))
+        out[station_key][i] = (len(others), other_str)
+
+    return out

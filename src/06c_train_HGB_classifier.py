@@ -46,7 +46,7 @@ Outputs
 # =============================================================================
 
 # ── Original catalog (04a output) ─────────────────────────────────────────────
-ORIGINAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent+3C\catalog_windows_20260708_174019.csv"
+ORIGINAL_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent+3C\catalog_windows_20260819_171211.csv"
 
 # ── Rescue catalog (03d output) ───────────────────────────────────────────────
 RESCUE_CATALOG_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03d_rescue_feature_extraction\stricter_IQ100_20260722_145529\rescue_catalog_20260722_145529.csv"
@@ -98,6 +98,11 @@ RANDOM_STATE = 42
 
 # ── SMOTE ─────────────────────────────────────────────────────────────────────
 SMOTE_K = 5
+
+# ── Earthquake over-prediction rebalancing (optional experiment) ──────────────
+EARTHQUAKE_REBALANCE_MODE    = "undersample"   # None | "undersample" | "sample_weight"
+EARTHQUAKE_UNDERSAMPLE_RATIO = 2.0    # used only if mode == "undersample"
+EARTHQUAKE_SAMPLE_WEIGHT     = 0.5    # used only if mode == "sample_weight"
 
 # ── Classifier hyperparameters ────────────────────────────────────────────────
 # HGB — primary classifier
@@ -175,7 +180,8 @@ log_file, log_path = setup_logging(
         f"RESCUE_CATALOG_CSV: {RESCUE_CATALOG_CSV}\n"
         f"RESCUE_CATALOG_RAW_CSV: {RESCUE_CATALOG_RAW_CSV}\n"
         f"NOISE_CSV: {NOISE_CSV}\n"
-        f"REGIONAL_CSV: {REGIONAL_CSV}"
+        f"REGIONAL_CSV: {REGIONAL_CSV}\n"
+        f"EARTHQUAKE_REBALANCE_MODE: {EARTHQUAKE_REBALANCE_MODE}"
     ),
 )
 
@@ -490,8 +496,49 @@ def train_and_eval(df, label, features, smote_k, test_size, rs):
         stratify=events["event_type"],
         random_state=rs,
     )
+
     train_mask = df["event_time"].isin(train_ev)
     test_mask  = df["event_time"].isin(test_ev)
+
+    # ── Optional: undersample earthquake's TRAINING ROWS (not events) ─────────
+    # 2026-08-24: an earlier event-level version of this (cap TRAINING EVENTS)
+    # found nothing to trim — checked directly against the real catalog and
+    # earthquake is NOT the largest class by unique event count (7,508 unique
+    # earthquakes vs 10,000 unique noise windows, after the quality gate).
+    # Earthquake only dominates by ROW count, because the catalog carries
+    # ~4.3 rows/event for earthquake (multi-station recordings of the same
+    # physical event) vs 1.0 for noise and ~2-3 for regional/rockslide/ice
+    # quake. This operates on ROWS instead, which is what's actually
+    # inflating earthquake's influence through SMOTE (SMOTE oversamples every
+    # OTHER class up to match earthquake's row count). Applied AFTER
+    # train_mask/test_mask above, and only ever REMOVES rows already confined
+    # to the train partition — cannot leak into test, and test_mask (so every
+    # reported metric) is completely unaffected, same guarantee as the old
+    # event-level version.
+    # 'noise' is excluded from the "next-largest class" comparison: its row
+    # count (10,000) is an arbitrary sample budget picked in 04d, not an
+    # organic reflection of real-world frequency like the other classes, so
+    # comparing against it would set an arbitrary rather than meaningful
+    # target — rockslide (the biggest genuine physical class by rows) drives
+    # the target in practice.
+    if EARTHQUAKE_REBALANCE_MODE == "undersample":
+        train_types  = df.loc[train_mask, "event_type"]
+        eq_train_idx = train_types.index[train_types == "earthquake"]
+        other_row_counts = train_types[
+            ~train_types.isin(["earthquake", "noise"])
+        ].value_counts()
+        if len(eq_train_idx) > 0 and len(other_row_counts) > 0:
+            target_n = int(round(EARTHQUAKE_UNDERSAMPLE_RATIO * other_row_counts.max()))
+            if len(eq_train_idx) > target_n >= 1:
+                _rng     = np.random.RandomState(rs)
+                keep_idx = _rng.choice(eq_train_idx, size=target_n, replace=False)
+                drop_idx = eq_train_idx.difference(keep_idx)
+                train_mask.loc[drop_idx] = False
+                print(f"  [REBALANCE] {label}: earthquake training ROWS "
+                      f"undersampled {len(eq_train_idx):,} -> {target_n:,} "
+                      f"({EARTHQUAKE_UNDERSAMPLE_RATIO}x next-largest real "
+                      f"training class by rows = {other_row_counts.max():,} "
+                      f"[{other_row_counts.idxmax()}] rows)")
 
     X_tr_raw = df.loc[train_mask, features].values
     y_tr_raw = df.loc[train_mask, "event_type"].values
@@ -511,6 +558,17 @@ def train_and_eval(df, label, features, smote_k, test_size, rs):
     X_tr, y_tr = sm.fit_resample(X_tr_raw, y_tr_raw)
     print(f"  After SMOTE: {len(X_tr):,} rows")
 
+    # ── Optional: down-weight earthquake rows at fit() time ────────────────────
+    # Applied post-SMOTE (SMOTE oversamples every OTHER class up to roughly
+    # match earthquake's own row count, so this still meaningfully discounts
+    # earthquake's influence on the loss even though row counts end up close).
+    sample_weight = None
+    if EARTHQUAKE_REBALANCE_MODE == "sample_weight":
+        sample_weight = np.where(y_tr == "earthquake", EARTHQUAKE_SAMPLE_WEIGHT, 1.0)
+        print(f"  [REBALANCE] {label}: earthquake sample_weight="
+              f"{EARTHQUAKE_SAMPLE_WEIGHT} vs 1.0 for other classes "
+              f"({int((y_tr == 'earthquake').sum()):,} / {len(y_tr):,} training rows affected)")
+
     results = {"label": label, "n_train_raw": train_mask.sum(), "n_test": test_mask.sum()}
     cms    = {}
     models = {}
@@ -529,7 +587,10 @@ def train_and_eval(df, label, features, smote_k, test_size, rs):
          )),
     ]:
         t0 = time.time()
-        model.fit(X_tr, y_tr)
+        if sample_weight is not None:
+            model.fit(X_tr, y_tr, sample_weight=sample_weight)
+        else:
+            model.fit(X_tr, y_tr)
         elapsed = time.time() - t0
         y_pred  = model.predict(X_te)
 
@@ -670,6 +731,13 @@ if SAVE_FINAL_MODEL:
             "metrics":     {k: v for k, v in _results["HGB"].items()},
             "trained_on":  STAMP,
             "source_script": "06c_train_HGB_classifier.py",
+            "earthquake_rebalance_mode": EARTHQUAKE_REBALANCE_MODE,
+            "earthquake_undersample_ratio": (
+                EARTHQUAKE_UNDERSAMPLE_RATIO if EARTHQUAKE_REBALANCE_MODE == "undersample" else None
+            ),
+            "earthquake_sample_weight": (
+                EARTHQUAKE_SAMPLE_WEIGHT if EARTHQUAKE_REBALANCE_MODE == "sample_weight" else None
+            ),
         }, model_path)
 
         print(f"  [SAVED] Final model ({_label}) -> {model_path}")
