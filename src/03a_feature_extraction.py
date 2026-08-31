@@ -1,7 +1,7 @@
 """
 SEISMIC FEATURE EXTRACTION
 ==========================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : April 2026
 
@@ -13,17 +13,12 @@ For each seismic event in the ISTerre catalog:
 - compute the 99 seismic attributes defined in seismic_params.py
 (Maggi / Hibert feature set: waveform shape, spectral, pseudo-spectrogram, frequency-band energies, kurtosis, autocorrelation, SNR)
 
-The output is a single CSV table ("feature table") -> ready to feed a classifier (e.g. Random Forest, as in Groult et al. 2026)
+The output is a single CSV table ("feature table") -> ready to feed a classifier
 
 Data sources
 ------------
   Catalog + picks : ISTerre FDSN server  http://ist-sc3-geobs.osug.fr:8080
   Waveforms       : ISTerre SDS archive  /data/sig/SDS  (cluster only)
-
-Output
-------
-  features_<run_stamp>.csv   -> one row per (event × station), 99 feature cols
-  run.log                    -> full console output of the run
 """
 
 

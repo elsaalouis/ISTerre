@@ -1,7 +1,7 @@
 """
 03c_denoiser_event_data.py
 ===========================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : June 2026 (generalized July 2026)
 
@@ -14,7 +14,7 @@ Reference
 
 Pipeline
 --------
-  STEP 1 — Load catalog CSV. 
+  STEP 1 — Load catalog CSV 
            RESCUE targets = EVENT_TYPE rows failing the rescue gate
            TRAINING pairs = rows (pooled across TRAIN_EVENT_TYPES, optionally mixed to TRAIN_MIX_RATIO) passing the stricter TRAIN_* gate
   STEP 2 — Extract 30 s signal windows from SDS (one .npz per event × station)
@@ -60,17 +60,14 @@ CSV_PATH = (
 SDS_ROOT    = "/data/sig/SDS"
 OUTPUT_DIR  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03c_denoiser_event_data\icequake\stricter_20260722_120109"
 
-# -- Quality gate (05b Tier 2 classification-based — run_20260720_104210) -----
-# Defines RESCUE targets: EVENT_TYPE rows that fail this gate are what we try to denoise.
-# Metrics = the 2 highest-AUC metrics from 05b Tier 2 (classification correctness,
-# not windowing). SNR_full_mean and SNR_s2n_median dropped (AUC 0.617 and 0.588,
-# both weaker than these two) — same everywhere in 03c/03d/06b/06c for consistency.
+# -- Quality gate -------------------------------------------------------------
+# Defines RESCUE targets: EVENT_TYPE rows that fail this gate are what we try to denoise
 SNR_MIN             = 1.70   # 05b Tier 2 — metric 'SNR' (peak/noise), AUC=0.627
 SNR_FULL_MEDIAN_MIN = 1.99   # 05b Tier 2 — metric 'SNR_full_median', AUC=0.642 (best)
 
 # -- Training-target gate (stricter than the rescue gate above) ---------------
 # Used ONLY to select which rows are clean enough to serve as "signal" training examples for DeepDenoiser
-# -> independent of the rescue gate above. Same ~1.57x margin kept from the previous version.
+# -> independent of the rescue gate above
 TRAIN_SNR_MIN             = SNR_MIN
 TRAIN_SNR_FULL_MEDIAN_MIN = SNR_FULL_MEDIAN_MIN
 
@@ -100,7 +97,6 @@ WINDOW_S   = 30       # [s]   total window length  (= 3000 samples at 100 Hz)
 PRE_PAD_S  = 10       # [s]   seconds of pre-signal padding → itp = PRE_PAD_S × TARGET_FS
 
 # -- Noise window extraction --------------------------------------------------
-# The noise window ends NOISE_OFFSET_S before the detection onset
 NOISE_OFFSET_S = 120  # [s] gap between noise window end and detection onset noise window
 
 # -- Channel fallback strategy ------------------------------------------------
@@ -196,9 +192,7 @@ if (TRAIN_SNR_MIN < SNR_MIN or
 df = pd.read_csv(CSV_PATH, low_memory=False)
 print(f"Loaded {len(df):,} rows × {len(df.columns)} columns.")
 
-# ── Rescue targets: EVENT_TYPE rows failing the (looser) rescue gate ─────────
-# Always restricted to EVENT_TYPE — we only ever try to rescue the target class,
-# even if training pairs are pooled from other classes below.
+# ── Rescue targets: EVENT_TYPE rows failing the rescue gate ─────────
 df_event = df[df["event_type"] == EVENT_TYPE].copy()
 print(f"After event_type filter: {len(df_event):,} '{EVENT_TYPE}' rows.")
 
@@ -229,8 +223,7 @@ for et in TRAIN_EVENT_TYPES:
 if TRAIN_MIX_RATIO is None:
     df_good = pd.concat(per_type_avail.values())
 else:
-    # The class that is scarcest RELATIVE TO ITS TARGET SHARE sets the ceiling —
-    # we can subsample other classes down to match, never invent extra rows.
+    # The class that is scarcest RELATIVE TO ITS TARGET SHARE sets the ceiling: we can subsample other classes down to match, never invent extra rows
     _limits = [len(per_type_avail[et]) / TRAIN_MIX_RATIO[et]
                for et in TRAIN_EVENT_TYPES if TRAIN_MIX_RATIO.get(et, 0) > 0]
     limiting_total = min(_limits) if _limits else 0
@@ -275,7 +268,7 @@ for idx, row in df_good.iterrows():
     net   = row["network"]
     sta   = row["station"]
     chan  = row["channel"]          # e.g. "HHZ"
-    loc   = ""                      # location code (empty for most SISMalp stations)
+    loc   = ""                      # location code (empty for most stations)
     t_on  = UTCDateTime(row["det_starttime"])
 
     # Signal window: PRE_PAD_S before onset → WINDOW_S total
@@ -290,7 +283,7 @@ for idx, row in df_good.iterrows():
         data3 = load_3component(client_sds, net, sta, loc, chan, t_sig_start, t_sig_end,
                                 target_fs=TARGET_FS, window_s=WINDOW_S, horizontal_suffixes=HORIZONTAL_SUFFIXES)
 
-        # Flat-trace guard: reject only degenerate waveforms (data gaps, all-zeros)
+        # reject only degenerate waveforms (data gaps, all-zeros)
         z_std = np.std(data3[:, 2])
         if z_std == 0 or not np.isfinite(z_std):
             n_signal_skip += 1
@@ -412,8 +405,7 @@ print(f"  [SAVED] {noise_csv_path}   ({len(noise_records)} entries — training 
 
 # =============================================================================
 # SECTION 6b — EXTRACT RESCUE TARGETS  →  rescue/*.npz
-# Rows of EVENT_TYPE that FAIL the quality gate: extract their raw waveforms so
-# DeepDenoiser can denoise them
+# Rows of EVENT_TYPE that FAIL the quality gate: extract their raw waveforms so DeepDenoiser can denoise them
 # =============================================================================
 
 print(f"\n{'='*65}")
@@ -444,10 +436,8 @@ for idx, row in df_rescue.iterrows():
     channel_id    = f"{net}.{sta}"
 
     try:
-        data3 = load_3component(client_sds, net, sta, loc, chan,
-                                t_start, t_end,
-                                target_fs=TARGET_FS, window_s=WINDOW_S,
-                                horizontal_suffixes=HORIZONTAL_SUFFIXES)
+        data3 = load_3component(client_sds, net, sta, loc, chan, t_start, t_end,
+                                target_fs=TARGET_FS, window_s=WINDOW_S, horizontal_suffixes=HORIZONTAL_SUFFIXES)
 
         # Keep only if the trace is not flat (degenerate waveform)
         if np.std(data3[:, 2]) == 0 or not np.isfinite(np.std(data3[:, 2])):
@@ -471,7 +461,7 @@ for idx, row in df_rescue.iterrows():
 print(f"  Rescue files saved  : {n_rescue_ok}")
 print(f"  Rescue files skipped: {n_rescue_skip}")
 
-# rescue_list.csv: fname only — used by DataReader_pred (predict.py) for inference
+# rescue_list.csv: fname only -> used by DataReader_pred (predict.py) for inference
 pd.DataFrame(rescue_records).to_csv(rescue_csv_path, index=False)
 print(f"  [SAVED] {rescue_csv_path}  ({len(rescue_records)} entries — rescue targets)")
 

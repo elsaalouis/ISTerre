@@ -1,102 +1,27 @@
 """
 09a_continuous_spectrogram_classification.py
 ==============================================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : August 2026
 
 Goal
 ----
-End-to-end validation of the CNN branch (07a/07b) on a RAW CONTINUOUS STREAM,
-never chained before on data the pipeline hasn't already seen as pre-curated
-catalog windows.
+End-to-end validation of the CNN branch (07a/07b) on a RAW CONTINUOUS STREAM, never chained before on data the pipeline hasn't already seen as pre-curated catalog windows.
 
-TWO PHASES, RUN SEPARATELY -- why
------------------------------------
-The ISTerre cluster's Python cannot get a clean TensorFlow install: the
-`python/python3.11` module's environment already carries a large pre-existing
-scientific stack (torch, pymc, beat, numba, ...) that hard-conflicts with
-TensorFlow's own numpy/protobuf version pins, even inside a fresh venv. Rather
-than keep fighting that, this script splits into two independently-runnable
-phases controlled by RUN_EXTRACTION / RUN_CLASSIFICATION (Section 1):
-
+TWO PHASES, RUN SEPARATELY:
   Phase 1 -- EXTRACTION (run on the cluster, needs SDS access, NO TensorFlow):
-    per station-day, run STA/LTA detection on the full day, then for each
-    detected event build ONE 07a-style spectrogram window -> pack every
-    station-day's images into ONE .npz file (not one file per window --
-    keeps the file count sane over month-scale runs).
-
+    per station-day, run STA/LTA detection on the full day, then for each detected event build ONE 07a-style spectrogram window 
+    -> pack every station-day's images into ONE .npz file 
   Phase 2 -- CLASSIFICATION (run locally, needs TensorFlow, NOT SDS access):
-    load the packed .npz files (copied from the cluster to EXTRACTION_DIR
-    locally), classify every detected window with the saved 5-class CNN,
-    write one predictions CSV per month, optionally save a copy of individual
-    spectrogram images for visual review now that the predicted class is
-    actually known.
+    load the packed .npz files, classify every detected window with the saved 5-class CNN, write one predictions CSV per month, optionally save a copy of individual spectrogram images for visual review 
 
-Typical usage
--------------
-  1. On the cluster : RUN_EXTRACTION=True,  RUN_CLASSIFICATION=False
-                       -> produces EXTRACTION_DIR/packed/*.npz
-  2. Copy EXTRACTION_DIR (or at least its packed/ subfolder) to your local
-     machine, e.g. into the local results folder.
-  3. Locally         : RUN_EXTRACTION=False, RUN_CLASSIFICATION=True
-                       EXTRACTION_DIR pointed at the local copy
-                       -> produces predictions_<month>.csv + review images
-
-There is no scoring against ground truth here -- the output is meant for
-visual/plausibility review: does the class distribution look sane (mostly
-noise/rare events), do spectrograms saved for non-noise predictions actually
-look like real events, etc.
-
-CROSS-STATION COINCIDENCE (added -- Elsa's question: "is STA/LTA detection
-checked between stations")
--------------------------------------------------------------------------
-Answer was NO before this: Phase 1 ran DetecteurV3 completely independently
-per station, one at a time, with zero awareness of what any other station
-saw at the same time. Since a real (non-noise) event on the Mont-Blanc
-massif should register on more than one station, Phase 1 now cross-
-references every detected window's onset against every OTHER station's
-onsets for the SAME day, within +/-COINCIDENCE_TOLERANCE_S seconds (Section
-1), and writes two extra fields per window: n_other_stations_within_tol and
-other_stations_within_tol (a "net.sta,net.sta,..." list). These carry
-through consolidate_month_packed_files() and Phase 2's predictions_
-<month>.csv unchanged, same proba_<class>-style convention as the rest of
-this pipeline.
-
-IMPORTANT -- this only ANNOTATES, it never DROPS a window here. Classification
-hasn't happened yet at Phase 1 time, so there's no way to know here whether a
-single-station detection is a spurious noise trigger or a legitimate near-
-source event (rockslide/ice quake are spatially localized processes that can
-genuinely register on only 1-2 nearby stations even when real -- see
-08g_multistation_coincidence_check.py's own docstring for the full
-reasoning). Filtering by class is a deliberate DOWNSTREAM decision on the
-predictions CSV (08g does exactly this, class-aware, and is now largely
-redundant with this native annotation for a fresh run -- it's still useful
-against OLDER predictions CSVs that predate this change, or to double-check).
-
-The check is per-day, network-wide, single fixed tolerance -- not distance-
-scaled, and a detection within COINCIDENCE_TOLERANCE_S of local midnight
-could in principle miss a corroborating pick that landed just after midnight
-on the adjacent day (day is the unit Phase 1 already scans in; the tolerance
-is tiny next to a day, so this is a minor edge effect, not ignored so much as
-accepted). Sanity-check COINCIDENCE_TOLERANCE_S against real station spacing
-before leaning on the annotated counts for the report.
-
-SCHEMA UPGRADE / RE-RUNNING PHASE 1 -- a packed spec_<net>_<sta>_<day>.npz
-written before this change has no n_other_stations_within_tol field. Phase
-1's skip/resume check now looks for that field specifically: an old file
-without it gets [REDO] (re-detected, not silently left stale and skipped),
-a file already carrying it gets [SKIP-DETECT] (its onsets are still reused
-for that day's coincidence check against other stations, just without
-re-fetching SDS or re-running DetecteurV3 for it). Re-running Phase 1 over
-MONTHS_TO_SCAN after this change is therefore expected and safe either way.
+/!\ There is no scoring against ground truth here: the output is meant for visual/plausibility review: does the class distribution look sane 
 
 Output layout
 -------------
   EXTRACTION_DIR/
-      packed/spec_<net>_<sta>_<YYYYMMDD>.npz   <- one file per station-day
-                                                   WITH >=1 detection, written
-                                                   by Phase 1, read by Phase 2
+      packed/spec_<net>_<sta>_<YYYYMMDD>.npz   <- one file per station-day WITH >=1 detection
   outputs_09a/run_YYYYMMDD_HHMMSS/    (this invocation's own log + phase-2 output)
       predictions_<month_tag>.csv     <- Phase 2 only: one row per classified detection
       review_images/*.npz             <- Phase 2 only: images saved for visual review
@@ -111,19 +36,19 @@ Output layout
 # =============================================================================
 
 # -- Run mode -- see the module docstring "TWO PHASES" section for why -----------
-RUN_EXTRACTION     = False    # Phase 1 -- cluster: fetch/preprocess/window/spectrogram, no TF import
-RUN_CLASSIFICATION = True    # Phase 2 -- local: load packed spectrograms + model, classify
+RUN_EXTRACTION     = False    # Phase 1 
+RUN_CLASSIFICATION = True    # Phase 2 
 
 # -- Interchange directory between the two phases ---------------------------------
 # Phase 1 writes packed per-station-day spectrogram archives here
-EXTRACTION_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\09a_continuous_data_test\2025-08_45Hz"
+EXTRACTION_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\09a_continuous_data_test"
 
 # -- Paths (Phase 1 only -- cluster) ----------------------------------------------
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
 
 # -- Output for THIS invocation's own log + (Phase 2 only) predictions/review imgs -
-OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\09a_continuous_data_test\2025-08_45Hz"
+OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\09a_continuous_data_test\multistation"
 
 # -- Trained CNN model (Phase 2 only -- local, downloaded from Google Drive) -----
 MODEL_PATH      = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\07b_cnn_classifier\5classes_45Hz_20260812_130248\spectrogram_cnn_final.keras"
@@ -147,8 +72,7 @@ MONTHS_TO_SCAN = [
     ("2025-07-01", "2025-08-01"),   # July
 ]
 
-# -- High-frequency mode -- MUST match whatever 07a/07b used to build+train the model MODEL_PATH points at below
-# extend the spectrograms frequency window from 45 Hz (False -> baseline) to 80 Hz (True -> high freq mode)
+# -- High-frequency mode -- MUST match whatever 07a/07b used to build+train the model MODEL_PATH points 
 HIGH_FREQ_MODE = False
 
 if HIGH_FREQ_MODE:
@@ -161,8 +85,8 @@ else:
     FREQ_MAX_KEEP = 45.0    # [Hz]
 
 # -- Window / spectrogram parameters -- MUST match 07a EXACTLY (same trained model) --
-WINDOW_PRE_S   = 5      # kept for documentation only -- there is no onset here,
-WINDOW_POST_S  = 95     # window length is just WINDOW_PRE_S + WINDOW_POST_S = 100 s
+WINDOW_PRE_S   = 5      # kept for documentation only 
+WINDOW_POST_S  = 95   
 WINDOW_S       = WINDOW_PRE_S + WINDOW_POST_S
 NT             = int(WINDOW_S * TARGET_FS)
 
@@ -185,21 +109,17 @@ DET_OVERLAP_SEC = 1  * 60   # 1-minute overlap between consecutive detector wind
 DET_MIN_EVENT_DUR_SEC = 5.0     # discard detections shorter than this
 DET_MIN_TRACE_SEC     = 120.0   # minimum day-segment length to attempt detection at all
 
-# -- Cross-station coincidence (Phase 1 only) -- see module docstring's CROSS-STATION
-# COINCIDENCE section. +/-seconds around each detection's onset within which ANOTHER
-# station's detection (any station, checked before classification even exists) counts
-# as corroborating -- ANNOTATES every window (n_other_stations_within_tol /
-# other_stations_within_tol), does not drop anything itself. Single network-wide
-# value, not distance-scaled -- sanity-check against your station geometry.
+# -- Cross-station coincidence (Phase 1 only) ---------------------------
 COINCIDENCE_TOLERANCE_S = 20
 
-# -- Packed spectrogram storage dtype (Phase 1 writes / Phase 2 reads) ------------
-PACK_DTYPE = "float16"   # halves size vs float32, same convention as 07a_consolidate_for_colab.py's PACK_DTYPE
+# -- MULTI-STATION-ONLY CLASSIFICATION (Phase 2) --------------------------
+REQUIRE_MULTISTATION_FOR_CLASSIFICATION = True
+MIN_OTHER_STATIONS_FOR_CLASSIFICATION   = 1
 
-# -- Consolidation (Phase 1 only) -- combine one month's per-station-day packed
-# files into ONE compressed archive, same idea as 07a_consolidate_for_colab.py.
-# Per-station-day files are kept too (Phase 1's skip/resume logic depends on
-# them existing) -- only the consolidated file needs to be copied off the cluster.
+# -- Packed spectrogram storage dtype (Phase 1 writes / Phase 2 reads) ------------
+PACK_DTYPE = "float16"   
+
+# -- Consolidation (Phase 1 only) -----------------------------------------------
 CONSOLIDATE_PER_MONTH = True
 
 # -- Classification batch size (matches BATCH_SIZE used in 07b training) ----------
@@ -220,7 +140,7 @@ PLOT_PROBABILITY_SUMMARY = True   # confidence boxplot + mean-probability-vector
 CHECKPOINT_EVERY_STATION_DAYS = 5
 CHECKPOINT_EVERY_PACKED_FILES = 20
 
-# -- SMOKE TEST (Phase 1 only) -- strongly recommended before the full run --------
+# -- SMOKE TEST (Phase 1 only) -- recommended before the full run --------
 # Restricts every month to MAX_DAYS_SMOKE_TEST day(s) and MAX_STATIONS_SMOKE_TEST station(s)
 SMOKE_TEST              = False
 MAX_DAYS_SMOKE_TEST     = 1
@@ -252,7 +172,9 @@ log_file, log_path = setup_logging(
     RUN_DIR, "09a_continuous_spectrogram_classification.py",
     extra_info=(f"RUN_EXTRACTION={RUN_EXTRACTION}  RUN_CLASSIFICATION={RUN_CLASSIFICATION}  |  "
                 f"EXTRACTION_DIR: {EXTRACTION_DIR}  |  DET_THR_ON={DET_THR_ON}  |  "
-                f"COINCIDENCE_TOLERANCE_S={COINCIDENCE_TOLERANCE_S}  |  SMOKE_TEST={SMOKE_TEST}")
+                f"COINCIDENCE_TOLERANCE_S={COINCIDENCE_TOLERANCE_S}  |  "
+                f"REQUIRE_MULTISTATION_FOR_CLASSIFICATION={REQUIRE_MULTISTATION_FOR_CLASSIFICATION}  |  "
+                f"SMOKE_TEST={SMOKE_TEST}")
 )
 
 packed_dir = os.path.join(EXTRACTION_DIR)
@@ -297,8 +219,7 @@ if RUN_EXTRACTION:
 
     station_list = build_station_list_from_inventory(inventory)
 
-    # -- HIGH_FREQ_MODE station filter -- keep only stations natively sampled >=
-    # TARGET_FS, same reasoning as 07a's catalog filter (see Section 1 comment).
+    # -- HIGH_FREQ_MODE station filter -- keep only stations natively sampled >= TARGET_FS
     if HIGH_FREQ_MODE:
         n_before = len(station_list)
         filtered = []
@@ -374,8 +295,6 @@ if RUN_CLASSIFICATION:
 # =============================================================================
 # SECTION 3 — SPECTROGRAM SHAPE (fixed, precomputed once — must match 07a exactly)
 # =============================================================================
-# Cheap (scipy/numpy only), needed by both phases -- Phase 1 to build images,
-# Phase 2 to sanity-check packed images against what the model expects.
 
 _dummy = np.zeros(NT, dtype=np.float32)
 _f_full, _t_axis, _ = scipy_spectrogram(
@@ -408,21 +327,8 @@ if RUN_CLASSIFICATION and model is not None:
 
 def _process_event_trace(tr_raw, inventory, target_fs, t_start, t_end, nt):
     """
-    Phase 1 only. Identical to 07a_spectrogram_dataset_build.py's
-    _process_trace() -- literal copy, not an import, same reasoning as
-    spectrogram_image() below. Clean one SHORT (~WINDOW_S-second) raw trace ->
-    response-removed velocity [m/s], resampled, trimmed/padded to exactly `nt`
-    samples.
-
-    Deliberately plain remove_response (pre_filt=None, water_level=60), NOT
-    the pre_filt-tapered approach used for the full-day detection trace below
-    -- this MUST match 07a's per-event convention exactly, since that's what
-    the model was trained to normalize against. See the module docstring's
-    "WHY THIS SCRIPT NOW USES STA/LTA DETECTION" section for why this matters.
-
-    Returns
-    -------
-    np.ndarray, shape (nt,), float32 -- or None if any step fails / degenerate.
+    _process_trace() -- literal copy, not an import, same reasoning as spectrogram_image() below
+    Returns: np.ndarray, shape (nt,), float32 -- or None if any step fails / degenerate
     """
     try:
         tr = tr_raw.copy()
@@ -454,15 +360,8 @@ def _process_event_trace(tr_raw, inventory, target_fs, t_start, t_end, nt):
 def fetch_3c_event_window(client_sds, net, sta, chan_z, t_start, t_end, inventory, target_fs, nt,
                           horizontal_suffixes=HORIZONTAL_SUFFIXES):
     """
-    Phase 1 only. Identical to 07a's fetch_3c_window() -- fetch and clean Z, N,
-    E components for one station over [t_start, t_end), a fresh short-window
-    SDS fetch (NOT sliced from the day-scale detection trace -- see
-    _process_event_trace docstring for why that distinction matters). Channel
-    order always [Z, N, E]; horizontals default to a copy of Z if unavailable.
-
-    Returns
-    -------
-    np.ndarray, shape (nt, 3), float32 [Z, N, E] -- or None if Z fails.
+    Identical to 07a's fetch_3c_window()
+    Returns: np.ndarray, shape (nt, 3), float32 [Z, N, E] -- or None if Z fails
     """
     try:
         st_z = client_sds.get_waveforms(net, sta, "*", chan_z, t_start, t_end)
@@ -508,10 +407,7 @@ def fetch_3c_event_window(client_sds, net, sta, chan_z, t_start, t_end, inventor
 
 
 def spectrogram_image(data3, fs, nperseg, noverlap, nfft, freq_keep_mask):
-    """Phase 1 only. Identical to 07a_spectrogram_dataset_build.py's
-    spectrogram_image() -- same PSD floor epsilon, same STFT params. Kept as
-    a literal copy (not an import) so this script has no hidden runtime
-    dependency on 07a's own CONFIGURATION section changing underneath it."""
+    """ Identical to 07a_spectrogram_dataset_build.py's """
     PSD_FLOOR_EPS = 1e-20
     channels = []
     for c in range(3):
@@ -537,10 +433,7 @@ _noise_review_counter = [0]   # mutable cell -- persists across the whole Phase 
 
 def _emit_row(meta, img_f32, label_idx, proba, rows_list):
     """
-    Phase 2 only. Build one output row (metadata + predicted class + all 5
-    probabilities), append it to rows_list, and -- per SAVE_IMAGES_FOR_NONNOISE
-    / SAVE_EVERY_NTH_NOISE -- optionally save the spectrogram image itself to
-    review_dir for visual review.
+    Build one output row (metadata + predicted class + all 5 probabilities)
     """
     cls_name = CLASS_NAMES[label_idx]
 
@@ -573,19 +466,7 @@ def _emit_row(meta, img_f32, label_idx, proba, rows_list):
 
 
 def consolidate_month_packed_files(packed_dir, month_tag):
-    """
-    Phase 1 only, run once per month right after that month's station-day
-    loop finishes. Globs every per-station-day spec_<net>_<sta>_<YYYYMMDD>.npz
-    in packed_dir whose "day" field falls in this month, and concatenates
-    them into ONE compressed archive: packed_dir/consolidated_<month_tag>.npz
-    -- same idea as 07a_consolidate_for_colab.py bundling train/test/val into
-    single files, so there's one thing to copy off the cluster instead of one
-    file per station-day. Per-station-day scalar metadata (network/station/
-    location/channel/day) becomes a per-window array here so Phase 2 can
-    still tell which detection came from which station-day. The individual
-    per-station-day files are left in place -- Phase 1's skip/resume logic
-    (the `if os.path.isfile(out_path)` check) depends on them existing.
-    """
+    """ Run once per month right after that month's station-day loop finishes """
     candidates = sorted(glob.glob(os.path.join(packed_dir, "spec_*.npz")))
     imgs, ws, we, snr_v, snr_fm, nets, stas, locs, chans, days = [], [], [], [], [], [], [], [], [], []
     n_other_l, other_str_l = [], []
@@ -607,11 +488,6 @@ def consolidate_month_packed_files(packed_dir, month_tag):
                 locs.append(np.full(n, str(d["location"])))
                 chans.append(np.full(n, str(d["channel"])))
                 days.append(np.full(n, day))
-                # Cross-station coincidence fields (see module docstring) -- fall back
-                # to "not computed" sentinels for a packed file written before this was
-                # added, so an old file lying around alongside new ones doesn't crash
-                # consolidation (Phase 1's own skip/redo logic keeps this from happening
-                # under normal use, but consolidation can be re-run independently).
                 if "n_other_stations_within_tol" in d.files:
                     n_other_l.append(d["n_other_stations_within_tol"])
                     other_str_l.append(d["other_stations_within_tol"])
@@ -646,21 +522,9 @@ def consolidate_month_packed_files(packed_dir, month_tag):
 
 def plot_probability_summary(df_month, class_names, month_tag, out_dir):
     """
-    Phase 2 only. Two-panel figure per month, built directly from the
-    proba_<class> columns already in the predictions CSV -- makes the
-    model's confidence/confusion visible without digging through the raw
-    numbers.
-
-    Left panel  : boxplot of the WINNING probability (the value argmax was
-                  actually taken on), grouped by predicted class. A class
-                  sitting near chance level (1 / n_classes) most of the time
-                  is a class this validation run can't be trusted on yet.
-    Right panel : heatmap of the MEAN full probability vector for each
-                  predicted class (rows = predicted class, cols = probability
-                  mass on each class). A confusion-matrix stand-in for
-                  continuous data with no ground truth -- real off-diagonal
-                  mass in a row means that class is being confused with
-                  another one even when it "wins" the argmax.
+    Two-panel figure per month, built directly from the proba_<class> columns already in the predictions CSV
+        Left panel  : boxplot of the WINNING probability (the value argmax was actually taken on)
+        Right panel : heatmap of the MEAN full probability vector for each predicted class 
     """
     proba_cols = [f"proba_{c.replace(' ', '_')}" for c in class_names]
 
@@ -753,10 +617,6 @@ if RUN_EXTRACTION:
             day_end   = day_utc + 86400
 
             # ---- PASS 1: STA/LTA-detect EVERY station for this day first --------------
-            # (see module docstring's CROSS-STATION COINCIDENCE section). Coincidence
-            # needs every station's onsets for the SAME day at once, so nothing gets
-            # packed/written yet -- just detected, or reused from an already-packed
-            # file so it can still corroborate other stations without re-fetching SDS.
             station_day_events  = {}   # station_key -> [(t_on, t_off, snr_dict), ...]
             station_needs_write = set()
             station_timing      = {}
@@ -776,13 +636,8 @@ if RUN_EXTRACTION:
                         with np.load(out_path, allow_pickle=False) as _existing:
                             has_coincidence = "n_other_stations_within_tol" in _existing.files
                             if has_coincidence:
-                                # already packed under the coincidence-aware schema -- reuse
-                                # its onsets for PASS 2 below (so it still corroborates OTHER
-                                # stations) without re-fetching SDS or re-running DetecteurV3.
                                 onsets = [UTCDateTime(s) - WINDOW_PRE_S for s in _existing["window_start"]]
                     except Exception as e:
-                        # truncated/corrupted file (e.g. an interrupted previous run) --
-                        # fall back to treating it as stale rather than crashing the loop.
                         _read_error = e
                     if has_coincidence:
                         station_day_events[station_key] = [(t_on, None, None) for t_on in onsets]
@@ -964,8 +819,7 @@ if RUN_EXTRACTION:
 
 if RUN_CLASSIFICATION:
 
-    # Prefer consolidated monthly archives (see CONSOLIDATE_PER_MONTH in Section 1)
-    # over raw per-station-day files -- never both, that would double-count.
+    # Prefer consolidated monthly archives over raw per-station-day files
     consolidated_files = sorted(glob.glob(os.path.join(packed_dir, "consolidated_*.npz")))
     if consolidated_files:
         packed_files = consolidated_files
@@ -1000,9 +854,7 @@ if RUN_CLASSIFICATION:
             other_sta   = d["other_stations_within_tol"]   if "other_stations_within_tol"   in d.files else None
 
             n = images.shape[0]
-            # network/station/location/channel/day are scalars in a per-station-day
-            # file, but per-window arrays in a consolidated_*.npz -- normalize both
-            # to a length-n array here so the rest of the loop doesn't care which.
+            # network/station/location/channel/day are scalars in a per-station-day file
             def _per_window(key):
                 val = np.atleast_1d(d[key])
                 return val if val.shape[0] == n else np.full(n, str(val.reshape(-1)[0]))
@@ -1016,6 +868,35 @@ if RUN_CLASSIFICATION:
             print(f"  [SKIP] {os.path.basename(fpath)} — shape mismatch "
                   f"{images.shape[1:]} != ({N_FREQ}, {N_TIME}, 3)")
             continue
+
+        if REQUIRE_MULTISTATION_FOR_CLASSIFICATION:
+            if n_other_sta is None:
+                print(f"  [WARN] {os.path.basename(fpath)} — no n_other_stations_within_tol "
+                      f"array (predates the cross-station coincidence check) — classifying "
+                      f"ALL windows in this file, REQUIRE_MULTISTATION_FOR_CLASSIFICATION "
+                      f"cannot be applied. Re-run Phase 1 to get coincidence annotations.")
+            else:
+                keep_mask = n_other_sta >= MIN_OTHER_STATIONS_FOR_CLASSIFICATION
+                n_dropped_mc = int((~keep_mask).sum())
+                if n_dropped_mc:
+                    print(f"  [MULTISTATION-ONLY] {os.path.basename(fpath)} — skipping "
+                          f"classification (CNN never run) on {n_dropped_mc:,} / {n:,} "
+                          f"single-station-only window(s).")
+                images = images[keep_mask]
+                starts = starts[keep_mask]
+                ends   = ends[keep_mask]
+                if snrs   is not None: snrs   = snrs[keep_mask]
+                if snr_fm is not None: snr_fm = snr_fm[keep_mask]
+                if other_sta is not None: other_sta = other_sta[keep_mask]
+                n_other_sta = n_other_sta[keep_mask]
+                nets  = nets[keep_mask]
+                stas  = stas[keep_mask]
+                locs  = locs[keep_mask]
+                chans = chans[keep_mask]
+                days  = days[keep_mask]
+                n = images.shape[0]
+                if n == 0:
+                    continue
 
         for b0 in range(0, n, BATCH_SIZE):
             b1 = min(b0 + BATCH_SIZE, n)

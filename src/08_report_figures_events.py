@@ -1,7 +1,7 @@
 """
-08_report_figures.py
+08_report_figures_events.py
 =====================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : August 2026
 
@@ -26,11 +26,7 @@ Data sources
 ------------
   04a catalog_windows_<stamp>.csv     : earthquake / rockslide / ice quake detections + features
   04d noise_windows_<stamp>.csv       : noise-class detections + features (same schema)
-  04c regional_windows_<stamp>.csv    : optional 5th class (regional earthquakes, 150-1000km,
-                                        same schema) — REGIONAL_CSV=None to skip. Included in
-                                        every figure EXCEPT Map 1 (fig_event_map), which is
-                                        deliberately tight to the massif bounding box and would
-                                        never show a regional hypocenter anyway — see Section 3.
+  04c regional_windows_<stamp>.csv    : optional 5th class 
   ISTerre SDS archive + FDSN inventory : ONLY for the example gallery + average spectrogram
 """
 
@@ -45,8 +41,6 @@ ORIGINAL_CSV = "/data/failles/louisels/project/results/outputs_04a/all-99-featur
 NOISE_CSV    = "/data/failles/louisels/project/results/outputs_04d/run_20260803_174514/noise_windows_20260803_174514.csv"
 
 # -- Regional catalog (output of script 04c, optional 5th class) --------------
-# Set to a 04c `regional_windows_<stamp>.csv` to add the "regional" class.
-# None = skip it entirely (unlike NOISE_CSV above, which is currently required).
 REGIONAL_CSV = "/data/failles/louisels/project/results/outputs_04c/run_20260805_135512/regional_windows_20260805_135512.csv"
 
 # -- Output ---------------------------------------------------------------------
@@ -56,8 +50,7 @@ OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_08a"
 SDS_ROOT    = "/data/sig/SDS"
 ISTERRE_URL = "http://ist-sc3-geobs.osug.fr:8080"
 
-# -- Study area (Mont Blanc massif) — same bounding box used everywhere else in
-#    the pipeline (01/02a/02b/03a/04a/04d/06c) -----------------------------------
+# -- Study area (Mont Blanc massif) -----------------------------------
 LAT_MIN, LAT_MAX = 45.5, 46.0
 LON_MIN, LON_MAX = 6.5, 7.2
 MAP_EXTENT_PAD   = 0.15   # degrees padding around the bbox for the two maps
@@ -78,84 +71,24 @@ CITIES = [   # (name, lon, lat) — same list used in notebooks/01_catalog_explo
 ]
 
 # -- Classes ----------------------------------------------------------------------
-# TARGET_CLASSES : the 3 LOCAL classes from the catalog (04a) only — this list
-#   also drives Map 1 (fig_event_map), which is deliberately tight to the
-#   massif bounding box. Regional events' true hypocenters are 150-1000km
-#   away, so "regional" is NOT added here — it would be invisible (or force
-#   the map to zoom out and lose the point) — see Section 3/4 notes below.
 TARGET_CLASSES = ["earthquake", "rockslide", "ice quake"]        # from the catalog (04a)
-# CLASS_ORDER : everything else (station map, example gallery, average
-#   spectrogram, feature distributions, SNR figure) — these are all about what
-#   was recorded on the massif STATIONS, which regional legitimately belongs to.
 CLASS_ORDER    = ["earthquake", "rockslide", "ice quake", "noise", "regional"]  # incl. 4th/5th class (04d/04c)
 CLASS_ABBR     = {"earthquake": "eq", "rockslide": "rs", "ice quake": "iq", "noise": "no", "regional": "re"}
 CLASS_COLORS   = {"earthquake": "#1f77b4", "rockslide": "#d62728",
                   "ice quake": "#2ca02c", "noise": "#7f7f7f",
                   "regional": "#9467bd"}
 
-# -- Quality gate (same values used in 05b Tier 2 / 06c) — applied to the
-#    earthquake/rockslide/ice quake catalog only; noise is intentionally NOT
-#    gated (see plot_snr_quality_by_class docstring) -----------------------------
+# -- Quality gate (same values used in 05b Tier 2 / 06c) -----------------------------
 SNR_MIN             = 1.70    # metric 'SNR'
 SNR_FULL_MEDIAN_MIN = 1.99    # metric 'SNR_full_median'
 
 # -- Example gallery (one waveform+spectrogram figure PER example) --------------
 N_EXAMPLES_PER_CLASS = 10
-# Ranking: earthquake/rockslide/ice quake -> highest SNR_full_median first,
-#          AFTER excluding outliers (see SNR_OUTLIER_MULT below)
-#          noise                          -> RANDOM sample (fixed seed), NOT
-#          sorted by highest STA/LTA trigger ratio. 06c's QC gallery sorts noise
-#          by highest trigger_on_cft on purpose (a diagnostic: "show me the
-#          noise windows that look most event-like"), but that means the top
-#          few are, by construction, the most anomalous outliers in the whole
-#          catalog -- exactly the opposite of what a report figure titled
-#          "what does noise look like" should show. A random sample is
-#          representative; sorting by CFT is not.
 NOISE_SAMPLE_SEED = 42
 
-# A handful of stations produce implausibly large SNR_full_median values --
-# e.g. XX.B03 reaches >1900 (even >4000 on individual rows) while its OWN
-# median is ~3.7, completely ordinary. These are not "exceptionally clean
-# earthquakes", they're a recurring data-quality artifact (same station,
-# same spike shape/size/position, regardless of which real event) that a
-# naive "top-N by SNR" selection cherry-picks every single time. Reject any
-# candidate whose SNR_full_median exceeds SNR_OUTLIER_MULT times its class's
-# SNR_OUTLIER_PCTL percentile before ranking -- excludes ~0.1% of rows,
-# removes every one of the B03-type artifacts (verified against the actual
-# 04a CSV: cap=220 for earthquake keeps 42,553/42,615 rows and the resulting
-# top-10 becomes a healthy mix of real stations, no repeats).
 SNR_OUTLIER_PCTL = 0.99
 SNR_OUTLIER_MULT = 5.0
 
-# The class-wide percentile cap above can still miss a B03-type artifact when
-# the class has few detections (e.g. rockslide, n=7,656 vs earthquake's
-# 42,615): the artifact rows are then a big enough share of the top tail that
-# they drag the 99th-percentile value itself upward, which raises the cap
-# (5x that already-inflated percentile) enough for some of them to survive.
-# XX.B03 and XX.B01 have now BOTH shown the exact same narrow double-spike
-# signature -- same shape, same implausible SNR relative to a normal
-# station's median -- across THREE different classes (rockslide, regional,
-# noise). Two different stations in the same network sharing an identical,
-# distinctive artifact is not a coincidence of two unrelated broken sensors;
-# it's consistent with a shared hardware/telemetry issue across the whole XX
-# deployment (XX-style codes are typically a temporary/nodal experiment
-# network, which commonly show periodic GPS-clock-resync spikes). Rather than
-# keep whitelisting individual XX station codes one at a time as new ones
-# turn up, exclude the entire network -- use ("<network>", "*") to blacklist
-# every station in a network.
-# GU.BLANC (regional class) shows a related but distinct signature: 2-3
-# near-identical spikes recurring at a fixed ~43s interval within the SAME
-# 90s window -- a real earthquake doesn't repeat itself perfectly on a timer,
-# this is consistent with a periodic instrumental artifact (calibration
-# pulse / timing correction / digitizer glitch). Note GU.REMY does NOT show
-# this pattern (its examples look like genuine noisy regional arrivals), so
-# only GU.BLANC specifically is excluded, not the whole GU network.
-# Confirmed the artifact is NOT a filtering issue: it survived both the
-# 2-10Hz and a wider 1-20Hz bandpass, meaning it's broadband (impulsive/
-# spike-like) energy present in the RAW trace itself, not something our
-# processing introduces or a filter can remove.
-# Add other (network, station) pairs -- or ("network", "*") -- here if the
-# same pattern shows up again.
 EXCLUDED_STATIONS = {("XX", "*"), ("GU", "BLANC")}
 
 
@@ -163,47 +96,24 @@ def _is_station_excluded(net, sta):
     """True if (net, sta) or the whole network ("net", "*") is blacklisted."""
     return (net, sta) in EXCLUDED_STATIONS or (net, "*") in EXCLUDED_STATIONS
 
-# Fixed-length window fetched for every example (also what gets averaged into the
-# per-class "typical fingerprint" spectrogram, so the shape MUST be identical for
-# every example — hence fixed window length + fixed target sampling rate, no
-# per-event trimming to det_duration_s)
 PRE_S          = 10     # seconds BEFORE det_starttime
 FIXED_WINDOW_S = 100    # total window length [s] (so 90s of post-onset context)
 TARGET_FS      = 200    # [Hz] every trace is resampled to this before spectrogram
-                        # (raised from 100 -> many stations here are DHZ/HGZ/HHZ
-                        # channels sampled well above 100Hz; forcing everything
-                        # down to 100Hz Nyquist=50Hz was silently discarding real
-                        # high-frequency content for those stations -- see FREQ_MAX_KEEP)
 
-# Extra context fetched (and processed) on EACH side of the window above, then
-# discarded before plotting. NOT optional: removing the instrument response
-# (water-level deconvolution) or bandpass-filtering right at the edge of a
-# tightly-trimmed window creates a large low-frequency transient that looks
-# exactly like a real spike/step in the trace and shows up as a solid
-# broadband streak in the spectrogram -- it is a processing artifact, not
-# signal. Fetching this padding and trimming it off AFTER filtering gives the
-# transient room to decay before it reaches the region actually plotted.
 FETCH_PAD_S = 60
 
 # Waveform display filter (matches the reference figure the report is modeled on)
 WAVE_FREQMIN = 1.0
 WAVE_FREQMAX = 20.0
 
-# Spectrogram parameters (same convention as 07a_spectrogram_dataset_build.py,
-# but with a higher frequency ceiling -- see TARGET_FS note above)
+# Spectrogram parameters 
 SPEC_NPERSEG_S     = 2.0     # [s] STFT segment length
 SPEC_NOVERLAP_FRAC = 0.75
 SPEC_NFFT          = 512
-FREQ_MAX_KEEP      = 95.0    # [Hz] 95% of Nyquist at TARGET_FS=200Hz -- stations
-                             # whose native rate is lower than this will simply
-                             # show (correctly) quiet/blue above their own Nyquist,
-                             # not an artifact, just an honest reflection of that
-                             # instrument's real bandwidth
+FREQ_MAX_KEEP      = 95.0    # [Hz] 95% of Nyquist at TARGET_FS=200Hz 
 SPEC_NPERSEG       = int(SPEC_NPERSEG_S * TARGET_FS)
 SPEC_NOVERLAP      = int(SPEC_NPERSEG * SPEC_NOVERLAP_FRAC)
-# PSD floor epsilon — see 07a's amplitude-check note: background PSD is ~1e-18
-# (m/s)^2/Hz, strongest events ~1e-13; 1e-20 guards log(0) without swallowing signal
-PSD_FLOOR_EPS = 1e-20
+PSD_FLOOR_EPS = 1e-20  # PSD floor epsilon, see 07a
 SPEC_VMIN, SPEC_VMAX = -200, -120   # dB color scale, matches the reference figure
 
 # -- Feature distributions (physically-interpretable subset) --------------------
@@ -214,8 +124,7 @@ FEATURE_LABELS = {
     "kurtosis_signal":   "Kurtosis (waveform impulsiveness)",
     "eratio_1_3__3_10":  "Energy ratio 1\u20133 Hz / 3\u201310 Hz",
 }
-LOG_FEATURES = {"eratio_1_3__3_10", "kurtosis_signal"}   # both are heavy-tailed;
-# a linear axis lets a handful of extreme outliers squash the violin body flat
+LOG_FEATURES = {"eratio_1_3__3_10", "kurtosis_signal"} 
 
 # -- SNR / quality distribution panel --------------------------------------------
 SNR_METRICS = ("SNR", "SNR_full_median")
@@ -231,11 +140,6 @@ import sys
 import warnings
 warnings.filterwarnings("ignore")
 
-# SSL workaround (same fix applied to notebooks/01_catalog_exploration.ipynb):
-# recent OpenSSL builds raise ssl.SSLError: [ASN1: NOT_ENOUGH_DATA] when Python
-# falls back to loading the OS certificate store. Forcing certifi's CA bundle
-# sidesteps it. Must run before the first HTTPS request (FDSN inventory fetch,
-# and the contextily basemap tile downloads used by the two maps below).
 try:
     import certifi
     os.environ.setdefault("SSL_CERT_FILE", certifi.where())
@@ -275,11 +179,6 @@ log_file, log_path = setup_logging(
 )
 set_matplotlib_defaults()
 
-# Environment fingerprint -- if this ever runs under the wrong interpreter
-# (e.g. a cluster's shared /soft/python module instead of the glacier-seismo
-# conda env), package ABI mismatches (numpy/rasterio in particular, via
-# contextily) fail in ways that are hard to diagnose from the traceback alone.
-# This makes a mismatch immediately visible in the run log.
 print(f"  Python executable : {sys.executable}")
 print(f"  NumPy version     : {np.__version__}")
 
@@ -296,8 +195,6 @@ orig_all = rename_legacy_columns(orig_all)
 orig_all = orig_all[orig_all["event_type"].isin(TARGET_CLASSES)].copy()
 print(f"  Original catalog (all quality) : {len(orig_all):,} rows")
 
-# Quality gate — applied ONLY to earthquake/rockslide/ice quake, recomputed
-# explicitly from SNR/SNR_full_median (do not trust a stale 'quality_ok' column)
 quality_mask = (
     (orig_all["SNR"]             >= SNR_MIN) &
     (orig_all["SNR_full_median"] >= SNR_FULL_MEDIAN_MIN)
@@ -317,22 +214,11 @@ noise = noise.dropna(subset=z_feat_cols_noise).copy()
 print(f"  Noise catalog                  : {len(noise):,} rows")
 
 # -- Optional 5th class: regional (04c output) ---------------------------------
-# Kept as SEPARATE variables from orig_all/orig_gated (which stay local-only
-# and continue to feed Map 1's tight massif-only geography, via TARGET_CLASSES
-# — see Section 1 note). Regional's true hypocenters are 150-1000km away, well
-# outside that map's extent, so mixing it into orig_all would either make it
-# invisible or force the local map to zoom out and lose its whole point.
-# It DOES belong in combined_gated/combined_all below though — its WAVEFORMS
-# were recorded on the same massif stations as everything else, which is what
-# the station map / example gallery / feature and SNR distributions are about.
 if REGIONAL_CSV is not None and os.path.exists(str(REGIONAL_CSV)):
     regional_all = pd.read_csv(REGIONAL_CSV, low_memory=False)
     regional_all = rename_legacy_columns(regional_all)
     regional_all = regional_all[regional_all["event_type"] == "regional"].copy()
     print(f"  Regional catalog (all quality) : {len(regional_all):,} rows")
-
-    # Same gate as the local classes — regional rows carry REAL computed SNR
-    # from 04c's own detection pipeline, unlike noise (SNR=NaN by construction).
     regional_mask = (
         (regional_all["SNR"]             >= SNR_MIN) &
         (regional_all["SNR_full_median"] >= SNR_FULL_MEDIAN_MIN)
@@ -345,10 +231,8 @@ else:
         print(f"  [WARN] REGIONAL_CSV not found: {REGIONAL_CSV} — continuing without the regional class.")
     regional_all, regional_gated = pd.DataFrame(), pd.DataFrame()
 
-# `combined_gated`  -> what the classifier actually trains on (used for the
-#                      station map and the example gallery)
-# `combined_all`    -> ungated union, used ONLY for the SNR/quality figure so the
-#                      gate's effect is actually visible (see docstring)
+# `combined_gated`  -> what the classifier actually trains on (used for the station map and the example gallery)
+# `combined_all`    -> ungated union, used ONLY for the SNR/quality figure so the gate's effect is actually visible (see docstring)
 combined_gated = pd.concat([orig_gated, noise, regional_gated], ignore_index=True)
 combined_all   = pd.concat([orig_all,   noise, regional_all],   ignore_index=True)
 
@@ -367,8 +251,7 @@ for cls in TARGET_CLASSES:
     n = (events_unique["event_type"] == cls).sum()
     print(f"    {cls:<22} {n:>6,}")
 
-map_extent = (LON_MIN - MAP_EXTENT_PAD, LON_MAX + MAP_EXTENT_PAD,
-             LAT_MIN - MAP_EXTENT_PAD, LAT_MAX + MAP_EXTENT_PAD)
+map_extent = (LON_MIN - MAP_EXTENT_PAD, LON_MAX + MAP_EXTENT_PAD, LAT_MIN - MAP_EXTENT_PAD, LAT_MAX + MAP_EXTENT_PAD)
 event_colors = {c: CLASS_COLORS[c] for c in TARGET_CLASSES}
 
 fig1, ax1 = plt.subplots(figsize=(8, 7))
@@ -406,11 +289,6 @@ client_fdsn = connect_fdsn(ISTERRE_URL)
 inventory  = None
 sta_coords = {}   # {(network, station): (lat, lon)}
 if client_fdsn is not None:
-    # IMPORTANT: always pass the bounding box here (not a bare network="*"/
-    # station="*" query) -- see 06c's note: an unscoped query on ISTerre's FDSN
-    # server hits a WADL validation error unrelated to our request. Scoping to
-    # the massif bbox is also just correct (the only region we ever want) and
-    # faster besides.
     _t_min = pd.to_datetime(combined_gated["det_starttime"]).min()
     _t_max = pd.to_datetime(combined_gated["det_starttime"]).max()
     inventory = fetch_inventory(
@@ -432,8 +310,6 @@ if sta_coords:
     counts_by_code = {}
     for (net, sta), grp in combined_gated.groupby(["network", "station"]):
         counts_by_code[sta] = counts_by_code.get(sta, 0) + len(grp)
-    # plot_station_map keys on station code only (see script 01/05a) — collapse
-    # sta_coords the same way if two networks happen to share a station code
     sta_coords_by_code = {}
     for (net, sta), coord in sta_coords.items():
         sta_coords_by_code.setdefault(sta, coord)
@@ -474,19 +350,7 @@ print(f"\n{'='*65}\n  STEP 4 — Example waveform+spectrogram gallery\n{'='*65}"
 def _fetch_padded_trace(client_sds, net, sta, chan, det_start, inventory,
                         pre_s, window_s, target_fs, fetch_pad_s):
     """
-    Fetch + response-remove + resample a window LARGER than needed (with
-    fetch_pad_s of extra context on each side of [det_start-pre_s, ...+window_s]).
-
-    Returns the UN-TRIMMED trace, still including the padding. The caller is
-    responsible for any further filtering and for trimming down to the final
-    [t_on, t_off] window (via _trim_to_fixed_length) AFTER that filtering --
-    both response removal and any bandpass need this padding as "run-in" room,
-    or their edge transients (which look exactly like a real spike/step) end
-    up sitting right inside the plotted window.
-
-    Returns
-    -------
-    (trace, t_on, t_off, None) on success, (None, None, None, reason_str) on failure.
+    Fetch + response-remove + resample a window LARGER than needed (with fetch_pad_s of extra context on each side of [det_start-pre_s, ...+window_s])
     """
     t_on   = det_start - pre_s
     t_off  = t_on + window_s
@@ -525,9 +389,6 @@ def _trim_to_fixed_length(tr, t_on, t_off, target_fs, window_s):
         tr.data = tr.data[:nt]
     return tr
 
-
-# Running sums for the average-spectrogram figure (section 7) — accumulated in
-# LINEAR power while we're already fetching each example, so no second fetch pass
 _avg_sum_linear = {cls: None for cls in CLASS_ORDER}
 _avg_count       = {cls: 0    for cls in CLASS_ORDER}
 _freq_axis_shared = None
@@ -540,11 +401,6 @@ else:
     for cls in CLASS_ORDER:
         sub = combined_gated[combined_gated["event_type"] == cls].copy()
 
-        # Hard-exclude known-broken stations/networks first (see
-        # EXCLUDED_STATIONS note in section 1) -- applies to EVERY class,
-        # including noise: the noise gallery used to skip this check entirely
-        # and picked up the exact same XX artifact as a "typical noise"
-        # example.
         n_before_excl = len(sub)
         keep_mask = [not _is_station_excluded(net, sta)
                      for net, sta in zip(sub["network"], sub["station"])]
@@ -556,14 +412,8 @@ else:
                   f"before ranking")
 
         if cls == "noise":
-            # Random, NOT sorted by trigger_on_cft -- see NOISE_SAMPLE_SEED note
-            # in section 1: sorting by highest CFT surfaces the most anomalous
-            # outlier windows in the whole catalog, not typical noise.
             sub = sub.sample(frac=1.0, random_state=NOISE_SAMPLE_SEED)
         else:
-            # Exclude implausible-outlier detections (see SNR_OUTLIER_MULT note
-            # in section 1) BEFORE ranking, so a single glitchy station can't
-            # monopolize the gallery.
             p99 = sub["SNR_full_median"].quantile(SNR_OUTLIER_PCTL)
             cap = p99 * SNR_OUTLIER_MULT
             n_before = len(sub)
@@ -598,8 +448,6 @@ else:
                 continue
 
             # -- waveform panel: bandpass the PADDED trace first, trim after --
-            # (filtering before trimming keeps the bandpass's own edge transient
-            # out of the padding region too, not just deconvolution's)
             tr_wave_padded = tr_padded.copy()
             nyq = tr_wave_padded.stats.sampling_rate / 2.0
             tr_wave_padded.filter("bandpass", freqmin=WAVE_FREQMIN,

@@ -1,7 +1,7 @@
 """
 denoiser_utils.py
 ==================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship 
 Author : Elsa Louis
 Date   : July 2026
 
@@ -30,12 +30,8 @@ import pandas as pd
 
 def fix_checkpoint_paths(model_dir):
     """
-    Rewrite the TF 'checkpoint' file in model_dir so model_checkpoint_path /
-    all_model_checkpoint_paths use just the basename instead of the absolute path
-    recorded at save time (e.g. a Colab Drive path like
-    /content/drive/MyDrive/.../log/<run>/model_49.ckpt)
-
-    Safe to call every time — no-op if paths are already relative.
+    Rewrite the TF 'checkpoint' file in model_dir so model_checkpoint_path / all_model_checkpoint_paths use just the 
+    basename instead of the absolute path recorded at save time
     """
     ckpt_path = os.path.join(model_dir, "checkpoint")
     if not os.path.isfile(ckpt_path):
@@ -65,8 +61,7 @@ def fix_checkpoint_paths(model_dir):
 
 def validate_npz_files(data_dir, csv_path):
     """
-    Pre-flight check: try to np.load() every file listed in csv_path (must have a
-    'fname' column) before handing the list to predict.py.
+    Pre-flight check: try to np.load() every file listed in csv_path (must have a 'fname' column) before handing the list to predict.py
 
     Parameters
     ----------
@@ -75,9 +70,7 @@ def validate_npz_files(data_dir, csv_path):
 
     Returns
     -------
-    valid_csv_path : str or None — csv_path unchanged if every file loaded fine,
-                     a new "<csv_path>_valid.csv" with only the good rows if some
-                     failed, or None if zero files are readable
+    valid_csv_path : str or None
     n_total, n_bad : int, int
     """
     df  = pd.read_csv(csv_path)
@@ -116,13 +109,7 @@ def validate_npz_files(data_dir, csv_path):
 def run_deepdenoiser_predict(data_dir, csv_path, model_dir, output_dir,
                               deepdenoiser_dir, sampling_rate=100):
     """
-    Validate + fix checkpoint + run DeepDenoiser's predict.py on a folder of .npz
-    windows, in inference mode (--save_signal).
-
-    This is the shared invocation used by every script that needs DeepDenoiser
-    inference (rescue targets in 03c, good-SNR comparison sample in 03e) — keeping
-    it in one place means fixes like the OneDrive npz pre-flight check
-    (validate_npz_files) or the checkpoint-path rewrite only need to happen once.
+    Validate + fix checkpoint + run DeepDenoiser's predict.py on a folder of .npz windows, in inference mode (--save_signal)
 
     Parameters
     ----------
@@ -136,8 +123,7 @@ def run_deepdenoiser_predict(data_dir, csv_path, model_dir, output_dir,
     Returns
     -------
     ok         : bool — True if predict.py ran and exited 0
-    results_dir: str or None — output_dir/results (predict.py's actual output location)
-                 if ok, else None
+    results_dir: str or None — output_dir/results (predict.py's actual output location) if ok, else None
     """
     predict_script = os.path.join(deepdenoiser_dir, "predict.py")
     os.makedirs(output_dir, exist_ok=True)
@@ -173,21 +159,6 @@ def run_deepdenoiser_predict(data_dir, csv_path, model_dir, output_dir,
         "--sampling_rate", str(sampling_rate),
     ]
 
-    # subprocess.run() inherits the parent shell's environment by default. On the
-    # cluster, a leftover PYTHONPATH from an HPC `module load` (e.g.
-    # /soft/python/lib/python3.11/site-packages) sits AHEAD of the seismo conda
-    # env's own site-packages in Python's import order (PYTHONPATH entries are
-    # searched before the interpreter's own site-packages). That broke TensorFlow
-    # here (2026-07-15): it picked up an incompatible system-wide google.protobuf
-    # instead of the env's own. But that same system path is ALSO where obspy
-    # lives — the seismo env doesn't have its own copy — so blindly stripping
-    # PYTHONPATH (first attempt) fixed protobuf but broke `import obspy` in
-    # data_reader.py instead.
-    #
-    # Fix: don't remove PYTHONPATH, reorder it — prepend the env's own
-    # site-packages so its protobuf/tensorflow win, while leaving the rest of
-    # PYTHONPATH (where obspy lives) in place as a fallback for names the env
-    # doesn't have.
     env = os.environ.copy()
     try:
         env_site_packages = [p for p in site.getsitepackages() if os.path.isdir(p)]

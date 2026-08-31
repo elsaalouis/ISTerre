@@ -1,7 +1,7 @@
 """
 CATALOG EVENT PRECISE WINDOWING
 ================================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : May 2026
 
@@ -33,10 +33,9 @@ Data sources
 
 Output
 ------
-  catalog_windows_<stamp>.csv: one row per (event × station × detection)
-  event metadata  |  station  |  det_starttime / det_endtime / det_duration_s | origin_inside_det  |  origin_lag_s  |  pick_inside_det  |  pick_lag_s  |  quality_ok | 7 SNR cols  |  99 or 103 feature cols
-
-  window_<etype>_<time>.png: diagnostic figure per event: waveform + characteristic function with detected windows
+  - catalog_windows_<stamp>.csv: one row per (event × station × detection)
+         event metadata  |  station  |  det_starttime / det_endtime / det_duration_s | origin_inside_det  |  origin_lag_s  |  pick_inside_det  |  pick_lag_s  |  quality_ok | 7 SNR cols  |  99 or 103 feature cols
+  - window_<etype>_<time>.png: diagnostic figure per event: waveform + characteristic function with detected windows
 """
 
 
@@ -116,7 +115,7 @@ KURTOSIS_ETYPES        = ('rockslide', 'landslide')
 
 # -- Feature extraction -------------------------------------------------------
 # LOAD_3C = True : fetch N and E channels alongside Z and compute 4 polarizationnparameters (rectilinP, azimuthP, dipP, Plani) in addition to the 99 Maggi/Hibert Z features
-# LOAD_3C = False: Z-component only, 99 features (backward compatible)
+# LOAD_3C = False: Z-component only, 99 features 
 LOAD_3C = True
 
 # -- Checkpoint ---------------------------------------------------------------
@@ -124,7 +123,7 @@ CHECKPOINT_EVERY = 20   # save a partial CSV every N successfully processed even
 
 # -- Diagnostic figures -------------------------------------------------------
 PLOT_EVERY = 0   # produce a windowing figure every N successfully processed events
-                 #   0  → no figures at all  (recommended for long runs: no thousands of PNGs)
+                 #   0  → no figures at all  (recommended for long runs)
                  #   1  → every event        (original behaviour)
                  #  10  → one figure every 10 events (representative sample)
 
@@ -258,7 +257,6 @@ else:
 
 # =============================================================================
 # SECTION 3 — DETECTION FUNCTION
-# Encapsulates the method-specific logic so the main loop stays clean
 # =============================================================================
 
 def detect_event(tr_vel, tr_filt, fs):
@@ -276,8 +274,7 @@ def detect_event(tr_vel, tr_filt, fs):
     detections : dict  {"Det_k": [UTCDateTime t_on, UTCDateTime t_off]}
     thresholds : dict  {"Det_k": [float cft_at_on, float cft_at_off]}
     t_nrj      : list of datetime.datetime — time axis of the characteristic function
-    sum_cft    : numpy array (1-D) — characteristic function values
-                 (STA/LTA ratio for 'sta_lta', sum_cft for 'groult')
+    sum_cft    : numpy array (1-D) — characteristic function values (STA/LTA ratio for 'sta_lta', sum_cft for 'groult')
     skip_msg   : str or None — if not None, detection was skipped; message explains why
     """
     trace_dur = tr_vel.stats.endtime - tr_vel.stats.starttime
@@ -346,8 +343,7 @@ def detect_event(tr_vel, tr_filt, fs):
                 ]
                 k += 1
 
-        # Build a datetime.datetime time axis for the CFT
-        # (same format as DetecteurV3's t_nrj, so plot_windowing works for both methods)
+        # Build a datetime.datetime time axis for the CFT (same format as DetecteurV3's t_nrj, so plot_windowing works for both methods)
         t_nrj = [
             _dt.datetime.utcfromtimestamp((t_start + idx / fs).timestamp)
             for idx in range(len(cft))
@@ -363,11 +359,8 @@ def detect_event(tr_vel, tr_filt, fs):
 
 def _fetch_3c_array(client_sds, net, sta, chan_z, t0, t1, z_data, fs):
     """
-    Fetch horizontal (N and E) channels from SDS for a given window and combine
-    them with the already-loaded Z data into a (3, n_samples) array [Z, N, E].
-
-    Returns None if either N or E channel cannot be fetched — the caller will
-    leave polarization features as NaN for that row.
+    Fetch horizontal (N and E) channels from SDS for a given window and combine them with the already-loaded Z data into a (3, n_samples) array [Z, N, E]
+     -> returns None if either N or E channel cannot be fetched: the caller will leave polarization features as NaN for that row
 
     Parameters
     ----------

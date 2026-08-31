@@ -1,7 +1,7 @@
 """
 preprocessing.py
 ================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : April 2026
 

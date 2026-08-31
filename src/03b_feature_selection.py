@@ -1,13 +1,13 @@
 """
 FEATURE SELECTION & CORRELATION ANALYSIS
 =========================================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : May 2026
 
 Goal
 ----
-- Understand the redundancy and discriminative power of the 99 Maggi/Hibert features before feeding them to a classifier
+- Understand the redundancy of the 99 Maggi/Hibert features before feeding them to a classifier
 - Find the smallest reliable subset
 
 Pipeline
@@ -16,7 +16,6 @@ Pipeline
   2. Correlation analysis: Pearson and Spearman N×N heatmaps (N=99 or 103), cluster extraction (group features with |r| > CORR_THRESHOLD into clusters)
   3. HGB feature importances: train HGB (same config as 06b) on all features, rank them by permutation importance (how much Macro F1 drops when each feature is shuffled on the test set)
   4. Feature subset experiments: for each subset (top-20 / top-40 / top-60 / all / cluster-representatives), train HGB with event-stratified split + SMOTE → compare precision / recall / F1
-  5. PCA exploration: cumulative explained variance, loadings of the first 3 principal components
 
 Output
 ------
@@ -25,8 +24,6 @@ Output
   fig_importances_<stamp>.png            : top-N HGB permutation importances, coloured by group
   fig_importances_grouped_<stamp>.png    : box plot of importances per feature group
   fig_subset_comparison_<stamp>.png      : macro F1 / per-class F1 vs subset size
-  fig_pca_variance_<stamp>.png           : PCA cumulative explained variance
-  fig_pca_loadings_<stamp>.png           : feature loadings for PC1 / PC2 / PC3
   feature_clusters_<stamp>.csv           : cluster assignment for every feature
   feature_importances_<stamp>.csv        : ranked importances + group + cluster
   subset_results_<stamp>.csv             : per-class F1 for every subset tested
@@ -72,8 +69,9 @@ HGB_N_ESTIMATORS  = 200
 HGB_MAX_DEPTH     = 6
 HGB_LEARNING_RATE = 0.1
 
-# -- Permutation importance (HGB has no built-in MDI like RF) -----------------
-# n_repeats: how many times each feature is shuffled — higher = more reliable but slower
+# -- Permutation importance ----------------------------------------------------
+# n_repeats: how many times each feature is shuffled 
+#  -> higher = more reliable but slower
 #  -> 10 good balance for ~6000 test rows × 99 features on cluster
 N_PERMUTATION_REPEATS = 10
 
@@ -145,7 +143,6 @@ log_file, _    = setup_logging(RUN_DIR, "03b_feature_selection.py",
 set_matplotlib_defaults()
 
 # Group colour palette — built after the feature set is auto-detected from the CSV
-# (GROUP_NAMES, GROUP_COLORS, FEAT_GROUP_ARRAY are finalised in Section 3)
 GROUP_PALETTE = plt.cm.tab10.colors          # up to 10 distinct colours
 
 
@@ -179,11 +176,6 @@ if NOISE_CSV is not None:
         print(f"[WARN] NOISE_CSV not found: {NOISE_CSV} — continuing without the noise class.")
 
 # -- Optional 5th class: regional (output of 04c) ------------------------------
-# Same position as noise above (before the class/quality filter below) — this
-# script trusts each row's own precomputed `quality_ok` column (see Section 3
-# quality filter), and 04c bakes that column correctly with the current
-# pipeline-wide gate, so no before/after-gate ordering distinction is needed
-# here the way it is in 06b/06c (which recompute the SNR mask explicitly).
 if REGIONAL_CSV is not None:
     if os.path.isfile(REGIONAL_CSV):
         df_regional = pd.read_csv(REGIONAL_CSV)
@@ -234,7 +226,6 @@ if missing:
     sys.exit(1)
 
 # Drop rows with NaN in Z-component features only
-# Polarization NaN rows (~3-5 % of rows when LOAD_3C=True) are kept; they will be median-imputed in Section 4 before SMOTE and classifier training
 z_feat_cols = [f for f in FEATURE_NAMES if f in df_raw.columns]
 df_raw = df_raw.dropna(subset=z_feat_cols).copy()
 print(f"After dropping NaN-feature rows: {len(df_raw):,} rows.")
@@ -265,8 +256,7 @@ print(f"\n{'='*65}")
 print(f"  STEP 2 — Train / test split  (by event)")
 print(f"{'='*65}")
 
-# Use drop_duplicates (same approach as 06b) — one row per event keeps the first
-# occurrence of event_type, which is consistent since each event has a single type.
+# Use drop_duplicates: one row per event keeps the first occurrence of event_type, which is consistent since each event has a single type
 event_info = (
     df_raw[["event_time", "event_type"]]
     .drop_duplicates("event_time")
@@ -291,14 +281,13 @@ y_train      = df_train["event_type"].values
 X_test_full  = df_test[_feat_names].values.astype(np.float32)
 y_test       = df_test["event_type"].values
 
-# Impute NaN with training-set median (fits on train only — no leakage)
-# Only affects polarization features when _has_3c=True and some rows lacked horizontal channels.  SMOTE and classifiers need NaN-free arrays.
+# Impute NaN with training-set median (no leakage)
+# Only affects polarization features when _has_3c=True and some rows lacked horizontal channels: SMOTE and classifiers need NaN-free arrays
 _imputer     = SimpleImputer(strategy="median")
 X_train_full = _imputer.fit_transform(X_train_full)
 X_test_full  = _imputer.transform(X_test_full)
 
-# SMOTE on the full feature training set — used ONLY for the baseline HGB (permutation importance in Section 6) 
-# Subset experiments (Section 7) each apply SMOTE on their own feature columns so the interpolation happens in the same feature space as 06b does
+# SMOTE on the full feature training set: used ONLY for the baseline HGB (permutation importance in Section 6) 
 if USE_SMOTE:
     k_nb = min(SMOTE_K, pd.Series(y_train).value_counts().min() - 1)
     if k_nb >= 1:
@@ -373,7 +362,6 @@ print(f"\n[SAVED] {cluster_csv}")
 
 
 # ---- Helper: reorder features by hierarchical clustering ----------------
-# Returns the leaf order from the dendrogram (same order clustermap uses)
 def _leaf_order(Z, n):
     """ Return feature indices in dendrogram leaf order """
     from scipy.cluster.hierarchy import leaves_list
@@ -493,8 +481,6 @@ print(f"  Baseline (all {n_features} features) — "
       f"Accuracy={acc_base:.3f}  Macro F1={rep_base['macro avg']['f1-score']:.3f}")
 
 # -- Permutation importance on the TEST set -----------------------------------
-# Scoring = 'f1_macro' so the drop matches our main evaluation metric.
-# n_jobs=-1 parallelises across features.
 print(f"\n  Computing permutation importance  "
       f"({N_PERMUTATION_REPEATS} repeats × {X_test_full.shape[1]} features) ...")
 print(f"  [This may take 5-15 min on the cluster — parallelised on all cores]")
@@ -503,8 +489,8 @@ perm_result = permutation_importance(
     clf_full, X_test_full, y_test,
     n_repeats  = N_PERMUTATION_REPEATS,
     random_state = RANDOM_STATE,
-    n_jobs     = -1,
-    scoring    = "f1_macro",   # macro F1 = our target metric
+    n_jobs     = -1,            # n_jobs=-1 parallelises across features
+    scoring    = "f1_macro",   # scoring = 'f1_macro' so the drop matches the main evaluation metric
 )
 importances      = perm_result.importances_mean   # mean drop across repeats
 importances_std  = perm_result.importances_std    # std across repeats (measure of stability)

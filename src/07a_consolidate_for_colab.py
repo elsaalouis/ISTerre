@@ -1,14 +1,14 @@
 """
 07a_consolidate_for_colab.py
 =============================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : July 2026
 
 Goal
 ----
 Pack the many small per-sample .npz files produced by 07a_spectrogram_dataset_build.py into a handful of large archives (one per
-train/val/test split), so the dataset can be uploaded to and read from Google Drive without hitting Drive's FUSE-mount limitations.
+train/val/test split), so the dataset can be uploaded to and read from Google Drive without hitting Drive's limitations
 
 Usage
 -----

@@ -1,7 +1,7 @@
 """
 05c_kurtosis_onset_comparison.py
 =================================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : May 2026
 
@@ -55,7 +55,6 @@ WAVEFORM_BEFORE    = 15.0   # s before detected onset to display
 WAVEFORM_AFTER     = 30.0   # s after detected onset to display
 
 # Number of events to show in the per-event diagnostic figure (Fig 2)
-# Events are ranked by SNR_s2n_median (highest first)
 N_EVENTS_DIAG = 10
 
 Z_CHANNELS = "??Z"

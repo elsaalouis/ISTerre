@@ -1,7 +1,7 @@
 """
 03d_rescue_feature_extraction.py
 =================================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : July 2026
 
@@ -12,16 +12,6 @@ Post-denoiser processing:
 - extract the Maggi/Hibert features on events that pass
 - save a rescue catalog CSV (rescue_catalog_<stamp>.csv) in the exact same column schema as the 04a output
 - ALSO extract the same 99 features from the RAW (pre-denoise) signal, for the exact same accepted events, into a sibling rescue_catalog_raw_<stamp>.csv
-
-Pipeline position
------------------
-  03c ✓  →  [03d this script]  →  06c
-
-How filenames encode metadata
-------------------------------
-  rescue_{net}_{sta}_{cha}_{run_date}_{run_time}_{row_idx}.npz     e.g.   rescue_CH_FULLY_HHZ_20260605_102106_4880.npz
-                                                  ^^^^
-                                                  row index in the 04a catalog CSV gives us all original metadata (event_time, lat/lon, det window…)
 
 SNR computation
 ---------------
@@ -34,29 +24,21 @@ SNR metrics (same definitions as detection.py):
   SNR_full_median = median(|sig|) / median(|noise|)
   SNR_s2n_median  = 99.5th pct(|sig|) / MAD(noise)   
 
-Quality gate (05b Tier 2 classification-based thresholds — run_20260720_104210)
-  SNR             >= SNR_MIN
-  SNR_full_median >= SNR_FULL_MEDIAN_MIN
-
-These are the 2 highest-AUC metrics from 05b Tier 2 (classification correctness,
-not windowing alignment). SNR_full_mean and SNR_s2n_median dropped from the gate
-(AUC 0.617 and 0.588, both weaker) but are still computed/stored for reference.
+Quality gate 
+  SNR             >= 1.70    05b Tier 2 — metric 'SNR' (peak/noise), AUC=0.627
+  SNR_full_median >= 1.99   05b Tier 2 — metric 'SNR_full_median', AUC=0.642 (best)
 
 Outputs
 -------
   rescue_catalog_<stamp>.csv         — accepted (gate-passing) rows, schema matches 04a
-  rescue_catalog_raw_<stamp>.csv     — same accepted events, features from the RAW
-                                        (undenoised) signal instead — feeds 06c Run C
+  rescue_catalog_raw_<stamp>.csv     — same accepted events, features from the RAW (undenoised) signal instead — feeds 06c Run C
   denoise_qc_<stamp>.csv             — one row per rescue candidate (before/after SNR + fidelity metrics)
   snr_improvement_summary_<stamp>.csv — gate-INDEPENDENT summary: how much SNR improved overall, across every denoised candidate regardless of pass/fail
   snr_before_after_<stamp>.png       — paired SNR scatter, raw vs denoised, per metric (all candidates)
   snr_delta_distribution_<stamp>.png — histogram of log10(SNR after/before), per metric (all candidates)
   rescue_funnel_<stamp>.png          — candidates -> passed gate, as a funnel bar chart
   denoise_fidelity_<stamp>.png       — waveform correlation (raw vs denoised) vs SNR gain
-  waveform_examples/waveform_compare_<fname>_{raw,denoised}_<stamp>.png
-                                      — waveform+spectrogram figure pair (same style as
-                                        08a's example gallery), one per selected event
-                                        (see MAKE_WAVEFORM_PLOTS / WAVEFORM_SELECT_MODE)
+  waveform_examples/waveform_compare_<fname>_{raw,denoised}_<stamp>.png — waveform+spectrogram figure pair 
 """
 
 
@@ -86,9 +68,8 @@ ITP    = 1000     # P-arrival sample index (10 s × 100 Hz, fixed by 03c windowi
 N_SAMP = 3000     # total samples in each NPZ window
 
 # ── Quality gate (05b Tier 2 classification-based — run_20260720_104210) ──────
-# 2 highest-AUC metrics from 05b Tier 2; SNR_full_mean/SNR_s2n_median dropped.
-SNR_MIN             = 1.70   # 05b Tier 2 — metric 'SNR', AUC=0.627
-SNR_FULL_MEDIAN_MIN = 1.99   # 05b Tier 2 — metric 'SNR_full_median', AUC=0.642 (best)
+SNR_MIN             = 1.70
+SNR_FULL_MEDIAN_MIN = 1.99  
 
 # ── Minimum signal samples for feature extraction ────────────────────────────
 MIN_SIGNAL_SAMPLES = 200   # < 2 s at 100 Hz → skip (too short for 99 features)
@@ -99,7 +80,7 @@ MAKE_QC_PLOTS = True
 
 # ── Single-event waveform comparison plots (raw vs denoised) ─────────────────
 # Two selection modes:
-#   "top_delta" — auto-pick the N candidates with the biggest SNR change (see WAVEFORM_RANK_METRIC / WAVEFORM_RANK_ABS below)
+#   "top_delta" — auto-pick the N candidates with the biggest SNR change
 #   "manual"    — plot exactly the fnames listed in WAVEFORM_MANUAL_FNAMES
 MAKE_WAVEFORM_PLOTS   = True
 WAVEFORM_SELECT_MODE  = "top_delta"      # "top_delta" or "manual"
@@ -127,8 +108,7 @@ SPEC_NFFT          = 512
 PSD_FLOOR_EPS      = 1e-20
 FREQ_MAX_KEEP       = 0.95 * (SPS / 2)   # 95% of Nyquist at SPS=100Hz -> 47.5 Hz
 
-# Derived (samples, not seconds) -- scipy.signal.spectrogram needs nperseg/noverlap
-# as integer sample counts, not the second-based values above
+# Derived (samples, not seconds) -- scipy.signal.spectrogram needs nperseg/noverlap as integer sample counts
 SPEC_NPERSEG  = int(SPEC_NPERSEG_S * SPS)
 SPEC_NOVERLAP = int(SPEC_NPERSEG * SPEC_NOVERLAP_FRAC)
 
@@ -190,9 +170,8 @@ catalog = pd.read_csv(CATALOG_CSV, low_memory=False)
 print(f"Loaded {len(catalog):,} rows × {len(catalog.columns)} columns.")
 catalog_cols = list(catalog.columns)
 
-# Detect whether the catalog was produced with LOAD_3C=True (103 features) or not (99).
-# If polarization column names are present, rescued events will get NaN for those columns
-# (DeepDenoiser is Z-only; horizontal data is not available for the denoised windows).
+# Detect whether the catalog was produced with LOAD_3C=True (103 features) or not (99)
+# -> if polarization column names are present, rescued events will get NaN for those columns
 _has_3c = all(p in catalog_cols for p in POLARIZATION_NAMES)
 print(f"  Catalog feature mode : {'103 features (3C) — polarization will be NaN for rescued events' if _has_3c else '99 features (Z-only)'}")
 
@@ -238,11 +217,9 @@ for fpath in tqdm(denoised_files, desc="Processing"):
     # format: rescue_{net}_{sta}_{cha}_{run_date}_{run_time}_{row_idx}
     parts   = fname.split('_')
     row_idx = int(parts[-1])
-    # cha is parts[-4], sta is parts[-5], net is parts[-6]
-    # (run_date = parts[-3], run_time = parts[-2])
-    cha = parts[-4]
-    sta = parts[-5]
-    net = parts[-6]
+    cha = parts[-4]   # cha is parts[-4]
+    sta = parts[-5]   # sta is parts[-5]
+    net = parts[-6]   # net is parts[-6]
 
     # ── Load denoised waveform  ───────────────────────────────────────────────
     try:
@@ -262,16 +239,8 @@ for fpath in tqdm(denoised_files, desc="Processing"):
         try:
             orig       = np.load(orig_path, allow_pickle=True)
             itp        = int(orig['itp'])
-            # Raw rescue NPZ stores data as (3000, 3) — E, N, Z components (03c line ~495);
-            # Z is index 2 (see 03c's own flat-trace check: `data3[:, 2]`). This is a
-            # different shape than the denoised NPZ (3000, 1, 1), which uses [:, 0, 0].
             raw_signal = orig['data'][:, 2].astype(np.float64)
         except Exception as e:
-            # File exists on disk (checked above) but failed to load — this is the
-            # OneDrive Files-On-Demand signature (placeholder present, content not
-            # actually downloaded yet), NOT a missing file. Count + log it distinctly
-            # from n_missing_orig so it's diagnosable instead of silently zeroing out
-            # every before/after SNR comparison.
             n_raw_load_fail += 1
             if len(_raw_load_errs) < 5:
                 _raw_load_errs.append((os.path.basename(orig_path), str(e)))
@@ -288,9 +257,6 @@ for fpath in tqdm(denoised_files, desc="Processing"):
     snr_dict = compute_snr_numpy(denoised_signal, itp, det_dur, SPS)
 
     # ── QC: SNR on the raw (pre-denoiser) signal + waveform-fidelity check ──────
-    # Only possible when the original rescue .npz was found above (raw_signal is not None).
-    # This is what lets the plots distinguish "genuinely denoised" from "SNR went up
-    # because the model invented structure" — independent of the quality gate below.
     if raw_signal is not None:
         snr_dict_raw = compute_snr_numpy(raw_signal, itp, det_dur, SPS)
         fidelity     = compute_denoise_correlation(raw_signal, denoised_signal, itp, det_dur, SPS)
@@ -357,8 +323,7 @@ for fpath in tqdm(denoised_files, desc="Processing"):
     for feat_name, val in zip(FEATURE_NAMES, feats):
         row[feat_name] = val
 
-    # If the catalog has 3C polarization columns, write NaN for rescued events.
-    # Horizontal channels are not available from the Z-only denoised NPZ files.
+    # If the catalog has 3C polarization columns, write NaN for rescued events
     if _has_3c:
         for pol_name in POLARIZATION_NAMES:
             row[pol_name] = np.nan
@@ -373,11 +338,7 @@ for fpath in tqdm(denoised_files, desc="Processing"):
 
     rescue_rows.append(row)
 
-    # ── Raw-ablation row (same event, same window, features from the RAW ──────
-    # pre-denoise signal instead of the denoised one). This is Run C's data source
-    # in 06c: same rescued events, no denoising applied. If Run C performs about as
-    # well as Run B (denoised), the classifier gain is coming from "more real
-    # examples," not from the denoiser itself.
+    # ── Raw-ablation row (same event, same window, features from the RAW pre-denoise signal instead of the denoised one) ──────
     if raw_signal is not None:
         sig_window_raw = raw_signal[itp:sig_end]
         if len(sig_window_raw) < MIN_SIGNAL_SAMPLES:
@@ -399,9 +360,8 @@ for fpath in tqdm(denoised_files, desc="Processing"):
                 if 'snr' in row_raw:
                     row_raw['snr'] = snr_dict_raw.get('SNR', np.nan)
 
-                # Diagnostic: would this event have cleared the gate on its OWN raw
-                # SNR, with no denoising at all? If yes, the denoiser gets no credit
-                # for this particular rescue.
+                # Diagnostic: would this event have cleared the gate on its OWN raw SNR, with no denoising at all? 
+                # If yes, the denoiser gets no credit for this particular rescue
                 raw_snr_val    = snr_dict_raw.get('SNR', np.nan)
                 raw_snr_median = snr_dict_raw.get('SNR_full_median', np.nan)
                 raw_passes_alone = bool(
@@ -468,9 +428,6 @@ if rescue_rows:
 # =============================================================================
 # SECTION 6b — QC DIAGNOSTICS: signal-quality plots (no classification here — see 06c)
 # =============================================================================
-# Covers every evaluated candidate (qc_rows), not just the ones that pass the gate —
-# needed to see the full picture: did the denoiser help, by how much, and is it
-# recovering real signal or just inventing smooth structure?
 
 if MAKE_QC_PLOTS and qc_rows:
     print(f"\n{'='*65}")
@@ -487,10 +444,7 @@ if MAKE_QC_PLOTS and qc_rows:
         if qc_df['event_type'].notna().any() else ""
     )
 
-    # Gate metrics (05b Tier 2, top-2 AUC): SNR and SNR_full_median.
-    # SNR_full_mean and SNR_s2n_median dropped from the gate/QC default view
-    # (weaker AUC — 0.617 and 0.588 respectively) but remain in denoise_qc_*.csv
-    # for reference.
+    # Gate metrics (05b Tier 2, top-2 AUC): SNR and SNR_full_median
     _metric_pairs = [
         ('SNR_raw',             'SNR',             'SNR'),
         ('SNR_full_median_raw', 'SNR_full_median', 'SNR_full_median'),
@@ -501,7 +455,7 @@ if MAKE_QC_PLOTS and qc_rows:
     }
 
     # ── Gate-INDEPENDENT summary: how much did the denoiser improve the SNR overall? ──
-    # This ignores passed_gate entirely (every evaluated candidate counts)
+    # -> this ignores passed_gate entirely (every evaluated candidate counts)
     print("\n  SNR improvement summary — ALL denoised candidates, gate not considered:")
     summary_rows = []
     for before_col, after_col, label in _metric_pairs:
@@ -565,13 +519,6 @@ elif MAKE_QC_PLOTS:
 # =============================================================================
 # SECTION 6c — WAVEFORM COMPARISON PLOTS (raw vs denoised, individual events)
 # =============================================================================
-# One waveform+spectrogram PNG PER STATE (raw, denoised) per selected candidate
-# -- identical figure style to 08a_report_figures_events.py's example gallery
-# (same plot_waveform_spectrogram_example function: black trace, jet dB
-# spectrogram, grey-shaded detected window), so the "before" and "after" PNGs
-# can be placed side by side and read exactly like every other example figure
-# in the report. Replaces the old two-line-plot comparison (red=raw,
-# green=denoised, no spectral information).
 
 def _compute_spectrogram_db(signal, sps):
     """STFT power spectrogram in dB, frequency-capped at FREQ_MAX_KEEP."""
@@ -590,17 +537,7 @@ def _make_denoise_example_figure(signal, itp, sps, det_dur, state_label, snr_val
                                   metric_label, event_type, event_time,
                                   net, sta, cha, out_path,
                                   freq_axis, t_full, Sxx_db, spec_vmin, spec_vmax):
-    """One waveform+spectrogram figure for a single state (raw or denoised).
-
-    freq_axis/t_full/Sxx_db and spec_vmin/spec_vmax are computed by the
-    caller (see _compute_spectrogram_db and the shared-scale note in Section
-    6c) so that the raw and denoised panels of the same candidate share an
-    identical, data-adaptive color scale -- these .npz files hold raw/
-    demeaned digitizer counts (load_3component never applies instrument
-    response removal), not physical ground velocity in m/s, so 08a's fixed
-    -200/-120 dB range (calibrated for real m/s data) saturates completely
-    here and has to be computed fresh from the actual data instead.
-    """
+    """One waveform+spectrogram figure for a single state (raw or denoised)"""
     n          = len(signal)
     times_full = (np.arange(n) / sps) - (itp / sps)   # 0 = onset (08a convention)
     wave_data  = _bandpass_for_display(signal, sps, WAVEFORM_FILTER_FREQMIN, WAVEFORM_FILTER_FREQMAX)
@@ -686,11 +623,7 @@ if MAKE_WAVEFORM_PLOTS and qc_rows:
             freq_raw, t_raw_spec, db_raw = _compute_spectrogram_db(w_raw,      SPS)
             freq_den, t_den_spec, db_den = _compute_spectrogram_db(w_denoised, SPS)
 
-            # Shared, data-adaptive color scale (2nd-99.5th percentile across
-            # BOTH panels combined) -- see _make_denoise_example_figure's
-            # docstring for why a fixed range doesn't work on this data, and
-            # "shared" so the before/after panels stay visually comparable
-            # rather than each auto-scaling to its own range independently.
+            # Shared, data-adaptive color scale 
             all_db_finite = np.concatenate([db_raw.ravel(), db_den.ravel()])
             all_db_finite = all_db_finite[np.isfinite(all_db_finite)]
             if len(all_db_finite) > 0:
@@ -750,8 +683,7 @@ else:
     rescue_df.to_csv(out_csv, index=False)
     print(f"\n  [SAVED] {out_csv}")
 
-    # Raw-ablation sibling catalog (same schema, undenoised features) — feeds
-    # 06c's Run C to isolate the denoiser's own contribution.
+    # Raw-ablation sibling catalog (same schema, undenoised features)
     if rescue_rows_raw:
         rescue_raw_df = pd.DataFrame(rescue_rows_raw)
         out_csv_raw = os.path.join(RUN_DIR, f"rescue_catalog_raw_{STAMP}.csv")

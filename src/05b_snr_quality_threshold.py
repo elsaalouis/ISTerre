@@ -1,7 +1,7 @@
 """
 05b_snr_quality_threshold.py
 =============================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : July 2026
 
@@ -11,7 +11,7 @@ Companion to 05a_snr_windowing_validation.py
  -> 05a answers "does SNR predict whether the detector correctly bracketed the true onset"
  -> 05b answers a different question: "what SNR level predicts actual downstream usefulness for classification / DeepDenoiser training"
 
-Both tiers below are restricted to WELL-ALIGNED detections only (per the GROUND_TRUTH column also used in 05a) 
+Both tiers below are restricted to WELL-ALIGNED detections only 
  -> alignment is treated as a hard, separate prerequisite here, not something SNR is asked to predict
  -> this isolates the amplitude/quality question from the timing question
 
@@ -46,8 +46,7 @@ Output
 # SECTION 1 — CONFIGURATION
 # =============================================================================
 
-# -- Input CSV (output of script 04a) — same catalog used by 05a, so Tier 1 and
-# -- Tier 2 both operate on the identical population/snapshot -----------------
+# -- Input CSV (output of script 04a) — same catalog used by 05a, so Tier 1 and Tier 2 both operate on the identical population/snapshot --
 INPUT_CSV  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\04a_spectrogram_sta_lta_catalog\all-99-features-recent\catalog_windows_20260707_165719.csv"
 
 OUTPUT_DIR = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\05b_snr_quality_threshold"
@@ -84,15 +83,13 @@ SNR_LONG = {
     'SNR_s2n_median'   : 'SNR_s2n_median  (99.5th percentile signal / MAD noise)',
 }
 
-# -- Reference: current pooled windowing-validation threshold (05a output), shown on the Tier 1 plot for comparison ONLY 
-# -- Point this at the latest 05a snr_summary_<stamp>.csv; None to skip it.
+# -- Reference: current pooled windowing-validation threshold (05a output), shown on the Tier 1 plot for comparison ONLY (None to skip it)
 REFERENCE_SNR_SUMMARY_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\05a_snr_windowing_validation\pick_inside_det\run_20260710_141258\snr_summary_20260710_141258.csv"
 
 # -- Tier 1: unsupervised GMM / Otsu ---------------------------------------------
 GMM_RANDOM_STATE = 42
 
-# -- Tier 2: classifier (mirrors 06c's hyperparameters for rough comparability —
-# -- kept fully independent, does not import from or modify 06c) ----------------
+# -- Tier 2: classifier (mirrors 06c's hyperparameters for rough comparability) ----------------
 RUN_TIER_2               = True
 TARGET_CLASSES           = ["earthquake", "rockslide", "ice quake"]
 FEATURE_IMPORTANCES_CSV  = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03b_feature_selection\run_20260709_145058\feature_importances_20260709_145058.csv"
@@ -335,7 +332,7 @@ plot_snr_quality_threshold(
 # SECTION 6 — TIER 2: CLASSIFICATION-CORRECTNESS-BASED THRESHOLD
 # =============================================================================
 
-tier2_csv = None   # stays None if Tier 2 is skipped/disabled — checked in the summary
+tier2_csv = None   # stays None if Tier 2 is skipped/disabled
 
 if not RUN_TIER_2:
     print("\n[INFO] RUN_TIER_2 = False — skipping Tier 2.")

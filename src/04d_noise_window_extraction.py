@@ -1,25 +1,24 @@
 """
 04d_noise_window_extraction.py
 ================================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : July 2026
 
 Goal
 ----
-Build the 4th classification class: 
-LOCAL NOISE — a real detected fluctuation that is confirmed NOT to be a network-wide seismic event
+Build the 4th classification class: LOCAL NOISE 
+A real detected fluctuation that is confirmed NOT to be a network-wide seismic event
 
-New approach
------------- 
+Approach
+--------
 1. run a classical STA/LTA detector (same algorithm and parameters as `02a_classical_sta_lta_detection.py`) over a full random day at a random station 
    -> every trigger it finds is guaranteed to be a real local fluctuation, not silence
 2. each detected window is put through the local-noise checks:
    - reject if it overlaps a CATALOGED event, of ANY type
    - reject if any OTHER station within NEIGHBOR_RADIUS_KM also triggers during the same window (a seismic signal shows up on more than one station)
 
-What survives both checks is a real, locally-confirmed, non-catalogued fluctuation: 
-exactly the kind of "hard negative" the classifier needs to see to be useful for filtering real continuous-scan false triggers
+What survives both checks is a real, local, non-catalogued fluctuation: the kind of "hard negative" the classifier needs to see to be useful for filtering real continuous-scan false triggers
 
 Pipeline
 --------
@@ -39,8 +38,7 @@ Data sources
 
 Output
 ------
-  noise_windows_<stamp>.csv : one row per accepted noise window, same
-  metadata + 7 SNR (NaN) + 99/103 feature columns as 04a's catalog_windows CSV
+  noise_windows_<stamp>.csv : one row per accepted noise window, same metadata + 7 SNR (NaN) + 99/103 feature columns as 04a's catalog_windows CSV
 """
 
 
@@ -59,8 +57,6 @@ T_START = "2015-01-01"
 T_END   = "2026-07-01"
 
 # -- Bounding box: every station in/around the Mont Blanc massif -----------
-# Must match the box used everywhere else in the pipeline (01/02a/03a/04a) so
-# "the network" means the same thing here as it does downstream.
 LAT_MIN, LAT_MAX = 45.5, 46.0
 LON_MIN, LON_MAX = 6.5, 7.2
 
@@ -72,8 +68,6 @@ CATALOG_CACHE_FILE = "/data/failles/louisels/project/results/catalog_cache_all_t
 EXCLUSION_BUFFER_S = 600.0
 
 # -- Cross-station locality check (catches real but UN-catalogued signals) --
-# UNCHANGED from the previous version — same mechanism, now applied to
-# STA/LTA-detected windows instead of randomly-drawn ones.
 NEIGHBOR_RADIUS_KM      = 15.0
 MIN_NEIGHBORS_REQUIRED  = 1
 COINCIDENCE_STA_S       = 2.0
@@ -83,11 +77,7 @@ COINCIDENCE_THR_OFF     = 1.5
 COINCIDENCE_FREQ_MIN    = 1.0
 COINCIDENCE_FREQ_MAX    = 20.0
 
-# -- Primary detector: classical STA/LTA, SAME parameters as 02a ------------
-# 02a has no single frequency band (it uses per-event-type FREQ_RANGES, since
-# it already knows the catalog type) — continuous scanning doesn't have that
-# luxury, so PRIMARY_FREQ_MIN/MAX reuse the generic 1-20 Hz band already used
-# elsewhere for continuous scanning (02b, and the coincidence check above).
+# -- Primary detector: classical STA/LTA ------------------------------------
 PRIMARY_STA_S     = 5      # 02a: STA_S
 PRIMARY_LTA_S     = 100    # 02a: LTA_S
 PRIMARY_THR_ON    = 2.0    # 02a: THRES_ON
@@ -102,8 +92,6 @@ PAD_SEC                = 5     # feature-extraction padding around each detected
 MAX_CANDIDATES_PER_DAY = 5     # cap how many triggers from ONE day/station are kept, so a single noisy day can't dominate the class
 
 # -- How many noise windows to collect ---------------------------------------
-# Target = min(number of earthquake rows in EQ_COUNT_SOURCE_CSV, N_NOISE_WINDOWS_CAP)
-# Set EQ_COUNT_SOURCE_CSV to None to just use N_NOISE_WINDOWS_CAP directly.
 EQ_COUNT_SOURCE_CSV               = None
 APPLY_GATE_TO_EQ_COUNT            = True
 SNR_MIN_FOR_EQ_COUNT              = 1.70
@@ -113,12 +101,8 @@ N_NOISE_WINDOWS_CAP               = 10000
 # -- Random station selection --------------------------------------------------
 STATION_WEIGHT_BY_AVAILABILITY = False
 
-# MAX_TOTAL_ATTEMPTS = target * this. An "attempt" is now a (station, day)
-# draw rather than a single-window draw — each successful day can yield up to
-# MAX_CANDIDATES_PER_DAY rows, so this can be much lower than before, but each
-# attempt is also far heavier (a full day of waveform + response removal +
-# STA/LTA per draw, vs. one short window before) — see the runtime note below.
-ATTEMPTS_MULTIPLIER = 30
+ATTEMPTS_MULTIPLIER = 30  # an attempt = a (station, day) draw, rather than a single-window draw
+                            # each successful day can yield up to MAX_CANDIDATES_PER_DAY rows
 
 # -- Feature extraction -------------------------------------------------------
 LOAD_3C = True
@@ -286,7 +270,7 @@ print(f"[OK] {len(excl_intervals)} merged exclusion interval(s) "
 
 
 def overlaps_exclusion(t0, t1):
-    """ True if [t0, t1] intersects any merged exclusion interval. """
+    """ True if [t0, t1] intersects any merged exclusion interval """
     idx = bisect.bisect_right(_excl_starts, t1)
     for iv in excl_intervals[max(0, idx - 2):idx + 1]:
         if iv[0] < t1 and t0 < iv[1]:
@@ -330,7 +314,7 @@ print(f"[OK] Up to {MAX_TOTAL_ATTEMPTS} (station, day) draws allowed "
 
 
 def draw_random_day(net, sta):
-    """ Pick a random UTC day (truncated to 00:00:00) inside this station's operational epochs. """
+    """ Pick a random UTC day (truncated to 00:00:00) inside this station's operational epochs """
     periods = station_periods[(net, sta)]
     durs    = np.array([p1 - p0 for p0, p1 in periods])
     p_idx   = rng.choice(len(periods), p=durs / durs.sum())
@@ -346,7 +330,7 @@ def draw_random_day(net, sta):
 # =============================================================================
 
 def _fetch_3c_array(client_sds, net, sta, loc, chan_z, t0, t1, z_data, fs):
-    """ Fetch N/E channels and stack with the already-loaded Z data -> (3, n). """
+    """ Fetch N/E channels and stack with the already-loaded Z data -> (3, n) """
     base    = chan_z[:-1]
     n       = len(z_data)
     h_pairs = [("N", "E"), ("1", "2")]
@@ -412,10 +396,8 @@ def _neighbors_of(net, sta):
 
 def is_confirmed_local(net, sta, t_start_w, t_end_w):
     """
-    True  -> either no neighbor could be checked (assumed OK, logged elsewhere)
-             or every checked neighbor stayed quiet during the window
-    False -> at least one neighbor also triggered -> looks like a real,
-             un-catalogued, network-wide signal, not station-local noise
+    True  -> either no neighbor could be checked (assumed OK, logged elsewhere) or every checked neighbor stayed quiet during the window
+    False -> at least one neighbor also triggered -> looks like a real, un-catalogued, network-wide signal, not station-local noise
     """
     neighbors = _neighbors_of(net, sta)
     if len(neighbors) < MIN_NEIGHBORS_REQUIRED:
@@ -494,24 +476,6 @@ while len(all_rows) < N_NOISE_WINDOWS and n_attempts < MAX_TOTAL_ATTEMPTS:
         continue
 
     # ---- Merge + split, defensively -----------------------------------------
-    # Two independent real-world failure modes have shown up running this on
-    # the cluster, neither of which should ever be allowed to kill a 48h job:
-    #  1. An internal data gap makes merge(fill_value=None) represent the
-    #     Trace as a numpy MASKED array -> remove_response() can't run on
-    #     masked data ("Trace with masked values found"). Fixed by split()
-    #     right after merging (ObsPy's own suggested fix): breaks a masked
-    #     trace back into its contiguous unmasked pieces at the gap
-    #     boundaries; the per-segment loop below already handles multiple
-    #     segments per day.
-    #  2. A station/day whose SDS segments were written with different dtypes
-    #     (e.g. int32 STEIM-compressed vs float32/64 — happens across an
-    #     11-year, multi-instrument archive) makes ObsPy refuse to merge at
-    #     all: "Can't merge traces with same ids but differing data types" —
-    #     this raised from BOTH the fill_value=None try AND the fill_value=0
-    #     except-branch, so it was propagating out uncaught and crashing the
-    #     whole run (this is what killed run 3887087). Fixed by normalizing
-    #     every trace to float64 before merging, which recovers the day's
-    #     data instead of losing it.
     try:
         for _tr in st_raw:
             if _tr.data.dtype != np.float64:
@@ -529,10 +493,7 @@ while len(all_rows) < N_NOISE_WINDOWS and n_attempts < MAX_TOTAL_ATTEMPTS:
 
     accepted_today = 0
 
-    # Everything below processes ONE (station, day) draw. Wrapped in a
-    # catch-all so any further unforeseen data quirk (there will always be
-    # something new across 45 stations x 11 years) skips just this draw
-    # instead of taking down an unattended multi-day cluster job.
+    # Everything below processes ONE (station, day) draw
     try:
         for tr_raw in st_raw:
             if accepted_today >= MAX_CANDIDATES_PER_DAY:
@@ -566,17 +527,7 @@ while len(all_rows) < N_NOISE_WINDOWS and n_attempts < MAX_TOTAL_ATTEMPTS:
                 n_days_no_trigger += 1
                 continue
 
-            # Rank this day's triggers by PEAK STA/LTA ratio reached within
-            # each [i_on, i_off] span, strongest first, instead of a random
-            # order. A busy day can produce many triggers of very different
-            # character (a marginal ambient-level graze that barely clears
-            # THR_ON vs. a real, sharp local burst that climbs well past it),
-            # and MAX_CANDIDATES_PER_DAY only lets a handful through — a
-            # random draw can easily fill that quota with weak grazes and
-            # never even attempt the day's strongest burst. Trying strongest
-            # first means the most genuinely event-like local fluctuations
-            # get first crack at the exclusion/coincidence checks, instead of
-            # whichever candidates happened to win a coin flip.
+            # Rank this day's triggers by PEAK STA/LTA ratio reached within each [i_on, i_off] span, strongest first, instead of a random order
             peak_cft = np.array([
                 np.max(cft[i_on:i_off + 1]) if i_off > i_on else cft[i_on]
                 for i_on, i_off in on_off
@@ -597,8 +548,7 @@ while len(all_rows) < N_NOISE_WINDOWS and n_attempts < MAX_TOTAL_ATTEMPTS:
                 if win_key in used_windows:
                     continue
 
-                # ---- Catalog exclusion (this permissive detector WILL re-find
-                # real regional earthquakes too — filter those back out) ----
+                # ---- Catalog exclusion ----
                 if overlaps_exclusion(t_on, t_off):
                     n_rej_excluded += 1
                     continue
@@ -650,9 +600,6 @@ while len(all_rows) < N_NOISE_WINDOWS and n_attempts < MAX_TOTAL_ATTEMPTS:
                     "origin_lag_s"      : np.nan,
                     "pick_inside_det"   : None,
                     "pick_lag_s"        : np.nan,
-                    # Same convention as before: no SNR-based quality question
-                    # applies to a catalog-clear, locality-confirmed background
-                    # window -> always kept.
                     "quality_ok"        : True,
                     "SNR"               : np.nan,
                     "SNR_picking_5_5"   : np.nan,

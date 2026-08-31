@@ -1,7 +1,7 @@
 """
 detection.py
 ============
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship 
 Author : Elsa Louis
 Date   : April 2026
 
@@ -98,8 +98,8 @@ def signal2noise_median(y_noise, y_signal):
 
 def compute_snr(tr_filt, t_on, t_off):
     """
-    Compute five SNR measures for a detected event, following Groult et al.
-    All measures use the envelope (absolute value) of the filtered trace.
+    Compute five SNR measures for a detected event, following Groult et al
+    All measures use the envelope (absolute value) of the filtered trace
 
     Parameters
     ----------
@@ -114,10 +114,8 @@ def compute_snr(tr_filt, t_on, t_off):
         SNR_picking_3_3   — 3 s after onset vs 3 s before onset
         SNR_picking_1_3   — 1 s after onset vs 3 s before onset
         SNR_full_mean     — mean of full detection window vs equal-length noise window
-        SNR_full_median   — median of full detection window vs equal-length noise window
-                            (Groult et al. 2026 use both mean AND median > 3 as quality gate)
-        SNR_s2n_median    — tutor's robust metric: 99.5th percentile of |signal| / MAD of noise
-                            (same noise/signal windows as SNR_full_mean/median)
+        SNR_full_median   — median of full detection window vs equal-length noise window (Groult et al. 2026 use both mean AND median > 3 as quality gate)
+        SNR_s2n_median    — tutor's robust metric: 99.5th percentile of |signal| / MAD of noise (same noise/signal windows as SNR_full_mean/median)
     """
     def _mean_env(tr_slice):
         """Mean absolute amplitude of a trace slice; returns 1.0 if empty."""
@@ -186,15 +184,7 @@ def compute_snr(tr_filt, t_on, t_off):
 
 def compute_snr_numpy(full_signal, itp, det_duration_s, sps):
     """
-    Numpy-only version of compute_snr — same metrics, no ObsPy required.
-
-    Used by scripts that work with raw numpy arrays (e.g. 03d post-denoiser
-    processing) where an ObsPy Trace is not available.
-
-    The window layout mirrors the DeepDenoiser 30 s NPZ convention:
-      noise_window  = full_signal[    0 : itp]              (pre-onset)
-      signal_window = full_signal[  itp : itp + dur_samp]   (post-onset)
-    where dur_samp = min(int(det_duration_s * sps), len(full_signal) - itp).
+    Numpy-only version of compute_snr — same metrics, no ObsPy required
 
     Parameters
     ----------
@@ -264,17 +254,7 @@ def compute_snr_numpy(full_signal, itp, det_duration_s, sps):
 def compute_denoise_correlation(raw_signal, denoised_signal, itp, det_duration_s, sps):
     """
     Compare a denoised waveform against its own raw (pre-denoiser) input to check
-    whether DeepDenoiser preserved genuine signal structure or is hallucinating it.
-
-    SNR alone can go up even when a denoiser just invents smooth-looking structure
-    rather than recovering the real event, so 03d_rescue_feature_extraction.py uses
-    this alongside the before/after SNR comparison as a sanity check: it reports how
-    well the denoised trace still resembles the raw input, separately in the noise
-    window and the signal window.
-
-    Window layout matches compute_snr_numpy:
-      noise_window  = full_signal[    0 : itp]              (pre-onset)
-      signal_window = full_signal[  itp : itp + dur_samp]   (post-onset)
+    whether DeepDenoiser preserved genuine signal structure or is hallucinating it
 
     Parameters
     ----------
@@ -287,17 +267,10 @@ def compute_denoise_correlation(raw_signal, denoised_signal, itp, det_duration_s
     Returns
     -------
     dict with keys:
-      corr_signal          — Pearson r between raw and denoised, signal window.
-                              Expect moderate-to-high if real structure was recovered;
-                              near-zero despite a large SNR gain is a red flag for
-                              hallucination.
-      corr_noise            — Pearson r between raw and denoised, noise window.
-                              Expect low — a well-behaved denoiser should not reproduce
-                              the noise it removed.
-      energy_ratio_signal   — std(denoised) / std(raw) in the signal window.
-                              Expect close to 1 — signal energy preserved, not erased.
-      energy_ratio_noise    — std(denoised) / std(raw) in the noise window.
-                              Expect << 1 — noise energy suppressed.
+      corr_signal          — Pearson r between raw and denoised, signal window
+      corr_noise            — Pearson r between raw and denoised, noise window
+      energy_ratio_signal   — std(denoised) / std(raw) in the signal window
+      energy_ratio_noise    — std(denoised) / std(raw) in the noise window
     """
     _NAN_DICT = {k: np.nan for k in ('corr_signal', 'corr_noise',
                                       'energy_ratio_signal', 'energy_ratio_noise')}
@@ -507,40 +480,17 @@ def merge_window_events(total_events, total_thresholds, new_events, new_threshol
 
 def compute_cross_station_coincidence(station_events, tolerance_s):
     """
-    Cross-reference detection onset times across stations, network-wide, to
-    find which detections are corroborated by at least one OTHER station
-    within +/-tolerance_s seconds -- the check behind 09a/09b's Phase 1
-    "does this detection register on more than one station on the massif"
-    annotation (see their own module docstrings' CROSS-STATION COINCIDENCE
-    section for the full reasoning and caveats -- single network-wide
-    tolerance, no distance/apparent-velocity scaling, onset-only matching).
-
-    This ANNOTATES every detection with how many other stations corroborate
-    it -- it does not decide what to keep. Whether/which classes get
-    filtered on this basis is a downstream, class-aware decision (single-
-    station is expected and legitimate for near-source classes like
-    rockslide/ice quake -- see the caller's own docstring), deliberately not
-    made here.
+    Cross-reference detection onset times across stations, network-wide, to find which detections are corroborated by 
+    at least one OTHER station within +/-tolerance_s seconds
 
     Parameters
     ----------
-    station_events : dict {station_key: [(t_on, t_off, ...), ...]} -- station_key
-                     is any hashable per-station identifier (typically
-                     (network, station, location, channel)); each event tuple's
-                     first element must be an obspy UTCDateTime (or anything
-                     float()-convertible to POSIX seconds) -- only t_on is
-                     used for matching. Extra tuple elements (t_off, snr, ...)
-                     are ignored here, so callers can pass their own richer
-                     per-event tuples straight through.
-    tolerance_s    : float -- +/- window, in seconds, around each detection's
-                     onset within which another station's onset counts as
-                     corroborating.
+    station_events : dict {station_key: [(t_on, t_off, ...), ...]} 
+    tolerance_s    : float -- +/- window, in seconds, around each detection's onset within which another station's onset counts as corroborating
 
     Returns
     -------
-    dict {station_key: [(n_other_stations, other_stations_str), ...]}, one
-    entry per input event, in the SAME order as station_events[station_key]
-    -- safe to zip() directly against the caller's own event list.
+    dict {station_key: [(n_other_stations, other_stations_str), ...]}
     """
     all_t, all_key, all_station = [], [], []
     for station_key, events in station_events.items():

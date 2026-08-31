@@ -1,32 +1,26 @@
 """
 07a_spectrogram_dataset_build.py
 =================================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship 
 Author : Elsa Louis
 Date   : July 2026
 
 Goal
 ----
-Build a fixed-size 3-component spectrogram image dataset for CNN-based event-type
-classification (earthquake / rockslide / ice quake / noise / regional)
- -> starting from the quality-filtered detection windows already produced by
-    04a_sta_lta_catalog_windowing.py (local classes), 04d_noise_window_extraction.py
-    (noise, 4th class) and 04c_regional_event_extraction.py (regional, 5th class).
+Build a fixed-size 3-component spectrogram image dataset for CNN-based event-type classification (earthquake / rockslide / ice quake / noise / regional)
+ -> starting from the quality-filtered detection windows already produced by 04a (local classes), 04d (noise, 4th class) and 04c (regional earthquake, 5th class).
 
  Training happens separately on Google Colab (07b_train_cnn_classifier_colab.ipynb)
  This script only extracts waveforms from the cluster, builds spectrogram images, and writes them to disk together with a manifest CSV, ready to be uploaded to Google Drive
 
 Pipeline
 --------
-  1. Load catalog_windows CSV (04a output) + optional NOISE_CSV (04d) + optional
-     REGIONAL_CSV (04c), filter by TARGET_CLASSES, apply the SAME explicit
-     SNR-based quality gate as 03c/03d/06b/06c to the local classes + regional
-     (noise skips it — see the FILTER_QUALITY comment in Section 1), concatenate
+  1. Load catalog_windows CSV (04a output) + optional NOISE_CSV (04d) + optional REGIONAL_CSV (04c)
   2. For each row: fetch Z/N/E waveforms from SDS around the (already-refined) detection onset
-                   remove instrument response -> velocity [m/s]
-                   resample to a common rate
-                   trim/pad to a fixed-duration window
-  3. Compute a log-power spectrogram per channel (fixed STFT params -> every image has exactly the same shape) and stack [Z, N, E] like an RGB image
+        remove instrument response -> velocity [m/s]
+        resample to a common rate
+        trim/pad to a fixed-duration window
+  3. Compute a log-power spectrogram per channel (every image has exactly the same shape) and stack [Z, N, E] like an RGB image
   4. Save each image as one .npz file + light metadata
   5. Split events into train/val/test (stratified by class, split BY EVENT so no station from the same event leaks across splits) and write image_list.csv
 
@@ -73,11 +67,11 @@ SNR_FULL_MEDIAN_MIN = 1.99    # 05b Tier 2 — metric 'SNR_full_median'
 # -- Waveform extraction: fixed window anchored on the (kurtosis-refined) onset --
 #    True:   extend to 80 Hz, only meaningful for stations natively sampled >= 200 Hz (~28% of station/channels around Mont-Blanc)
 #    False:  keep 45 Hz baseline, include more stations around Mont-Blanc massif
-HIGH_FREQ_MODE = True
+HIGH_FREQ_MODE = False
 
 if HIGH_FREQ_MODE:
     TARGET_FS     = 200     # [Hz] -- reaches FREQ_MAX_KEEP=80 Hz; catalog filtered to natively >=200 Hz stations only, see Section 3
-    SPEC_NFFT     = 512     # nfft >= nperseg (400 samples @ 200Hz); same 0.39 Hz/bin resolution as the baseline below
+    SPEC_NFFT     = 512     # nfft >= nperseg (400 samples @ 200Hz)
     FREQ_MAX_KEEP = 80.0    # [Hz] drop bins above this (avoid Nyquist-edge artifacts at fs=200)
 else:
     TARGET_FS     = 100     # [Hz] validated baseline -- matches the 3 runs that gave macro F1 = 0.80 +/- 0.02
@@ -187,11 +181,7 @@ print(f"Loaded {len(df):,} rows x {df.shape[1]} columns from CSV_PATH.")
 df = df[df["event_type"].isin(TARGET_CLASSES)].copy()
 print(f"After class filter ({TARGET_CLASSES}): {len(df):,} rows.")
 
-# -- Optional 5th class: regional (04c output), concatenated BEFORE the quality
-# gate below — unlike noise (added AFTER the gate further down, since noise
-# rows have SNR=NaN by construction), regional rows carry REAL computed SNR
-# from 04c's own detection pipeline and need to pass the SAME gate as the local
-# classes, not skip it. Same convention as 06b/06c.
+# -- Optional 5th class: regional (04c output) ----------------
 if REGIONAL_CSV is not None:
     if os.path.isfile(REGIONAL_CSV):
         df_regional = pd.read_csv(REGIONAL_CSV, low_memory=False)
@@ -203,8 +193,6 @@ if REGIONAL_CSV is not None:
 
 if FILTER_QUALITY:
     n_before = len(df)
-    # Explicit SNR-based gate (03c/03d/06b/06c), NOT the catalog's quality_ok
-    # column — see the FILTER_QUALITY comment in Section 1 for why.
     if {"SNR", "SNR_full_median"}.issubset(df.columns):
         mask_quality = (df["SNR"] >= SNR_MIN) & (df["SNR_full_median"] >= SNR_FULL_MEDIAN_MIN)
         df = df[mask_quality].copy()
@@ -224,9 +212,6 @@ df = df.dropna(subset=required_cols).reset_index(drop=True)
 print(f"After dropping rows with missing key columns: {len(df):,} rows.")
 
 # -- Optional 4th class: noise (04d output), added AFTER the quality gate —
-# noise rows have SNR=NaN by construction (they'd fail the mask above); 04d
-# already guarantees each row is a real, locality-confirmed, catalog-clear
-# detection with no SNR question to ask. Same convention as 06b/06c.
 if NOISE_CSV is not None:
     if os.path.isfile(NOISE_CSV):
         df_noise = pd.read_csv(NOISE_CSV, low_memory=False)
@@ -245,7 +230,7 @@ print("\nClass distribution:")
 for cls, n in df["event_type"].value_counts().items():
     print(f"  {cls:<20s}  {n:6,} rows")
 
-# Fetch instrument inventory — restricted to the networks that actually appear in the filtered catalog (not "*"), and fetched ONE NETWORK AT A TIME
+# Fetch instrument inventory
 print(f"\n{'='*65}")
 print("  STEP 1b — Fetching instrument inventory (per network)")
 print(f"{'='*65}")
@@ -288,10 +273,6 @@ if inventory is None:
 print(f"\nInventory ready: {len(networks) - len(failed_networks)}/{len(networks)} "
       f"network(s) loaded.")
 
-# -- STEP 1c — Native channel sample rate check (cheap, from inventory metadata only,
-# no SDS waveform fetch needed) -- catches the case where TARGET_FS/FREQ_MAX_KEEP asks
-# for frequency content a channel was never physically sampled to capture, BEFORE
-# spending time on the full extraction loop below.
 print(f"\n{'='*65}")
 print(f"  STEP 1c — Checking native channel sample rates (TARGET_FS={TARGET_FS} Hz)")
 print(f"{'='*65}")
@@ -327,9 +308,7 @@ else:
     print("[WARN] Could not resolve native sample rates from inventory metadata for any "
           "channel in the catalog -- skipping this check (extraction will proceed regardless).")
 
-# -- HIGH_FREQ_MODE station filter -- keep only stations natively sampled >= TARGET_FS,
-# so every image's FREQ_MAX_KEEP=80 Hz content is real, not interpolated filler that
-# could let the CNN key off network/station identity instead of the actual signal.
+# -- HIGH_FREQ_MODE station filter -- keep only stations natively sampled >= TARGET_FS
 if HIGH_FREQ_MODE:
     keep_mask = df.apply(
         lambda r: native_rates.get((r["network"], r["station"], r["channel"]), 0) >= TARGET_FS,
@@ -352,9 +331,6 @@ if HIGH_FREQ_MODE:
 # =============================================================================
 # SECTION 4 — TRAIN / VAL / TEST SPLIT (BY EVENT, STRATIFIED)
 # =============================================================================
-# Computed once, up front, on the full filtered catalog -> baked into the
-# manifest CSV so the Colab training notebook never needs to re-derive it
-# (no sklearn / no access to the original catalog needed on Colab's side).
 
 print(f"\n{'='*65}")
 print("  STEP 2 — Train / val / test split (by event)")
@@ -406,9 +382,6 @@ for split_name, ev_df in [("train", train_ev), ("val", val_ev), ("test", test_ev
 # =============================================================================
 # SECTION 5 — SPECTROGRAM SHAPE (PRECOMPUTED — FIXED FOR EVERY SAMPLE)
 # =============================================================================
-# nperseg/noverlap/nfft/fs are all constants, and every trace is trimmed/padded
-# to exactly NT samples -> the spectrogram shape is identical for every sample,
-# computed once here rather than re-derived per row.
 
 _dummy = np.zeros(NT, dtype=np.float32)
 _f_full, _t_axis, _ = spectrogram(
@@ -437,15 +410,7 @@ print(f"  nperseg={SPEC_NPERSEG} ({SPEC_NPERSEG_S}s)  noverlap={SPEC_NOVERLAP}  
 # =============================================================================
 
 def _process_trace(tr_raw, inventory, target_fs, t_start, t_end, nt):
-    """
-    Clean one raw trace -> response-removed velocity [m/s], resampled, trimmed
-    to exactly `nt` samples.
-
-    Returns
-    -------
-    np.ndarray, shape (nt,), float32  — or None if any step fails / the result
-    is degenerate (all-zero, NaN, Inf).
-    """
+    """ Clean one raw trace -> response-removed velocity [m/s], resampled, trimmed to exactly `nt` samples """
     from obspy import Stream
 
     try:
@@ -478,16 +443,10 @@ def _process_trace(tr_raw, inventory, target_fs, t_start, t_end, nt):
 def fetch_3c_window(client_sds, net, sta, chan_z, t_start, t_end, inventory, target_fs, nt,
                     horizontal_suffixes=HORIZONTAL_SUFFIXES):
     """
-    Fetch and clean Z, N, E components for one station over [t_start, t_end].
+    Fetch and clean Z, N, E components for one station over [t_start, t_end]
+     -> if horizontals are unavailable, Z is duplicated into the N and E slots 
 
-    Channel order is always [Z, N, E]. If horizontals are unavailable, Z is
-    duplicated into the N and E slots (documented fallback, same convention as
-    preprocessing.load_3component / 04a's _fetch_3c_array).
-
-    Returns
-    -------
-    np.ndarray, shape (nt, 3), float32  [Z, N, E]  — or None if the Z component
-    itself fails (mandatory channel).
+    Returns: np.ndarray, shape (nt, 3), float32  [Z, N, E]  
     """
     try:
         st_z = client_sds.get_waveforms(net, sta, "*", chan_z, t_start, t_end)
@@ -534,28 +493,11 @@ def fetch_3c_window(client_sds, net, sta, chan_z, t_start, t_end, inventory, tar
 
 def spectrogram_image(data3, fs, nperseg, noverlap, nfft, freq_keep_mask):
     """
-    Compute the log-power spectrogram of each of the 3 channels in `data3` and
-    stack them like an RGB image.
-
-    Parameters
-    ----------
-    data3 : np.ndarray, shape (nt, 3)  [Z, N, E]
-
-    Returns
-    -------
-    image : np.ndarray, shape (n_freq, n_time, 3), float32, dB-scaled
+    Compute the log-power spectrogram of each of the 3 channels in `data3` and stack them like an RGB image
+    Parameters:  data3 : np.ndarray, shape (nt, 3)  [Z, N, E]
+    Returns:  image : np.ndarray, shape (n_freq, n_time, 3), float32, dB-scaled
     """
-    # Floor epsilon, chosen to sit well BELOW real PSD values for this dataset --
-    # confirmed via 07a_debug_amplitude_check.py: background PSD is ~1e-18
-    # (m/s)^2/Hz and even the strongest observed event peaks only reach
-    # ~1e-13. The previous epsilon (1e-12) was *larger* than nearly every real
-    # value, so `Sxx + 1e-12` was dominated by the epsilon itself almost
-    # everywhere -- silently flattening nearly the entire dynamic range to a
-    # near-constant -120 dB floor regardless of whether a bin held background
-    # noise or an actual event (worst for ice quake, the weakest class, whose
-    # real PSD never got close to escaping the old floor). 1e-20 is ~2 orders
-    # of magnitude below the smallest real values seen, so it only guards
-    # against literal log(0) without swallowing real signal.
+    # Floor epsilon, chosen to sit below real PSD values for this dataset (chose experimentally) --
     PSD_FLOOR_EPS = 1e-20
 
     channels = []

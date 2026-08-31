@@ -1,15 +1,15 @@
 """
 DETECTION METHOD COMPARISON — GROULT SPECTROGRAM vs CLASSICAL STA/LTA
 ======================================================================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : May 2026
 
 Goal
 ----
 Compare two precise-windowing methods applied to the same set of catalog events:
-  Method A — Groult spectrogram-based bidirectional STA/LTA  (script 04a output)
-  Method B — Classical STA/LTA on bandpass-filtered waveform  (script 04b output)
+  Method A — Groult spectrogram-based bidirectional STA/LTA 
+  Method B — Classical STA/LTA on bandpass-filtered waveform
 
 The primary question: 
 which method produces more accurate detection windows, measured by how often the station's P-wave pick falls inside the detected window?
@@ -25,8 +25,8 @@ Metrics
 
 Input
 -----
-  CSV_04A  — catalog_windows_<stamp>.csv produced by 04a (Groult)
-  CSV_04B  — catalog_windows_<stamp>.csv produced by 04a (classical STA/LTA)
+  CSV_04A  — catalog_windows_<stamp>.csv produced by 04a (DETECTION_METHOD = 'groult')
+  CSV_04B  — catalog_windows_<stamp>.csv produced by 04a (DETECTION_METHOD = 'sta_lta')
 
 Output
 ------
@@ -54,7 +54,7 @@ CSV_04B = "/data/failles/louisels/project/results/outputs_04a/sta_lta/run_XXXXXX
 OUTPUT_DIR = "/data/failles/louisels/project/results/outputs_04b"
 
 # -- Event types to include in comparison (set [] to keep all) ----------------
-TARGET_TYPES = []    # ["earthquake", "rockslide", ...] — empty = all types in the data
+TARGET_TYPES = []    # ["earthquake", "rockslide", ...] -> empty = all types in the data
 
 # -- Ground truth column ------------------------------------------------------
 GROUND_TRUTH = 'pick_inside_det'   # or 'origin_inside_det'
@@ -362,9 +362,8 @@ print(f"    [SAVED] {path}")
 # ---- Figure 3: pick_lag_s distribution per method × event type -------------
 print("  Fig 3: Pick lag distribution ...")
 
-# Keep ALL rows that have a P pick (pick_lag_s not NaN), regardless of pick_inside_det.
-# This exposes negative lags (detector fired AFTER the P pick → onset missed) as well
-# as large positive lags (detector fired very early, pick far inside a wide window).
+# Keep ALL rows that have a P pick (pick_lag_s not NaN), regardless of pick_inside_det
+# -> this exposes negative lags (detector fired AFTER the P pick → onset missed) as well as large positive lags (detector fired very early, pick far inside a wide window)
 df_lag_a = df_a[df_a['pick_lag_s'].notna()].copy()
 df_lag_b = df_b[df_b['pick_lag_s'].notna()].copy()
 df_lag_a['pick_lag_s'] = pd.to_numeric(df_lag_a['pick_lag_s'], errors='coerce')
@@ -386,18 +385,15 @@ for ax, etype in zip(axes, all_etypes):
     lag_a = sub_a['pick_lag_s'].values
     lag_b = sub_b['pick_lag_s'].values
 
-    # Clip display range to 2nd–98th percentile across both methods so extreme
-    # outliers don't flatten the violin (raw data are still used for the violin shape)
+    # Clip display range to 2nd–98th percentile across both methods so extreme outliers don't flatten the violin (raw data are still used for the violin shape)
     all_lags = np.concatenate([lag_a, lag_b])
     y_lo = np.percentile(all_lags, 2)
     y_hi = np.percentile(all_lags, 98)
-    # Always show at least a ±5 s window around zero
-    y_lo = min(y_lo, -5)
+    y_lo = min(y_lo, -5)      # always show at least a ±5 s window around zero
     y_hi = max(y_hi,  5)
 
-    # Violin on the full (unclipped) distribution
-    parts = ax.violinplot([lag_a, lag_b], positions=[1, 2],
-                          showmedians=True, showextrema=False)
+    # Violin on the full distribution
+    parts = ax.violinplot([lag_a, lag_b], positions=[1, 2], showmedians=True, showextrema=False)
     for pc, col in zip(parts['bodies'], [COLOR_A, COLOR_B]):
         pc.set_facecolor(col)
         pc.set_alpha(0.5)
@@ -410,10 +406,8 @@ for ax, etype in zip(axes, all_etypes):
         outside = sub[sub['label'] != True]['pick_lag_s']
         jitter_in  = np.random.normal(0, 0.05, size=len(inside))
         jitter_out = np.random.normal(0, 0.05, size=len(outside))
-        ax.scatter(xi + jitter_in,  inside,  s=10, color=COLOR_INSIDE,
-                   alpha=0.5, zorder=3, label='pick inside'  if xi == 1 else '')
-        ax.scatter(xi + jitter_out, outside, s=10, color=COLOR_OUTSIDE,
-                   alpha=0.3, zorder=3, label='pick outside' if xi == 1 else '')
+        ax.scatter(xi + jitter_in,  inside,  s=10, color=COLOR_INSIDE, alpha=0.5, zorder=3, label='pick inside'  if xi == 1 else '')
+        ax.scatter(xi + jitter_out, outside, s=10, color=COLOR_OUTSIDE, alpha=0.3, zorder=3, label='pick outside' if xi == 1 else '')
 
     ax.axhline(0, color='black', lw=1.2, ls='--', alpha=0.6, label='lag = 0')
     ax.set_ylim(y_lo, y_hi)
@@ -467,10 +461,8 @@ xmax = max(np.percentile(dur_a, 95) if len(dur_a) else 1,
            np.percentile(dur_b, 95) if len(dur_b) else 1)
 bins = np.linspace(0, xmax, 50)
 
-ax.hist(dur_a, bins=bins, density=True, alpha=0.5, color=COLOR_A,
-        label=f'{LABEL_A.replace(chr(10)," ")}  (n={len(dur_a)}, med={dur_a.median():.0f}s)')
-ax.hist(dur_b, bins=bins, density=True, alpha=0.5, color=COLOR_B,
-        label=f'{LABEL_B.replace(chr(10)," ")}  (n={len(dur_b)}, med={dur_b.median():.0f}s)')
+ax.hist(dur_a, bins=bins, density=True, alpha=0.5, color=COLOR_A, label=f'{LABEL_A.replace(chr(10)," ")}  (n={len(dur_a)}, med={dur_a.median():.0f}s)')
+ax.hist(dur_b, bins=bins, density=True, alpha=0.5, color=COLOR_B, label=f'{LABEL_B.replace(chr(10)," ")}  (n={len(dur_b)}, med={dur_b.median():.0f}s)')
 ax.axvline(dur_a.median(), color=COLOR_A, lw=2, ls='--')
 ax.axvline(dur_b.median(), color=COLOR_B, lw=2, ls='--')
 ax.set_xlabel('Detection duration [s]', fontsize=12)
@@ -519,16 +511,13 @@ ax = axes[1]
 if 'SNR_s2n_median' in df_a.columns and 'SNR_s2n_median' in df_b.columns:
     snr_a = pd.to_numeric(df_a['SNR_s2n_median'], errors='coerce').dropna()
     snr_b = pd.to_numeric(df_b['SNR_s2n_median'], errors='coerce').dropna()
-    bp = ax.boxplot([snr_a, snr_b], labels=[LABEL_A, LABEL_B],
-                    patch_artist=True, notch=False,
-                    medianprops=dict(color='white', lw=2.5))
+    bp = ax.boxplot([snr_a, snr_b], labels=[LABEL_A, LABEL_B], patch_artist=True, notch=False, medianprops=dict(color='white', lw=2.5))
     bp['boxes'][0].set_facecolor(COLOR_A); bp['boxes'][0].set_alpha(0.7)
     bp['boxes'][1].set_facecolor(COLOR_B); bp['boxes'][1].set_alpha(0.7)
     # Scatter individual points with jitter (capped at 300 per method for speed)
     for xi, (snr, col) in enumerate([(snr_a, COLOR_A), (snr_b, COLOR_B)], 1):
         samp = snr.sample(min(len(snr), 300), random_state=0)
-        ax.scatter(xi + np.random.normal(0, 0.07, len(samp)), samp,
-                   s=8, color=col, alpha=0.35, zorder=3)
+        ax.scatter(xi + np.random.normal(0, 0.07, len(samp)), samp, s=8, color=col, alpha=0.35, zorder=3)
     ax.set_ylabel('SNR_s2n_median', fontsize=11)
     ax.set_title('SNR comparison (robust metric)\n'
                  'Higher = cleaner signal in the detected window', fontsize=10)
@@ -560,12 +549,10 @@ ax = axes[0, 0]
 xA, xB, x, w = _bar_positions(n_types)
 for xi, etype in zip(xA, all_etypes):
     row = df_summary[(df_summary['method'] == 'groult') & (df_summary['event_type'] == etype)]
-    ax.bar(xi, row['pick_inside_rate'].iloc[0] if len(row) else 0,
-           width=w, color=COLOR_A, alpha=0.85, edgecolor='white')
+    ax.bar(xi, row['pick_inside_rate'].iloc[0] if len(row) else 0, width=w, color=COLOR_A, alpha=0.85, edgecolor='white')
 for xi, etype in zip(xB, all_etypes):
     row = df_summary[(df_summary['method'] == 'sta_lta') & (df_summary['event_type'] == etype)]
-    ax.bar(xi, row['pick_inside_rate'].iloc[0] if len(row) else 0,
-           width=w, color=COLOR_B, alpha=0.85, edgecolor='white')
+    ax.bar(xi, row['pick_inside_rate'].iloc[0] if len(row) else 0, width=w, color=COLOR_B, alpha=0.85, edgecolor='white')
 ax.set_xticks(x); ax.set_xticklabels(all_etypes, fontsize=9)
 ax.set_ylim(0, 1.1)
 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
@@ -577,12 +564,10 @@ ax.grid(axis='y', alpha=0.3, lw=0.5)
 ax = axes[0, 1]
 for xi, etype in zip(xA, all_etypes):
     row = df_summary[(df_summary['method'] == 'groult') & (df_summary['event_type'] == etype)]
-    ax.bar(xi, row['coverage_rate'].iloc[0] if len(row) else 0,
-           width=w, color=COLOR_A, alpha=0.85, edgecolor='white')
+    ax.bar(xi, row['coverage_rate'].iloc[0] if len(row) else 0, width=w, color=COLOR_A, alpha=0.85, edgecolor='white')
 for xi, etype in zip(xB, all_etypes):
     row = df_summary[(df_summary['method'] == 'sta_lta') & (df_summary['event_type'] == etype)]
-    ax.bar(xi, row['coverage_rate'].iloc[0] if len(row) else 0,
-           width=w, color=COLOR_B, alpha=0.85, edgecolor='white')
+    ax.bar(xi, row['coverage_rate'].iloc[0] if len(row) else 0, width=w, color=COLOR_B, alpha=0.85, edgecolor='white')
 ax.set_xticks(x); ax.set_xticklabels(all_etypes, fontsize=9)
 ax.set_ylim(0, 1.1)
 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
@@ -594,12 +579,10 @@ ax.grid(axis='y', alpha=0.3, lw=0.5)
 ax = axes[0, 2]
 for xi, etype in zip(xA, all_etypes):
     row = df_summary[(df_summary['method'] == 'groult') & (df_summary['event_type'] == etype)]
-    ax.bar(xi, row['quality_ok_rate'].iloc[0] if len(row) else 0,
-           width=w, color=COLOR_A, alpha=0.85, edgecolor='white')
+    ax.bar(xi, row['quality_ok_rate'].iloc[0] if len(row) else 0, width=w, color=COLOR_A, alpha=0.85, edgecolor='white')
 for xi, etype in zip(xB, all_etypes):
     row = df_summary[(df_summary['method'] == 'sta_lta') & (df_summary['event_type'] == etype)]
-    ax.bar(xi, row['quality_ok_rate'].iloc[0] if len(row) else 0,
-           width=w, color=COLOR_B, alpha=0.85, edgecolor='white')
+    ax.bar(xi, row['quality_ok_rate'].iloc[0] if len(row) else 0, width=w, color=COLOR_B, alpha=0.85, edgecolor='white')
 ax.set_xticks(x); ax.set_xticklabels(all_etypes, fontsize=9)
 ax.set_ylim(0, 1.1)
 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))

@@ -1,7 +1,7 @@
 """
 run_setup.py
 ============
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : April 2026
 
@@ -157,10 +157,7 @@ def fetch_inventory(client_fdsn, t_start, t_end, lat_min=None, lat_max=None, lon
     client_fdsn              : ObsPy FDSN_Client
     t_start, t_end           : str, ISO date strings e.g. "2022-06-01"
     lat_min/max, lon_min/max : float or None — optional spatial filter
-    network, station         : str or None — optional exact codes to restrict the query to
-                                a single station (e.g. for long multi-year single-station
-                                queries where "*" over 10 years would be far more data than
-                                needed — see script 04d)
+    network, station         : str or None — optional exact codes to restrict the query to a single station 
 
     Returns
     -------

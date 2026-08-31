@@ -1,34 +1,9 @@
 """
 features.py
 ===========
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : April 2026 (3C extension: July 2026)
-
-Two feature sets are defined here:
-
-  1C mode (default, backward compatible)
-  ----------------------------------------
-  FEATURE_NAMES / N_FEATURES_1C = 99
-  Z-component only: waveform shape, spectral, pseudo-spectrogram,
-  extended frequency bands, energy differences/ratios, misc.
-
-  3C mode (new, option 2e)
-  ----------------------------------------
-  FEATURE_NAMES_3C / N_FEATURES_3C = 103
-  All 99 Z features PLUS 4 polarization parameters computed from
-  the [Z, N, E] particle-motion trajectory at the P-wave onset:
-    rectilinP  — rectilinearity (0=spherical, 1=linear)
-    azimuthP   — azimuth of principal motion axis [degrees]
-    dipP       — dip (vertical incidence angle) of principal axis [degrees]
-    Plani      — planarity (0=linear, 1=planar)
-
-  Caller API:
-    feats = extract_features(signal_z, sps)              # → (99,)  1C
-    feats = extract_features(signal_z, sps, data_3c=X)  # → (103,) 3C
-    where X is a (3, n_samples) array with rows [Z, N, E].
-    Polarization features are set to NaN when X is None or computation fails;
-    HGB handles NaN natively so no imputation is needed.
 """
 
 import numpy as np
@@ -227,23 +202,14 @@ def rename_legacy_columns(df):
 
 def extract_features(data, sps, data_3c=None):
     """
-    Extract seismic features from a Z-component signal.
-
-    Always computes the 99 Z-only features (Maggi/Hibert) from seismic_params.py.
-    When data_3c is provided, appends 4 polarization parameters computed from
-    the [Z, N, E] particle-motion trajectory → 103 features total.
+    Extract seismic features from a Z-component signal
 
     Parameters
     ----------
     data    : 1D numpy array — Z-component signal (detection window, onset to end)
-              This is the same signal passed to calculate_all_attributes().
     sps     : float — sampling rate in Hz
     data_3c : (3, n_samples) numpy array  or  None
-              3-component aligned window with rows [Z, N, E].
-              When None → 99 features (backward compatible, same as before).
-              When provided → 103 features; polarization set to NaN if computation
-              fails (e.g. too few samples, degenerate covariance matrix).
-              HGB handles NaN natively — no imputation needed.
+              3-component aligned window with rows [Z, N, E]
 
     Returns
     -------

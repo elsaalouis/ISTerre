@@ -1,35 +1,22 @@
 """
 06c_train_HGB_classifier.py
 ========================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : July 2026
 
 Train a HistGradientBoosting classifier on the full dataset (original catalog + rescued ice quakes from 03d denoising pipeline)
 
-Scientific question answered
-----------------------------
-Did the DeepDenoiser rescue pipeline meaningfully improve classification — and is
-that improvement actually coming from the DENOISER, or just from adding more real
-low-SNR examples to training regardless of denoising? Answered with three conditions:
+Question answered
+-----------------
+Did the DeepDenoiser rescue pipeline meaningfully improve classification?
+Is that improvement actually coming from the DENOISER, or just from adding more real low-SNR examples to training regardless of denoising? 
+Answered with three conditions:
   (A)  Original catalog only        (same data as 06b)
   (B)  Original + denoised rescued  (after 03d feature extraction)
-  (C)  Original + RAW rescued       (same events as B, undenoised features —
-                                      needs 03d's rescue_catalog_raw_<stamp>.csv)
-If C performs about as well as B, the gain is from added data volume, not denoising.
-If B clearly beats C, that's evidence the denoiser itself is adding value.
-
-Pipeline position
------------------
-  03d ✓  +  06b ✓  →  [06c this script]
-
-Key differences from 06b
-------------------------
-  - Loads and concatenates RESCUE_CATALOG_CSV (from 03d) with the original
-  - Optionally also loads RESCUE_CATALOG_RAW_CSV for the Run C ablation
-  - Trains only HGB (+ RF as baseline); removes KNN / SVM / MLP for speed
-  - Runs up to three full train-eval cycles: A, B, and C
-  - Produces a direct before/after/ablation comparison figure
+  (C)  Original + RAW rescued       (same events as B, undenoised features, needs 03d's rescue_catalog_raw_<stamp>.csv)
+If C performs about as well as B, the gain is from added data volume, not denoising
+If B clearly beats C, that's evidence the denoiser itself is adding value
 
 Outputs
 -------
@@ -88,7 +75,7 @@ FALLBACK_TOP20 = [
     "kurtosis_20_nyq",         "ediff_1_3__3_10",
 ]
 
-# ── Quality gate (applied to original catalog only; rescue catalog already ────
+# ── Quality gate (applied to original catalog only) ────
 SNR_MIN             = 1.70    # 05b Tier 2 — metric 'SNR', AUC=0.627
 SNR_FULL_MEDIAN_MIN = 1.99    # 05b Tier 2 — metric 'SNR_full_median', AUC=0.642 (best)
 
@@ -118,10 +105,6 @@ SAVE_FINAL_MODEL = True
 SAVE_MODEL_RUN   = "B"   # "B" = original + denoised rescued; falls back to "A" automatically if Run B didn't run
 
 # ── Example waveform gallery (optional QC figure) ──────────────────────────────
-# catalog_windows_<stamp>.csv only stores the 99/103 SCALAR features per row,
-# not the raw signal — this re-fetches the actual waveform from the SDS
-# archive for a handful of rows per class, so you can visually compare shapes.
-# Cluster-only (needs SDS_ROOT/ISTERRE_URL); silently skipped if unreachable.
 PLOT_EXAMPLE_TRACES  = True
 N_EXAMPLES_PER_CLASS = 10
 PLOT_PAD_SEC         = 10     # context padding before/after the detected window, more generous than the 5s used for feature extraction
@@ -129,9 +112,6 @@ PLOT_FREQ_MIN        = 1.0    # display bandpass, same band used elsewhere in th
 PLOT_FREQ_MAX        = 20.0
 SDS_ROOT             = "/data/sig/SDS"
 ISTERRE_URL          = "http://ist-sc3-geobs.osug.fr:8080"
-# Same bounding box used everywhere else in the pipeline (01/02a/02b/03a/04a/04d).
-# fetch_inventory MUST be called with this box, not a bare network="*"/station="*"
-# query — see the note where it's called below.
 LAT_MIN, LAT_MAX     = 45.5, 46.0
 LON_MIN, LON_MAX     = 6.5, 7.2
 CLASS_COLORS         = {"earthquake": "#1f77b4", "rockslide": "#d62728",
@@ -201,10 +181,6 @@ orig = orig[orig["event_type"].isin(TARGET_CLASSES)].copy()
 orig["source"] = "original"
 
 # ── Regional catalog (optional 5th class, output of 04c) ──────────────────────
-# Concatenated BEFORE the quality gate below — unlike noise (added AFTER the
-# gate further down, since noise rows have SNR=NaN by construction), regional
-# rows carry REAL computed SNR from 04c's own detection pipeline and need to
-# pass the SAME gate as the local classes, not skip it.
 if REGIONAL_CSV is not None and os.path.exists(str(REGIONAL_CSV)):
     regional = pd.read_csv(REGIONAL_CSV, low_memory=False)
     regional = rename_legacy_columns(regional)
@@ -216,14 +192,7 @@ if REGIONAL_CSV is not None and os.path.exists(str(REGIONAL_CSV)):
 elif REGIONAL_CSV is not None:
     print(f"  [WARN] REGIONAL_CSV not found: {REGIONAL_CSV} — continuing without the regional class.")
 
-# Apply quality gate to original(+regional) — rescue rows already satisfy this
-# same gate, by construction, from 03d. Always recompute explicitly from
-# SNR/SNR_full_median — do NOT trust the precomputed 'quality_ok' column, which
-# was baked by 04a using the OLD 05a thresholds and is stale relative to the
-# 05b Tier 2 values used here (only refreshed if 04a itself is rerun, out of
-# scope for now). 04c's own 'quality_ok' column IS current (built after the
-# 05b Tier 2 resolution) but is still ignored here for the same reason: this
-# gate is always recomputed explicitly, never trusted from either source CSV.
+# Apply quality gate to original(+regional)
 mask = (
     (orig["SNR"]             >= SNR_MIN) &
     (orig["SNR_full_median"] >= SNR_FULL_MEDIAN_MIN)
@@ -273,15 +242,6 @@ if PLOT_EXAMPLE_TRACES:
     else:
         _t_min = pd.to_datetime(orig["det_starttime"]).min()
         _t_max = pd.to_datetime(orig["det_starttime"]).max()
-        # IMPORTANT: pass the bounding box, same as every other fetch_inventory
-        # call in this pipeline (01/02a/02b/03a/04a/04d). A bare network="*"/
-        # station="*" query with no spatial filter appears to route through a
-        # different code path on ISTerre's FDSN server (a SeisComP fdsnws
-        # instance) that raised "emails needs to match the pattern
-        # '[\w\.\-_]+@[\w\.\-_]+'" — an unrelated WADL parameter validation
-        # error, not anything about our own request. Scoping to the massif
-        # bounding box (which is also just correct — this is the only region
-        # we ever want anyway) avoids it and is faster besides.
         _inventory = fetch_inventory(
             _client_fdsn, str(_t_min.date()), str((_t_max + pd.Timedelta(days=1)).date()),
             lat_min=LAT_MIN, lat_max=LAT_MAX, lon_min=LON_MIN, lon_max=LON_MAX,
@@ -399,7 +359,7 @@ for cls in CLASS_ORDER:
     print(f"    {cls:<22} {n:>6,}  ({100*n/len(combined):.1f} %)")
 
 # ── Raw-ablation rescue catalog (optional, Run C) ─────────────────────────────
-# Same accepted events as `rescue`, but features from the undenoised signal.
+# Same accepted events as `rescue`, but features from the undenoised signal
 has_rescue_raw = (
     RESCUE_CATALOG_RAW_CSV is not None and os.path.exists(str(RESCUE_CATALOG_RAW_CSV))
 )
@@ -448,10 +408,7 @@ print("  STEP 2 — Feature selection")
 print(f"{'='*65}")
 
 if TOP_N_FEATURES is None:
-    # Use ALL feature columns present in the combined catalog.
-    # FEATURE_NAMES_3C is the ordered superset (103: 99 Z + 4 polarization).
-    # Intersect with combined.columns to handle 99-feature and 103-feature catalogs.
-    features = [f for f in FEATURE_NAMES_3C if f in combined.columns]
+    features = [f for f in FEATURE_NAMES_3C if f in combined.columns] # use ALL feature columns present in the combined catalog
     if not features:
         features = [f for f in FEATURE_NAMES if f in combined.columns]
     print(f"  TOP_N_FEATURES=None → using all {len(features)} feature columns found in catalog.")
@@ -474,12 +431,7 @@ print(f"  n_features = {len(features)}")
 # =============================================================================
 
 def train_and_eval(df, label, features, smote_k, test_size, rs):
-    """
-    Full pipeline: event-stratified split → SMOTE → HGB + RF → metrics dict.
-    Returns (results_dict, cms_dict, X_test, y_test, models_dict, imputer) for
-    plotting AND for persisting the fitted model (models_dict/imputer are the
-    fitted objects themselves, not just their metrics).
-    """
+    """ Full pipeline: event-stratified split → SMOTE → HGB + RF → metrics dict """
     # ── Split by unique events ─────────────────────────────────────────────────
     events = df[["event_time", "event_type"]].drop_duplicates("event_time")
     # Guard: if a class has < 2 events it can't be stratified
@@ -501,26 +453,6 @@ def train_and_eval(df, label, features, smote_k, test_size, rs):
     test_mask  = df["event_time"].isin(test_ev)
 
     # ── Optional: undersample earthquake's TRAINING ROWS (not events) ─────────
-    # 2026-08-24: an earlier event-level version of this (cap TRAINING EVENTS)
-    # found nothing to trim — checked directly against the real catalog and
-    # earthquake is NOT the largest class by unique event count (7,508 unique
-    # earthquakes vs 10,000 unique noise windows, after the quality gate).
-    # Earthquake only dominates by ROW count, because the catalog carries
-    # ~4.3 rows/event for earthquake (multi-station recordings of the same
-    # physical event) vs 1.0 for noise and ~2-3 for regional/rockslide/ice
-    # quake. This operates on ROWS instead, which is what's actually
-    # inflating earthquake's influence through SMOTE (SMOTE oversamples every
-    # OTHER class up to match earthquake's row count). Applied AFTER
-    # train_mask/test_mask above, and only ever REMOVES rows already confined
-    # to the train partition — cannot leak into test, and test_mask (so every
-    # reported metric) is completely unaffected, same guarantee as the old
-    # event-level version.
-    # 'noise' is excluded from the "next-largest class" comparison: its row
-    # count (10,000) is an arbitrary sample budget picked in 04d, not an
-    # organic reflection of real-world frequency like the other classes, so
-    # comparing against it would set an arbitrary rather than meaningful
-    # target — rockslide (the biggest genuine physical class by rows) drives
-    # the target in practice.
     if EARTHQUAKE_REBALANCE_MODE == "undersample":
         train_types  = df.loc[train_mask, "event_type"]
         eq_train_idx = train_types.index[train_types == "earthquake"]
@@ -547,9 +479,7 @@ def train_and_eval(df, label, features, smote_k, test_size, rs):
 
     print(f"\n  [{label}]  Train: {train_mask.sum():,} rows  |  Test: {test_mask.sum():,} rows")
 
-    # Impute NaN with training-set median (fits on train only — no leakage).
-    # Handles polarization features that are NaN when horizontal channels were
-    # unavailable; SMOTE and RF cannot accept NaN arrays.
+    # Impute NaN with training-set median
     _imp     = SimpleImputer(strategy="median")
     X_tr_raw = _imp.fit_transform(X_tr_raw)
     X_te     = _imp.transform(X_te)
@@ -559,9 +489,6 @@ def train_and_eval(df, label, features, smote_k, test_size, rs):
     print(f"  After SMOTE: {len(X_tr):,} rows")
 
     # ── Optional: down-weight earthquake rows at fit() time ────────────────────
-    # Applied post-SMOTE (SMOTE oversamples every OTHER class up to roughly
-    # match earthquake's own row count, so this still meaningfully discounts
-    # earthquake's influence on the loss even though row counts end up close).
     sample_weight = None
     if EARTHQUAKE_REBALANCE_MODE == "sample_weight":
         sample_weight = np.where(y_tr == "earthquake", EARTHQUAKE_SAMPLE_WEIGHT, 1.0)
@@ -666,10 +593,6 @@ else:
 # =============================================================================
 # SECTION 7b — RUN C: ORIGINAL + RAW/UNDENOISED RESCUE (ablation, only if available)
 # =============================================================================
-# Same accepted events as Run B, same everything, EXCEPT the rescue rows' features
-# come from the raw (pre-denoise) signal instead of the denoised one. If Run C
-# performs about as well as Run B, the Run B gain is coming from "more real
-# examples" rather than from the denoiser itself.
 
 results_C = None
 cms_C     = None
@@ -695,9 +618,6 @@ else:
 # =============================================================================
 # SECTION 7c — SAVE THE FINAL TRAINED MODEL
 # =============================================================================
-# Persists ONE fitted HGB classifier as a joblib bundle, so downstream scripts
-# (09b) can load a fixed, already-trained model instead of retraining it
-# inline — the tabular-branch equivalent of 07b saving its .keras checkpoint.
 
 if SAVE_FINAL_MODEL:
     print(f"\n{'='*65}")
@@ -760,9 +680,6 @@ def save_cm_figure(cm, title, path):
     fig, ax = plt.subplots(figsize=(5, 4))
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=CLASS_ORDER)
     disp.plot(ax=ax, colorbar=True, cmap="Blues", values_format=".2f")
-    # Rotate x labels so they don't overlap each other -- with 5 classes
-    # (earthquake/rockslide/ice quake/noise/regional) the default horizontal
-    # labels are too wide for a 5in-wide figure and collide.
     ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right")
     ax.set_title(title, fontsize=10)
     plt.tight_layout()
@@ -807,10 +724,6 @@ if results_C is not None:
         )
 
 # Before / after / ablation comparison figure
-# Auto-detect which class the rescue catalog actually targets (rockslide as of
-# 2026-07, historically ice quake) so the panel tracks the metric that can
-# actually move — hardcoding "ice quake" here would make Run C's effect
-# invisible whenever the rescue target is a different class.
 if has_rescue and len(rescue) > 0:
     _target_class = rescue["event_type"].mode().iat[0]
 elif has_rescue_raw and len(rescue_raw) > 0:

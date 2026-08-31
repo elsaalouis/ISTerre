@@ -1,18 +1,19 @@
 """
 06b_compare_classifiers.py
 ==========================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : May 2026
 
+Goal
+----
 Compare 5 classifiers on the same event-stratified train/test split:
-  Random Forest            (baseline, same config as 06a)
-  Hist. Gradient Boost HGB (sklearn HistGradientBoostingClassifier — same algorithm as XGBoost)
-  KNeighbors
-  SVM with RBF kernel    ← subsampled for cluster speed (see SVM_MAX_ROWS)
-  MLP                      (multi-layer perceptron)
+  - Random Forest            (baseline, same config as 06a)
+  - Hist. Gradient Boost HGB (sklearn HistGradientBoostingClassifier — same algorithm as XGBoost)
+  - KNeighbors
+  - SVM with RBF kernel      subsampled for cluster speed (see SVM_MAX_ROWS)
+  - MLP                      (multi-layer perceptron)
 
-Feature set  : Top-20 RF importances from 03b (hardcoded fallback or loaded dynamically from FEATURE_IMPORTANCES_CSV)
 Class balance: SMOTE on training set (same k and seed as 06a)
 Evaluation   : per-class F1 / precision / recall, macro F1, accuracy, training time
 
@@ -56,7 +57,7 @@ CLASS_ABBR     = {"earthquake": "eq", "regional": "re", "rockslide": "rs", "ice 
 FEATURE_IMPORTANCES_CSV = r"C:\Users\elsa.louis\OneDrive - ESTIA\Documents\4 ISTERRE\project\results\03b_feature_selection\run_20260709_145058\feature_importances_20260709_145058.csv"   # or None
 TOP_N_FEATURES          = 60   # None → all features; int → top-N
 
-# Hardcoded Top-20 fallback (from 03b run_20260527_181745)
+# Hardcoded Top-20 fallback
 FALLBACK_TOP20 = [
     "duration",                "ediff_3_10__10_20",   "eratio_3_10__10_20",
     "spec_kurtosis_median_env","kurtosis_10_20Hz",    "kurtosis_3_10Hz",
@@ -67,9 +68,7 @@ FALLBACK_TOP20 = [
     "kurtosis_20_nyq",         "ediff_1_3__3_10",
 ]
 
-# -- Quality gate (05b Tier 2 classification-based — run_20260720_104210) -----
-# Top-2 AUC metrics from 05b Tier 2 (classification correctness, not windowing).
-# SNR_full_mean/SNR_s2n_median dropped (AUC 0.617/0.588, weaker than these two).
+# -- Quality gate (05b Tier 2 classification-based) ----------------------
 SNR_MIN             = 1.70    # 05b Tier 2 — metric 'SNR', AUC=0.627
 SNR_FULL_MEDIAN_MIN = 1.99    # 05b Tier 2 — metric 'SNR_full_median', AUC=0.642 (best)
 
@@ -170,11 +169,7 @@ df = rename_legacy_columns(df)
 df = df[df["event_type"].isin(TARGET_CLASSES)].copy()
 print(f"After class filter {TARGET_CLASSES}: {len(df):,} rows.")
 
-# -- Optional 5th class: regional (output of 04c), added BEFORE the quality
-# gate below — unlike noise (concatenated AFTER the gate further down, since
-# noise rows have SNR=NaN by construction and would be wrongly dropped by the
-# mask), regional rows carry REAL computed SNR from 04c's own detection
-# pipeline and need to pass the SAME gate as the local classes, not skip it.
+# -- Optional 5th class: regional (output of 04c) -----------------
 if REGIONAL_CSV is not None:
     if os.path.isfile(REGIONAL_CSV):
         df_regional = pd.read_csv(REGIONAL_CSV, low_memory=False)
@@ -185,11 +180,8 @@ if REGIONAL_CSV is not None:
     else:
         print(f"[WARN] REGIONAL_CSV not found: {REGIONAL_CSV} — continuing without the regional class.")
 
-# Quality gate: always recompute explicitly from SNR / SNR_full_median.
-# NOTE: do NOT trust the precomputed 'quality_ok' catalog column — it was baked
-# by 04a using the OLD 05a thresholds (SNR_full_mean/SNR_s2n_median) and is now
-# stale relative to the 05b Tier 2 thresholds used here. It will only reflect
-# the new gate again once 04a itself is rerun, which is out of scope for now.
+# Quality gate: always recompute explicitly from SNR / SNR_full_median
+# NOTE: do NOT trust the precomputed 'quality_ok' catalog column, it was baked by 04a using the OLD 05a thresholds (SNR_full_mean/SNR_s2n_median)
 mask_quality = (
     (df["SNR"]             >= SNR_MIN) &
     (df["SNR_full_median"] >= SNR_FULL_MEDIAN_MIN)
@@ -197,15 +189,12 @@ mask_quality = (
 df = df[mask_quality].copy()
 print(f"After quality filter: {len(df):,} rows kept.")
 
-# Drop rows where any Z-component feature is NaN (these should never be NaN;
-# polarization feature NaN values — ~3-5 % of rows when LOAD_3C=True — are kept
-# and handled by the imputer in Section 5 before SMOTE and classifier training.
+# Drop rows where any Z-component feature is NaN
 z_feat_cols = [f for f in FEATURE_NAMES if f in df.columns]
 df = df.dropna(subset=z_feat_cols).copy()
 print(f"After NaN drop (Z features): {len(df):,} rows.")
 
 # -- Optional 4th class: noise (output of 04d), added AFTER the quality gate --
-# (noise rows have SNR=NaN by construction — they'd fail the mask above)
 if NOISE_CSV is not None:
     if os.path.isfile(NOISE_CSV):
         df_noise = pd.read_csv(NOISE_CSV, low_memory=False)
@@ -234,10 +223,7 @@ print("  STEP 2 — Feature selection")
 print(f"{'='*65}")
 
 if TOP_N_FEATURES is None:
-    # Use every feature column present in the catalog.
-    # FEATURE_NAMES_3C is the ordered superset (103 names: 99 Z + 4 polarization).
-    # Intersect with df.columns to handle both 99-feature and 103-feature catalogs.
-    features = [f for f in FEATURE_NAMES_3C if f in df.columns]
+    features = [f for f in FEATURE_NAMES_3C if f in df.columns] # use every feature column present in the catalog
     if not features:
         # Fallback: catalog may only have the 99 Z features
         features = [f for f in FEATURE_NAMES if f in df.columns]
@@ -281,10 +267,6 @@ train_mask = df["event_time"].isin(train_events)
 test_mask  = df["event_time"].isin(test_events)
 
 # -- Optional earthquake row-level undersampling (mirrors 06c) ---------------
-# Applied AFTER train_mask/test_mask are fixed, so it only ever removes rows
-# already confined to the training set -- no leakage into test. Compares
-# against the next-largest REAL class by training rows, excluding noise
-# (its row count is an arbitrary 04d sample budget, not an organic frequency).
 if EARTHQUAKE_REBALANCE_MODE == "undersample":
     train_types  = df.loc[train_mask, "event_type"]
     eq_train_idx = train_types.index[train_types == "earthquake"]
@@ -312,10 +294,7 @@ y_test      = df.loc[test_mask,  "event_type"].values
 print(f"Train : {train_mask.sum():,} rows  ({len(train_events):,} events)")
 print(f"Test  : {test_mask.sum():,} rows  ({len(test_events):,} events)")
 
-# Impute NaN with column median (fit on training data only — no leakage).
-# This handles polarization features that are NaN when horizontal channels were
-# unavailable (~3-5 % of rows with LOAD_3C=True). SMOTE and most classifiers
-# cannot accept NaN; HGB tolerates it natively but works equally well on imputed data.
+# Impute NaN with column median 
 nan_cols = [f for i, f in enumerate(features) if np.isnan(X_train_raw[:, i]).any()]
 if nan_cols:
     print(f"\n  [NaN] {len(nan_cols)} feature(s) contain NaN → imputing with training-set median:")
@@ -334,9 +313,6 @@ for cls in CLASS_ORDER:
     print(f"  {cls:<22} {n:>6,}")
 
 # -- Optional earthquake sample_weight down-weighting (mirrors 06c) ----------
-# Not all classifiers below accept sample_weight at fit() time (KNN and MLP
-# don't) -- flagged per-classifier via "supports_sample_weight" in Section 6,
-# applied only where supported.
 sample_weight_train = None
 if EARTHQUAKE_REBALANCE_MODE == "sample_weight":
     sample_weight_train = np.where(y_train == "earthquake", EARTHQUAKE_SAMPLE_WEIGHT, 1.0)
@@ -558,15 +534,12 @@ for cfg in CLASSIFIER_CONFIGS:
                   f"P={r['precision']:.3f}  R={r['recall']:.3f}")
 
         # ── Confusion matrix figure ──────────────────────────────────────────
-        # normalize='true' → rows sum to 1.0 (recall per class)
+        # normalize='true' -> rows sum to 1.0 (recall per class)
         #  -> makes matrices comparable regardless of class sizes
         cm   = confusion_matrix(y_test, y_pred, labels=CLASS_ORDER, normalize="true")
         fig, ax = plt.subplots(figsize=(5, 4))
         disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=CLASS_ORDER)
         disp.plot(ax=ax, colorbar=True, cmap="Blues", values_format=".2f")
-        # Rotate x labels so they don't overlap each other -- with 5 classes
-        # (earthquake/rockslide/ice quake/noise/regional) the default horizontal
-        # labels are too wide for a 5in-wide figure and collide.
         ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right")
         ax.set_title(
             f"{name}\n"

@@ -1,79 +1,27 @@
 """
 09b_continuous_tabular_classification.py
 =========================================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : August 2026
 
 Goal
 ----
-End-to-end validation of the scalar-feature HGB classifier, on a RAW CONTINUOUS STREAM, 
-never chained before on data the pipeline hasn't already seen as pre-curated catalog windows
+End-to-end validation of the scalar-feature HGB classifier, on a RAW CONTINUOUS STREAM, never chained before on data the pipeline hasn't already seen 
 
-TWO PHASES (kept for workflow convenience, see above) -----------------------
+TWO PHASES:
   Phase 1 -- EXTRACTION (needs SDS/FDSN + the saved model's feature list):
-    per station-day, run the same continuous STA/LTA scan as 09a Phase 1,
-    then for each detected event extract ONLY the features MODEL_PATH's
-    saved bundle actually uses (Top-60, not the full 99+4) + 7 SNR measures
-    -> one CSV per station-day, consolidated per month. The N/E fetch +
-    polarization computation is skipped entirely when none of those features
-    are in the model's list (checked once at startup, see NEED_3C).
+    per station-day, run the same continuous STA/LTA scan as 09a Phase 1, then for each detected event extract the features
 
   Phase 2 -- CLASSIFICATION (needs the saved model bundle + sklearn):
     (a) load the fixed model bundle saved by 06c,
     (b) classify every extracted continuous-data window,
-    (c) write predictions_<month>.csv + a probability summary figure +
-        (optional, needs SDS again) a waveform+spectrogram review gallery,
-        same 2-panel style as 08a's report figures.
-
-CROSS-STATION COINCIDENCE (added -- Elsa's question: "is STA/LTA detection
-checked between stations")
--------------------------------------------------------------------------
-Answer was NO before this: Phase 1 ran DetecteurV3 completely independently
-per station, one at a time, with zero awareness of what any other station
-saw at the same time. Since a real (non-noise) event on the Mont-Blanc
-massif should register on more than one station, Phase 1 now cross-
-references every detected window's onset against every OTHER station's
-onsets for the SAME day, within +/-COINCIDENCE_TOLERANCE_S seconds (Section
-1), and writes two extra columns per window: n_other_stations_within_tol and
-other_stations_within_tol (a "net.sta,net.sta,..." list). These carry
-through consolidate_month_csvs() and Phase 2's predictions_<month>.csv
-unchanged (see meta_cols in the classification section below).
-
-IMPORTANT -- this only ANNOTATES, it never DROPS a window here. Classification
-hasn't happened yet at Phase 1 time, so there's no way to know here whether a
-single-station detection is a spurious noise trigger or a legitimate near-
-source event (rockslide/ice quake are spatially localized processes that can
-genuinely register on only 1-2 nearby stations even when real -- see
-08g_multistation_coincidence_check.py's own docstring for the full
-reasoning). Filtering by class is a deliberate DOWNSTREAM decision on the
-predictions CSV (08g does exactly this, class-aware, and is now largely
-redundant with this native annotation for a fresh run -- it's still useful
-against OLDER predictions CSVs that predate this change, or to double-check).
-
-The check is per-day, network-wide, single fixed tolerance -- not distance-
-scaled, and a detection within COINCIDENCE_TOLERANCE_S of local midnight
-could in principle miss a corroborating pick that landed just after midnight
-on the adjacent day (day is the unit Phase 1 already scans in; the tolerance
-is tiny next to a day, so this is a minor edge effect, not ignored so much as
-accepted). Sanity-check COINCIDENCE_TOLERANCE_S against real station spacing
-before leaning on the annotated counts for the report.
-
-SCHEMA UPGRADE / RE-RUNNING PHASE 1 -- a feats_<net>_<sta>_<day>.csv written
-before this change has no n_other_stations_within_tol column. Phase 1's
-skip/resume check now looks for that column specifically: an old file
-without it gets [REDO] (re-detected, not silently left stale and skipped),
-a file already carrying it gets [SKIP-DETECT] (its onsets are still reused
-for that day's coincidence check against other stations, just without
-re-touching SDS or re-running DetecteurV3 for it). Re-running Phase 1 over
-MONTHS_TO_SCAN after this change is therefore expected and safe either way.
+    (c) write predictions_<month>.csv + a probability summary figure + a waveform+spectrogram review gallery
 
 Output layout
 -------------
   EXTRACTION_DIR/
-      feats_<net>_<sta>_<YYYYMMDD>.csv   <- one file per station-day WITH
-                                             >=1 detection, written by Phase 1,
-                                             read by Phase 2
+      feats_<net>_<sta>_<YYYYMMDD>.csv   <- one file per station-day WITH >=1 detection, written by Phase 1, read by Phase 2
       consolidated_<month>.csv           <- Phase 1, one file per scanned month
   outputs_09b/run_YYYYMMDD_HHMMSS/    (this invocation's own log + phase-2 output)
       predictions_<month_tag>.csv          <- Phase 2b: one row per classified detection
@@ -89,8 +37,8 @@ Output layout
 # =============================================================================
 
 # -- Run mode -- see the module docstring for why this split is kept ---------
-RUN_EXTRACTION     = True   # Phase 1 -- needs SDS/FDSN, no sklearn dependency
-RUN_CLASSIFICATION = True    # Phase 2 -- needs the training CSVs + sklearn/imblearn
+RUN_EXTRACTION     = True   # Phase 1 
+RUN_CLASSIFICATION = True    # Phase 2 
 
 # -- Interchange directory between the two phases -----------------------------
 # Phase 1 writes per-station-day + consolidated feature CSVs here
@@ -111,14 +59,12 @@ LON_MIN, LON_MAX = 6.5,  7.2
 Z_CHANNEL = "??Z"
 HORIZONTAL_SUFFIXES = [("N", "E"), ("2", "1")]   # same fallback convention as 04a/09a
 
-# -- Months to scan (Phase 1) -- SAME as 09a so the two chapters are ----------
-# directly comparable on identical raw data.
+# -- Months to scan (Phase 1) ---------------------------------
 MONTHS_TO_SCAN = [
     ("2025-01-01", "2025-02-01"),   # January
 ]
 
 # -- Detection: spectrogram-based STA/LTA (Groult et al. 2026), Phase 1 -------
-# Identical to 09a's Phase 1 detector so both chapters see the same events.
 DET_FREQ_MIN  = 1.0
 DET_FREQ_MAX  = 20.0    # covers ice quakes with energy above 10 Hz
 DET_NSTA      = 1       # STA window length [s]
@@ -132,27 +78,21 @@ DET_OVERLAP_SEC = 1  * 60   # 1-minute overlap between consecutive detector wind
 DET_MIN_EVENT_DUR_SEC = 5.0     # discard detections shorter than this
 DET_MIN_TRACE_SEC     = 120.0   # minimum day-segment length to attempt detection at all
 
-# -- Cross-station coincidence (Phase 1) -- see module docstring's CROSS-STATION
-# COINCIDENCE section. +/-seconds around each detection's onset within which ANOTHER
-# station's detection (any station, checked before classification even exists) counts
-# as corroborating -- ANNOTATES every window (n_other_stations_within_tol /
-# other_stations_within_tol), does not drop anything itself. Single network-wide
-# value, not distance-scaled -- sanity-check against your station geometry. Same
-# value as 09a's own COINCIDENCE_TOLERANCE_S, kept identical so both chapters agree.
+# -- Cross-station coincidence (Phase 1) -----------------------
 COINCIDENCE_TOLERANCE_S = 20
 
-# -- Feature extraction window (Phase 1) -- variable length, matches 04a ------
-PAD_SEC = 5        # seconds added before t_on and after t_off, same as 04a
-LOAD_3C = True     # master switch for polarization features; the ACTUAL decision
-                   # (NEED_3C) also checks whether MODEL_PATH's saved feature list
-                   # contains a polarization feature at all -- set this False to
-                   # force-skip the N/E fetch even if the model happens to use one
-                   # (features.py fills NaN, the model's own imputer handles it)
+# -- MULTI-STATION-ONLY CLASSIFICATION (Phase 2) ---------------------
+REQUIRE_MULTISTATION_FOR_CLASSIFICATION = True
+MIN_OTHER_STATIONS_FOR_CLASSIFICATION   = 1
+
+# -- Feature extraction window (Phase 1) ------------------------
+PAD_SEC = 5        # seconds added before t_on and after t_off
+LOAD_3C = True     
 
 # -- Checkpointing / resume (Phase 1: per station-day file existence) ---------
 CONSOLIDATE_PER_MONTH = True   # bundle each month's per-station-day CSVs into one file
 
-# -- SMOKE TEST (Phase 1) -- strongly recommended before the full run ---------
+# -- SMOKE TEST (Phase 1) -- recommended before the full run ---------
 SMOKE_TEST              = True
 MAX_DAYS_SMOKE_TEST     = 1
 MAX_STATIONS_SMOKE_TEST = 1
@@ -163,7 +103,7 @@ CLASS_ORDER  = ["earthquake", "regional", "rockslide", "ice quake", "noise"]   #
 CLASS_COLORS = {"earthquake": "#1f77b4", "rockslide": "#d62728",
                 "ice quake": "#2ca02c", "noise": "#7f7f7f", "regional": "#9467bd"}
 
-# -- Phase 2d: review waveform+spectrogram gallery (optional, needs SDS) ------
+# -- Phase 2d: review waveform+spectrogram gallery (optional) ------
 SAVE_REVIEW_WAVEFORMS    = True
 SAVE_IMAGES_FOR_NONNOISE = True    # save every window NOT predicted as 'noise'
 SAVE_EVERY_NTH_NOISE     = 5
@@ -182,7 +122,7 @@ REVIEW_FREQ_MAX_KEEP      = 95.0    # [Hz] 95% of Nyquist at REVIEW_TARGET_FS=20
 REVIEW_SPEC_VMIN, REVIEW_SPEC_VMAX = -200, -120   # dB color scale, matches 08a
 REVIEW_SPEC_NPERSEG  = int(REVIEW_SPEC_NPERSEG_S * REVIEW_TARGET_FS)
 REVIEW_SPEC_NOVERLAP = int(REVIEW_SPEC_NPERSEG * REVIEW_SPEC_NOVERLAP_FRAC)
-REVIEW_PSD_FLOOR_EPS = 1e-20   # same floor as 07a/08a: guards log(0) without swallowing signal
+REVIEW_PSD_FLOOR_EPS = 1e-20   # same floor as 07a: guards log(0) without swallowing signal
 
 # -- Probability summary plot (Phase 2c) ---------------------------------------
 PLOT_PROBABILITY_SUMMARY = True
@@ -212,7 +152,9 @@ log_file, log_path = setup_logging(
     RUN_DIR, "09b_continuous_tabular_classification.py",
     extra_info=(f"RUN_EXTRACTION={RUN_EXTRACTION}  RUN_CLASSIFICATION={RUN_CLASSIFICATION}  |  "
                 f"EXTRACTION_DIR: {EXTRACTION_DIR}  |  DET_THR_ON={DET_THR_ON}  |  "
-                f"COINCIDENCE_TOLERANCE_S={COINCIDENCE_TOLERANCE_S}  |  SMOKE_TEST={SMOKE_TEST}")
+                f"COINCIDENCE_TOLERANCE_S={COINCIDENCE_TOLERANCE_S}  |  "
+                f"REQUIRE_MULTISTATION_FOR_CLASSIFICATION={REQUIRE_MULTISTATION_FOR_CLASSIFICATION}  |  "
+                f"SMOKE_TEST={SMOKE_TEST}")
 )
 
 os.makedirs(EXTRACTION_DIR, exist_ok=True)
@@ -286,8 +228,7 @@ if RUN_EXTRACTION:
         print(f"  {net}.{sta}.{loc}.{chan}")
 
 
-# --------- Phase 2 setup: load the fixed model bundle (no TensorFlow, no ------
-# training here -- see the module docstring "Model source" section) ----------
+# --------- Phase 2 setup: load the fixed model bundle ----------
 if RUN_CLASSIFICATION:
     import matplotlib
     matplotlib.use("Agg")
@@ -340,21 +281,8 @@ if RUN_EXTRACTION:
 
     def _fetch_3c_array(client_sds, net, sta, chan_z, t0, t1, z_data, fs):
         """
-        Literal copy of 04a_sta_lta_catalog_windowing.py's _fetch_3c_array() --
-        kept as a copy (not an import) so this script has no hidden runtime
-        dependency on 04a's own CONFIGURATION section changing underneath it,
-        same reasoning 09a used for its own copied helpers.
-
-        IMPORTANT convention (inherited from 04a, not changed here): Z is
-        already response-removed velocity (z_data), but N/E are only demeaned
-        + resampled, NOT response-removed. This mismatched-units convention is
-        exactly how the TRAINING catalog's polarization features were built --
-        replicating it here (rather than "fixing" it) is what keeps this
-        script's features consistent with what the classifier was trained on.
-
-        Returns
-        -------
-        arr : np.ndarray, shape (3, n_samples), rows [Z, N, E]  or  None
+        Literal copy of 04a_sta_lta_catalog_windowing.py's _fetch_3c_array()
+        Returns: arr : np.ndarray, shape (3, n_samples), rows [Z, N, E]  or  None
         """
         base    = chan_z[:-1]
         n       = len(z_data)
@@ -396,23 +324,7 @@ if RUN_EXTRACTION:
                            t_on, t_off, trigger_cft, day_str):
         """
         Build one output row for a single detection.
-
-        IMPORTANT: unlike the detection step (which runs on preprocess_day's
-        pre_filt-tapered, whole-day trace -- necessary for continuous
-        scanning), features here are extracted from a FRESH short SDS fetch
-        of the padded window, response-removed the SAME way 04a built the
-        training catalog (plain remove_response, no pre_filt taper -- see
-        preprocessing.remove_response_or_fallback). Reusing the day-scale
-        pre_filt trace instead would systematically shift amplitude/energy
-        features relative to what the classifier was trained on, especially
-        near the pre_filt taper's band edges. 09a made the exact same choice
-        for the CNN branch (see its _process_event_trace docstring) for the
-        same reason -- matching training-time preprocessing exactly matters
-        more than saving one extra SDS round-trip.
-
-        Returns
-        -------
-        row : dict, or None if the window is unusable
+        Returns: row : dict, or None if the window is unusable
         """
         from preprocessing import build_station_times_df, remove_response_or_fallback
 
@@ -420,18 +332,6 @@ if RUN_EXTRACTION:
         t_cut_on  = max(t_on  - PAD_SEC, day_start)
         t_cut_off = min(t_off + PAD_SEC, day_end)
 
-        # SNR margin: compute_snr() needs a noise window *outside* [t_on, t_off]
-        # on at least one side (roughly duration-sized for SNR_full_mean/median/
-        # s2n_median, 5s for the picking metrics) to be meaningful. Fetching only
-        # PAD_SEC=5s of margin (the same window used for feature extraction,
-        # matching 04a exactly) starves that: for any event longer than ~5s,
-        # compute_snr's noise-window slices fall outside the fetched trace and
-        # it silently falls back to noise==signal, i.e. SNR~1.0 regardless of
-        # the true signal strength -- exactly the suspiciously-flat SNR=0.86/
-        # 1.02/1.25 values seen in the review gallery even for visibly strong
-        # bursts. Fetch a wider window for SNR only; the feature-extraction
-        # window handed to extract_features() below stays exactly PAD_SEC,
-        # unchanged, so it still matches 04a's training-time convention.
         snr_pad   = min(max(30.0, 1.5 * (t_off - t_on)), 120.0)
         t_snr_on  = max(t_on  - snr_pad, day_start)
         t_snr_off = min(t_off + snr_pad, day_end)
@@ -453,10 +353,7 @@ if RUN_EXTRACTION:
             return None
         fs = tr_wide.stats.sampling_rate
 
-        # Feature-extraction window: exactly [t_on-PAD_SEC, t_off+PAD_SEC], sliced
-        # from the same response-removed trace -- identical to what a narrow
-        # PAD_SEC-only fetch would have produced, so extract_features() below is
-        # completely unaffected by this fix.
+        # Feature-extraction window: exactly [t_on-PAD_SEC, t_off+PAD_SEC]
         tr_cut = tr_wide.slice(t_cut_on, t_cut_off)
         if tr_cut.stats.npts < 10:
             return None
@@ -466,22 +363,12 @@ if RUN_EXTRACTION:
         tr_filt_local.filter('bandpass', freqmin=DET_FREQ_MIN,
                              freqmax=min(DET_FREQ_MAX, 0.9 * nyq), corners=4, zerophase=True)
 
-        # Only fetch N/E (and pay for the polarization computation inside
-        # extract_features) when the saved model actually uses a polarization
-        # feature -- NEED_3C is decided once, at startup, from MODEL_PATH's
-        # own feature list (see Phase 1 setup above).
+        # Only fetch N/E 
         data_3c = None
         if NEED_3C:
             data_3c = _fetch_3c_array(client_sds, net, sta, chan, t_cut_on, t_cut_off,
                                       tr_cut.data, fs)
 
-        # extract_features() always computes the full 99 Z-features in one
-        # monolithic call (seismic_params.calculate_all_attributes, third-party,
-        # can't be asked for a subset) + 4 more if data_3c is given -- so we
-        # still compute everything NEED_3C implies, then keep only the columns
-        # _FEAT_NAMES (the model's Top-N) actually needs. This is where the
-        # real saving happens: skipping the N/E fetch above when NEED_3C is
-        # False, not the Z-feature computation itself (which can't be split).
         full_names = FEATURE_NAMES_3C if NEED_3C else FEATURE_NAMES_3C[:99]
         feats      = extract_features(tr_cut.data, fs, data_3c=data_3c)
         feat_dict  = dict(zip(full_names, feats))
@@ -497,20 +384,12 @@ if RUN_EXTRACTION:
         }
         for fname in _FEAT_NAMES:
             val = feat_dict.get(fname, np.nan)
-            # Some ratio/log-style features (e.g. eratio_*, ediff_*) can blow
-            # up to +/-inf on degenerate, near-zero-energy continuous-data
-            # windows -- a scenario curated catalog training data rarely hits
-            # but raw unlabeled scanning does. SimpleImputer only fills NaN,
-            # not inf, so write NaN here to keep it fillable downstream in
-            # Phase 2 (and to keep feats_*.csv itself free of literal inf).
             row[fname] = val if np.isfinite(val) else np.nan
         return row
 
 
     def consolidate_month_csvs(extraction_dir, month_tag):
-        """Concatenate every station-day feats_*.csv whose 'day' falls in
-        month_tag into one consolidated_<month_tag>.csv, same purpose as
-        09a's consolidate_month_packed_files() for the CNN branch."""
+        """Concatenate every station-day feats_*.csv whose 'day' falls in month_tag into one consolidated_<month_tag>.csv"""
         candidates = sorted(glob.glob(os.path.join(extraction_dir, "feats_*.csv")))
         frames = []
         for fpath in candidates:
@@ -575,13 +454,6 @@ if RUN_EXTRACTION:
             day_end   = day_utc + 86400
 
             # ---- PASS 1: STA/LTA-detect EVERY station for this day first --------------
-            # (see module docstring's CROSS-STATION COINCIDENCE section). Coincidence
-            # needs every station's onsets for the SAME day at once, so feature
-            # extraction (extract_window_row, needs its own fresh SDS fetch per event)
-            # is deferred to PASS 3 below -- PASS 1 only detects and remembers each
-            # event's (t_on, t_off, trigger_cft, trace_bounds), or reuses onsets from an
-            # already-extracted file so it can still corroborate other stations without
-            # re-touching SDS.
             station_day_events  = {}   # station_key -> [(t_on, t_off, trigger_cft, trace_bounds), ...]
             station_needs_write = set()
             station_timing      = {}
@@ -601,13 +473,8 @@ if RUN_EXTRACTION:
                         _existing_cols = pd.read_csv(out_path, nrows=0).columns
                         has_coincidence = "n_other_stations_within_tol" in _existing_cols
                     except Exception as e:
-                        # truncated/corrupted file (e.g. an interrupted previous run) --
-                        # fall back to treating it as stale rather than crashing the loop.
                         _read_error = e
                     if has_coincidence:
-                        # already extracted under the coincidence-aware schema -- reuse
-                        # its onsets for PASS 2 below (so it still corroborates OTHER
-                        # stations) without re-fetching SDS or re-running DetecteurV3.
                         onsets = [UTCDateTime(s) for s in
                                   pd.read_csv(out_path, usecols=["window_start"])["window_start"]]
                         station_day_events[station_key] = [(t_on, None, None, None) for t_on in onsets]
@@ -652,13 +519,6 @@ if RUN_EXTRACTION:
                     df_hz = fs / nfft
                     if DET_FREQ_MAX / df_hz < 2:
                         nfft = 2 ** int(np.ceil(np.log2(DET_FREQ_MAX * 4)))
-
-                    # Note: no day-scale filtered trace is built here (unlike 02b/09a) --
-                    # SNR is computed per-event from a freshly-fetched, plain-response-
-                    # removed window inside extract_window_row (see its docstring), not
-                    # from this day-scale pre_filt-tapered trace. Detection itself still
-                    # runs on tr_vel below, which is fine -- only the amplitude-sensitive
-                    # feature/SNR extraction needs to match 04a's exact preprocessing.
 
                     total_events     = {}
                     total_thresholds = {}
@@ -709,10 +569,7 @@ if RUN_EXTRACTION:
                 station_day_events, COINCIDENCE_TOLERANCE_S
             )
 
-            # ---- PASS 3: feature-extract (needs its own SDS fetch, see
-            # extract_window_row's docstring) + write output for stations detected this
-            # run (SKIP-DETECT stations above are already fully extracted -- nothing to
-            # do for them) ---------------------------------------------------------------
+            # ---- PASS 3: feature-extract ---------------------------------------------
             for net, sta, loc, chan in station_list:
                 station_key = f"{net}.{sta}"
                 if station_key not in station_needs_write:
@@ -766,9 +623,7 @@ if RUN_EXTRACTION:
 # =============================================================================
 
 def plot_probability_summary(df_month, class_names, month_tag, out_dir):
-    """Same idea as 09a's function of the same name -- confidence boxplot +
-    mean-probability-vector heatmap per predicted class, adapted for the
-    5-class tabular output (no image needed, works directly off the CSV)."""
+    """Same idea as 09a's function of the same name"""
     proba_cols = [f"proba_{c.replace(' ', '_')}" for c in class_names]
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
@@ -822,16 +677,8 @@ def plot_probability_summary(df_month, class_names, month_tag, out_dir):
 def _fetch_padded_trace(client_sds, inventory, net, sta, chan, det_start,
                         pre_s, window_s, target_fs, fetch_pad_s):
     """
-    Literal copy of 08a_report_figures_events.py's _fetch_padded_trace() --
-    kept as a copy (not an import) for the same reason as this script's other
-    copied helpers: no hidden dependency on 08a's own CONFIGURATION section.
-    Fetches a window LARGER than needed (fetch_pad_s of extra context each
-    side) so response removal / filtering have run-in room before the region
-    actually shown in the figure.
-
-    Returns
-    -------
-    (trace, t_on, t_off, None) on success, (None, None, None, reason_str) on failure.
+    Literal copy of 08_report_figures_events.py's _fetch_padded_trace()
+    Returns: (trace, t_on, t_off, None) on success, (None, None, None, reason_str) on failure
     """
     from preprocessing import build_station_times_df, remove_response_or_fallback
 
@@ -862,8 +709,7 @@ def _fetch_padded_trace(client_sds, inventory, net, sta, chan, det_start,
 
 
 def _trim_to_fixed_length(tr, t_on, t_off, target_fs, window_s):
-    """Literal copy of 08a's _trim_to_fixed_length() -- trim a COPY of tr to
-    exactly [t_on, t_off] -> exactly window_s*target_fs samples."""
+    """Literal copy of 08's _trim_to_fixed_length()"""
     tr = tr.copy()
     tr.trim(t_on, t_off, pad=True, fill_value=0)
     nt = int(round(window_s * target_fs))
@@ -876,20 +722,8 @@ def _trim_to_fixed_length(tr, t_on, t_off, target_fs, window_s):
 
 def plot_review_waveform(client_sds, inventory, row, cls_name, top_proba, out_path, calibrated=True):
     """
-    Same 2-panel style (bandpassed waveform + broadband dB spectrogram) as
-    08a's report figure gallery, via visualization.plot_waveform_spectrogram_
-    example() -- the tabular-branch review image now looks the same as the
-    training-catalog example figures, just with predicted class/probability
-    standing in for the (unknown, here) true class and catalog distance.
-    Needs SDS access; caller should catch exceptions and skip gracefully.
-
-    calibrated : bool -- False when called with inventory=None (FDSN down).
-    remove_response_or_fallback() already degrades gracefully to cleaned-but-
-    uncalibrated raw counts in that case (see preprocessing.py), so this
-    still produces a usable figure -- shape/duration/frequency content are
-    still roughly indicative, only the amplitude axis is not true ground
-    velocity. This flag just controls the title annotation so that's obvious
-    at a glance rather than silently mislabeled.
+    Same 2-panel style (bandpassed waveform + broadband dB spectrogram) as 08's report figure gallery, 
+    via visualization.plot_waveform_spectrogram_example() 
     """
     from obspy import UTCDateTime
 
@@ -925,14 +759,6 @@ def plot_review_waveform(client_sds, inventory, row, cls_name, top_proba, out_pa
     freq_axis = f_full[freq_mask]
     Sxx_db    = 10 * np.log10(Sxx[freq_mask, :] + REVIEW_PSD_FLOOR_EPS)
 
-    # REVIEW_SPEC_VMIN/VMAX are tuned for CALIBRATED m/s amplitudes. Raw
-    # digitizer counts run ~10^6-10^9x larger (the same scale factor as the
-    # 04a units-bug investigation), so their PSD in dB lands far above that
-    # fixed range -- every pixel saturates to vmax, i.e. a uniformly red
-    # spectrogram, not a meaningful one. When uncalibrated, auto-scale from
-    # this window's own dB range instead, so the relative time-frequency
-    # STRUCTURE (still physically meaningful for a shape/pattern check,
-    # unlike absolute amplitude) is actually visible.
     if calibrated:
         spec_vmin, spec_vmax = REVIEW_SPEC_VMIN, REVIEW_SPEC_VMAX
     else:
@@ -1000,6 +826,25 @@ if RUN_CLASSIFICATION:
         if df_feat.empty:
             continue
 
+        if REQUIRE_MULTISTATION_FOR_CLASSIFICATION:
+            if "n_other_stations_within_tol" not in df_feat.columns:
+                print(f"  [WARN] {os.path.basename(fpath)} — no n_other_stations_within_tol "
+                      f"column (predates the cross-station coincidence check) — classifying "
+                      f"ALL windows in this file, REQUIRE_MULTISTATION_FOR_CLASSIFICATION "
+                      f"cannot be applied. Re-run Phase 1 to get coincidence annotations.")
+            else:
+                n_before_mc = len(df_feat)
+                df_feat = df_feat[
+                    df_feat["n_other_stations_within_tol"] >= MIN_OTHER_STATIONS_FOR_CLASSIFICATION
+                ].copy()
+                n_dropped_mc = n_before_mc - len(df_feat)
+                if n_dropped_mc:
+                    print(f"  [MULTISTATION-ONLY] {os.path.basename(fpath)} — skipping "
+                          f"classification on {n_dropped_mc:,} / {n_before_mc:,} "
+                          f"single-station-only window(s).")
+                if df_feat.empty:
+                    continue
+
         missing_feats = [f for f in final_features if f not in df_feat.columns]
         if missing_feats:
             print(f"  [SKIP] {os.path.basename(fpath)} — missing feature column(s): "
@@ -1056,13 +901,6 @@ if RUN_CLASSIFICATION:
         _client_fdsn = connect_fdsn(ISTERRE_URL)
 
         if _client_sds is None:
-            # Only SDS is a hard requirement -- it's where the actual waveform
-            # samples live. FDSN/inventory is needed for CALIBRATED (m/s)
-            # amplitudes, but remove_response_or_fallback() already degrades
-            # gracefully to cleaned, uncalibrated raw counts when
-            # inventory=None (see preprocessing.py) -- so an FDSN outage no
-            # longer has to block the review gallery entirely, only its
-            # amplitude calibration. See the inventory fetch below.
             print("  [WARN] SDS unavailable — skipping review waveform gallery "
                   "(this step only works on the cluster / with VPN access).")
         else:

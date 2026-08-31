@@ -1,7 +1,7 @@
 """
 06a_train_RF_classifier.py
 =======================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : May 2026
 
@@ -157,12 +157,6 @@ if NOISE_CSV is not None:
         print(f"[WARN] NOISE_CSV not found: {NOISE_CSV} — continuing without the noise class.")
 
 # -- Optional 5th class: regional (output of 04c) ------------------------------
-# Same position/pattern as noise above — 06a's quality filter trusts each row's
-# own precomputed `quality_ok` column rather than recomputing the SNR mask (see
-# FILTER_QUALITY below), and 04c bakes `quality_ok` with the same current
-# pipeline-wide gate as everything else, so no special before/after-gate
-# ordering is needed here (unlike 06b/06c, which recompute the mask explicitly
-# and DO need regional loaded before that recompute — see those scripts).
 if REGIONAL_CSV is not None:
     if os.path.isfile(REGIONAL_CSV):
         df_regional = pd.read_csv(REGIONAL_CSV)
@@ -416,8 +410,7 @@ print(f"        Reload with: clf = joblib.load('{model_path}')")
 # =============================================================================
 # SECTION 9 — SCORE ALL ROWS IN THE ORIGINAL CSV (optional)
 # =============================================================================
-# Append predicted class + per-class probabilities back onto the full filtered
-# CSV, so you can inspect each detection's score later.
+# Append predicted class + per-class probabilities back onto the full filtered CSV, so we can inspect each detection's score later
 
 print(f"\n{'='*65}")
 print(f"  STEP 7 — Scoring all rows in the dataset")

@@ -1,7 +1,7 @@
 """
 catalog_helpers.py
 ==================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship 
 Author : Elsa Louis
 Date   : April 2026
 
@@ -222,19 +222,12 @@ def query_catalog_chunked(client_fdsn, t_start, t_end,
     client_fdsn      : ObsPy FDSN_Client
     t_start, t_end   : str — ISO date strings e.g. "2022-01-01"
     lat_min/max, lon_min/max : float — bounding box
-    target_types     : list of str — event types to keep  |  None -> keep every event type
-                       (None is useful to build a complete exclusion list for noise
-                       sampling, e.g. script 04d — quarry blasts and any other catalog
-                       type must be excluded too, not just the 3 classification targets)
+    target_types     : list of str — event types to keep 
     chunk_days       : int — size of each query window in days (default 90 ≈ 3 months)
     cache_path       : str or None — path to a .xml QuakeML cache file
                        • If the file already exists → load from it, no FDSN query
                        • If it does not exist       → query in chunks, save if complete
                        • None                       → query in chunks, no caching
-                       NOTE: the cache stores only the TYPE-FILTERED events, so a cache
-                       built with a restricted target_types list cannot be reused for a
-                       target_types=None (all-types) query and vice versa — use a
-                       different cache_path per target_types configuration.
     max_retries      : int — number of retry attempts per chunk on timeout (default 3)
     retry_sleep_s    : int — seconds to wait between retries (default 60)
 
@@ -358,31 +351,7 @@ def query_catalog_by_distance_chunked(client_fdsn, t_start, t_end,
                                       chunk_days=90, cache_path=None,
                                       max_retries=3, retry_sleep_s=60):
     """
-    Query an FDSN event catalog for events at a given EPICENTRAL-DISTANCE
-    range from a reference point, above a minimum magnitude.
-
-    Unlike query_catalog_chunked() (lat/lon bounding box + event-type filter,
-    used for the LOCAL massif catalog by 04a/04d), this queries by DISTANCE
-    from a center point and by MAGNITUDE — the two criteria that actually
-    define "not local" physically, whether that means regional (~150-1000 km,
-    Pn/Sn Moho-refracted waves — script 04c's current use, see
-    [[plan_regional_class]]) or teleseismic (>1000 km, mantle/core-turning
-    waves — 04c's original design, repurposed 2026-08-04).
-
-    **Implementation note (fixed 2026-08-05, first real run against RENASS/
-    franceseisme)**: this does NOT use FDSN's own `minradius`/`maxradius`
-    query parameters, even though that's the obvious way to ask for a
-    distance range. Those are OPTIONAL in the FDSN spec, and franceseisme's
-    server rejects `minradius` outright ("parameter not supported by the
-    service") — every chunk failed on the first live run. Instead, this
-    queries a lat/lon BOUNDING BOX sized to comfortably contain the full
-    max_radius_km circle around the center point (minlatitude/maxlatitude/
-    minlongitude/maxlongitude are REQUIRED/core FDSN parameters, guaranteed
-    supported by any spec-compliant server), then filters the returned
-    events to the actual [min_radius_km, max_radius_km] annulus locally
-    using obspy.geodetics.gps2dist_azimuth — same "broad server-side fetch +
-    precise client-side filter" pattern query_catalog() already uses for
-    event-type filtering.
+    Query an FDSN event catalog for events at a given EPICENTRAL-DISTANCE range from a reference point, above a minimum magnitude
 
     Parameters
     ----------
@@ -390,24 +359,17 @@ def query_catalog_by_distance_chunked(client_fdsn, t_start, t_end,
     t_start, t_end   : str — ISO date strings -> "2015-01-01"
     center_lat/lon   : float — reference point (e.g. Mont Blanc massif centroid)
     min_radius_km    : float — minimum epicentral distance in KM
-    max_radius_km    : float — maximum epicentral distance in KM (or None = no limit,
-                       treated as 20000 km, more than half of Earth's circumference)
+    max_radius_km    : float — maximum epicentral distance in KM 
     min_magnitude    : float — minimum magnitude to keep
     max_magnitude    : float or None — optional upper magnitude bound
-    chunk_days       : int — size of each query window in days (default 90)
-    cache_path       : str or None — path to a .xml QuakeML cache file, same
-                       load/save semantics as query_catalog_chunked() — a
-                       cache is only written if ALL chunks succeeded. NOTE:
-                       the cache stores only the DISTANCE-FILTERED result
-                       (post client-side filter), same convention as
-                       query_catalog_chunked()'s type-filtered cache.
-    max_retries      : int — retry attempts per chunk on timeout (default 3)
-    retry_sleep_s    : int — seconds to wait between retries (default 60)
+    chunk_days       : int — size of each query window in days
+    cache_path       : str or None — path to a .xml QuakeML cache file
+    max_retries      : int — retry attempts per chunk on timeout 
+    retry_sleep_s    : int — seconds to wait between retries 
 
     Returns
     -------
-    events : list of ObsPy Event objects (deduplicated by origin time,
-             already restricted to the [min_radius_km, max_radius_km] annulus)
+    events : list of ObsPy Event objects (deduplicated by origin time, already restricted to the [min_radius_km, max_radius_km] annulus)
     """
     import os
     import time
@@ -425,9 +387,6 @@ def query_catalog_by_distance_chunked(client_fdsn, t_start, t_end,
     max_radius_km = max_radius_km if max_radius_km is not None else 20000.0
 
     # ---- Bounding box that comfortably contains the full max_radius_km circle --
-    # ~111.32 km per degree of latitude everywhere; longitude degrees shrink
-    # by cos(latitude) at higher latitudes, so widen the box accordingly.
-    # +10% margin so the circle is never clipped by rounding.
     km_per_deg_lat = 111.32
     dlat = (max_radius_km / km_per_deg_lat) * 1.10
     dlon = (max_radius_km / (km_per_deg_lat * max(math.cos(math.radians(center_lat)), 0.05))) * 1.10
@@ -547,8 +506,7 @@ def query_catalog_by_distance_chunked(client_fdsn, t_start, t_end,
 # STATION LIST FROM INVENTORY (used by script 04)
 # =============================================================================
 
-# Channel priority for deduplication: keep the highest-sampling-rate channel available per station 
-# (HHZ > BHZ > EHZ > HNZ > SHZ > anything else)
+# Channel priority for deduplication: keep the highest-sampling-rate channel available per station (HHZ > BHZ > EHZ > HNZ > SHZ > anything else)
 CHANNEL_PRIORITY = {'HHZ': 0, 'BHZ': 1, 'EHZ': 2, 'HNZ': 3, 'SHZ': 4}
 
 def build_station_list_from_inventory(inventory, z_suffix='Z'):

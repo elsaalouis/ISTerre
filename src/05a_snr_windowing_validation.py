@@ -1,17 +1,17 @@
 """
 05a_snr_windowing_validation.py
 ================================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : April 2026 (renamed + scoped July 2026)
 
 Scope — read this before reusing any threshold from this script
------------------------------------------------------------------
+---------------------------------------------------------------
 This script answers ONE question: does SNR predict whether the automatic STA/LTA-style detector correctly bracketed the true event onset in its detection window? 
 It does NOT answer "is this signal clean/strong enough to be useful for feature extraction, classification, or DeepDenoiser training
 
-Why the distinction matters: an event can have a perfectly time-aligned window and still be a noisy, low-amplitude signal; conversely an event can
-have imprecise pick/origin alignment while still containing a strong, usable waveform within the window
+Why the distinction matters: an event can have a perfectly time-aligned window and still be a noisy, low-amplitude signal; 
+conversely an event can have imprecise pick/origin alignment while still containing a strong, usable waveform within the window
 
 Goal
 ----
@@ -24,16 +24,6 @@ Ground truth: origin_inside_det
 Ground truth: pick_inside_det
   True  -> P-wave pick time falls inside the detected window
   False -> P-wave pick time is outside the window
-
-Analyses
---------
-  3.1  Basic distribution statistics per metric (mean, median, std, IQR) + mean for aligned vs misaligned detections separately
-  3.2  Pearson correlation matrix between the 7 metrics (are some metrics redundant?)
-  3.3  ROC curves + AUC for each metric, POOLED across all event types (which metric best discriminates aligned from misaligned detections? Youden J optimal threshold per metric)
-  3.3b Same ROC + Youden analysis, but run SEPARATELY per event type
-  3.4  Threshold sensitivity: pass rate, TPR, FPR vs threshold value
-  3.5  Per-station and per-event-type summary
-  3.6  Save summary CSV
 
 Input
 -----
@@ -253,9 +243,6 @@ print("=" * 70)
 # For each SNR metric we compute:
 #   - overall stats: mean, median, std, IQR (Q3-Q1)
 #   - mean and median split by ground truth: aligned (label=True) vs misaligned (label=False)
-#
-# Key: difference between mean_inside and mean_outside
-# if well-aligned detections have clearly higher SNR than misaligned ones
 
 print("\n--- 3.1  Distribution statistics ---")
 
@@ -294,7 +281,7 @@ df_dist = pd.DataFrame(dist_rows)  # converts the list of 7 dictionaries into a 
 # --- 3.2  Pearson correlation matrix -----------------------------------------
 #
 # Pearson correlation r between two metrics ranges from -1 to +1
-# r close to 1 means the two metrics move together (linearly) -> carry redundant information
+#  -> r close to 1 means the two metrics move together (linearly) -> carry redundant information
 
 print("\n--- 3.2  Pearson correlation matrix ---")
 
@@ -349,8 +336,6 @@ for metric in SNR_METRICS:
 #
 # Pools every event type together to find one threshold
 # Repeats the exact same analysis, but separately on each event type's own subset
-#
-# A per-type threshold is only trustworthy if that type's own AUC is decent — see fig_roc_by_type for the curve shape, not just the number
 
 print("\n--- 3.3b  ROC AUC per metric, per event type ---")
 
@@ -388,8 +373,7 @@ for et in event_types_roc:
               f"best threshold={r['youden_threshold']:.2f}  "
               f"-> TPR={r['youden_tpr']:.2f}  FPR={r['youden_fpr']:.2f}  (n={r['n_valid']})")
 
-# Tidy table: one row per (event_type, metric), with the pooled threshold alongside
-# for direct comparison
+# Tidy table: one row per (event_type, metric), with the pooled threshold alongside for direct comparison
 by_type_rows = []
 for et in event_types_roc:
     for metric in SNR_METRICS:
@@ -426,10 +410,6 @@ print(f"\n[SAVED] {by_type_path}")
 #   pass_rate = fraction of ALL detections that pass (practical data retention)
 #   TPR       = fraction of well-aligned detections that pass (we want this high)
 #   FPR       = fraction of misaligned detections that pass (we want this low)
-#
-# This is the practical complement to the ROC curve: instead of all possible
-# thresholds, we look at specific round numbers (1, 2, 3 ...) that you might
-# actually use as a quality gate.
 
 print("\n--- 3.4  Threshold sensitivity ---")
 
@@ -625,11 +605,10 @@ else:
 
 
 # ---- Figure 3b: Best threshold per event type -------------------------------
-# plot_threshold_by_type() is defined in visualization.py.
 print("  Fig 3b: Threshold per event type ...")
 
 if df_roc_by_type['best_threshold'].notna().any():
-    plot_threshold_by_type(
+    plot_threshold_by_type(  # defined in visualization.py
         df_roc_by_type, SNR_METRICS, SNR_LONG, RUN_DIR, _RUN_STAMP,
     )
 else:
@@ -637,12 +616,10 @@ else:
 
 
 # ---- Figure 3c: ROC curves faceted by event type -----------------------------
-# plot_roc_by_type() is defined in visualization.py — sanity check for Fig 3b:
-# a per-type threshold is only meaningful if that type's own curve clears the diagonal.
 print("  Fig 3c: ROC curves per event type ...")
 
 if any(roc_results_by_type[et] for et in event_types_roc):
-    plot_roc_by_type(
+    plot_roc_by_type(    # defined in visualization.py
         roc_results_by_type, SNR_METRICS, SNR_SHORT, RUN_DIR, _RUN_STAMP,
     )
 else:
@@ -721,7 +698,7 @@ print(f"    [SAVED] {path}")
 
 
 # ---- Figures 6+: Per-event-type heatmaps ------------------------------------
-# Same format as Fig 5 (per-station mean SNR heatmap) but restricted to each event type. One file saved per event type.
+# Same format as Fig 5 (per-station mean SNR heatmap) but restricted to each event type (one file saved per event type)
 
 print("  Fig 6+: Per-event-type station heatmaps ...")
 
@@ -763,8 +740,7 @@ for etype in event_types_hm:
 
 
 # ---- Figures 7+: Station geographic maps ------------------------------------
-# One dot per station on a map, colored by mean SNR of MAP_METRIC.
-# plot_station_map() is defined in visualization.py.
+# One dot per station on a map, colored by mean SNR of MAP_METRIC
 
 print(f"  Fig 7+: Station geographic maps (metric: {MAP_METRIC}) ...")
 
@@ -801,7 +777,7 @@ else:
             n_ev_e = df_sub['event_time'].nunique()
             title_m = f'{label}\n({n_ev_e} events, {len(df_sub)} det.)'
 
-        n_ok = plot_station_map(
+        n_ok = plot_station_map(   # defined in visualization.py
             ax_m, snr_by_sta, sta_coords,
             title      = title_m,
             vmin       = vmin_map,

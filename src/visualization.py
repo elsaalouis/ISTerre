@@ -1770,7 +1770,8 @@ def plot_waveform_spectrogram_example(times_wave, wave_data, times_spec, freq_ax
 # =============================================================================
 
 def plot_average_spectrograms(class_avg_db, freq_axis, times_spec, class_order,
-                              run_dir, stamp, vmin=-200, vmax=-120):
+                              run_dir, stamp, vmin=-200, vmax=-120, fig_height=4,
+                              time_label='Time (s, 0 = detection onset)'):
     """
     Grid of averaged spectrograms, one panel per class — a "typical fingerprint"
     built upstream by averaging the LINEAR power spectrogram across several
@@ -1783,17 +1784,27 @@ def plot_average_spectrograms(class_avg_db, freq_axis, times_spec, class_order,
                      already-averaged spectrogram per class (a class may be
                      missing if no waveform could be fetched — shown as "No data")
     freq_axis      : 1D array — spectrogram frequency bins [Hz], shared across classes
-    times_spec     : 1D array — spectrogram time bin centers [s], 0 = detection onset
+    times_spec     : 1D array — spectrogram time bin centers [s], meaning set by
+                     time_label below (0 = detection onset by default)
     class_order    : list of str — panel order (and which classes to attempt to show)
     run_dir, stamp : str — output location / filename stamp
     vmin, vmax     : float — shared dB color scale bounds
+    fig_height     : float — figure height in inches (panel width stays 4.2 per
+                     class either way) — lower it to make each panel less tall/
+                     stretched-looking; default 4 matches this function's
+                     original, unchanged look
+    time_label     : str — x-axis label, since times_spec's zero point/convention
+                     is set by the CALLER (not this function) -- default matches
+                     this function's original, onset-centered behaviour; pass a
+                     different label if times_spec uses another convention (e.g.
+                     "0 = window start") so the axis isn't mislabeled
 
     Returns
     -------
     out_path : str
     """
     n = len(class_order)
-    fig, axes = plt.subplots(1, n, figsize=(4.2 * n, 4), sharey=True)
+    fig, axes = plt.subplots(1, n, figsize=(4.2 * n, fig_height), sharey=True)
     if n == 1:
         axes = [axes]
 
@@ -1806,7 +1817,7 @@ def plot_average_spectrograms(class_avg_db, freq_axis, times_spec, class_order,
         im = ax.pcolormesh(times_spec, freq_axis, class_avg_db[cls], cmap='jet',
                            vmin=vmin, vmax=vmax, shading='auto')
         ax.set_title(cls, fontsize=10, fontweight='bold')
-        ax.set_xlabel('Time (s, 0 = detection onset)', fontsize=8)
+        ax.set_xlabel(time_label, fontsize=8)
         ax.tick_params(labelsize=7)
     axes[0].set_ylabel('Frequency (Hz)', fontsize=9)
 

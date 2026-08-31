@@ -1,15 +1,14 @@
 """
 04c_regional_event_extraction.py
 ==================================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : August 2026
 
 Goal
 ----
 Build the 5th classification class: REGIONAL 
-Earthquakes ~150-1000 km from the massif, recorded on the SAME stations as the local classes (earthquake,
-rockslide, ice quake, noise), but physically and operationally distinct from all of them
+Earthquakes ~150-1000 km from the massif, recorded on the SAME stations as the local classes (earthquake, rockslide, ice quake, noise), but physically distinct from all of them
 
 Data sources
 ------------
@@ -54,7 +53,7 @@ CATALOG_URL = "EMSC"
 # -- Physical local/regional/teleseismic split (see docstring) --------------
 DIST_MIN_KM    = 150.0     # below this: local Pg/Sg, already covered by the existing classes
 DIST_MAX_KM    = 1000.0    # above this: teleseismic (out of scope for this script)
-MIN_MAGNITUDE  = 3       # first-pass guess at regional visibility — tunable, see docstring
+MIN_MAGNITUDE  = 3       # first-pass guess at regional visibility (tunable)
 MAX_MAGNITUDE  = None       # None = no upper bound
 
 # -- Massif reference point (centroid of the bounding box used everywhere else) --
@@ -77,47 +76,37 @@ RANDOM_SEED  = 42
 
 # -- TauPy predicted-arrival model ------------------------------------------
 TAUP_MODEL       = "iasp91"
-TAUP_PHASE_LIST  = ["Pg", "P", "Pn"]   # crustal-direct and Moho-refracted phases, see docstring caveat
+TAUP_PHASE_LIST  = ["Pg", "P", "Pn"]   # crustal-direct and Moho-refracted phases
 DEFAULT_DEPTH_KM = 10.0    # used only if the catalog event has no depth
 
 # -- Waveform extraction window (anchored on the PREDICTED arrival) ---------
-PRE_ARRIVAL_S  = 45     # [s] before predicted arrival — must be > LTA_S for STA/LTA warm-up
-POST_ARRIVAL_S = 150    # [s] after predicted arrival — regional coda is much shorter than
-                        # teleseismic; raise if larger regional events need more room
+PRE_ARRIVAL_S  = 45     # [s] before predicted arrival -> must be > LTA_S for STA/LTA warm-up
+POST_ARRIVAL_S = 150    # [s] after predicted arrival -> regional coda is much shorter than teleseismic; raise if larger regional events need more room
 
 Z_CHANNELS = "??Z"
 
-# -- Detection band: SAME as the local pipeline (1-20 Hz) — regional Pn/Sn
-# content overlaps this band much more than teleseismic ever did -----------
+# -- Detection band: SAME as the local pipeline (1-20 Hz) --------------------
 FREQ_MIN = 1.0     # Hz
 FREQ_MAX = 20.0    # Hz
 
-# -- Onset-refinement classical STA/LTA (search window, not blind scanning) --
+# -- Onset-refinement classical STA/LTA (search window) ---------------------
 STA_S     = 5.0
 LTA_S     = 30.0    # must stay < PRE_ARRIVAL_S so there is a warm-up period
-THRES_ON  = 2.0     # same as local defaults (02a/04d) — regional SNR should generally be
-THRES_OFF = 1.3     # comparable to or better than the near-threshold teleseismic case
+THRES_ON  = 2.0   
+THRES_OFF = 1.3    
 MIN_DURAT_S = 2.0
 
-# Tolerance: how far (seconds) a STA/LTA trigger may sit from the predicted
-# arrival and still be considered "the same arrival". WIDER than the
-# teleseismic-era value (30s) because regional travel times from a coarse
-# global crustal model (iasp91) are LESS reliable than teleseismic ones —
-# see docstring caveat.
+# Tolerance: how far (seconds) a STA/LTA trigger may sit from the predicted arrival and still be considered "the same arrival"
 ARRIVAL_MATCH_TOL_S = 20.0
 
 # Fallback window when no STA/LTA trigger matches the predicted arrival —
-# kept for inspection/completeness (flagged `detected=False`), not assumed
-# to be good training data; downstream SNR gate (05b thresholds) filters it out.
 FALLBACK_PRE_S  = 5.0
 FALLBACK_POST_S = 60.0
 
 # -- Feature extraction window padding ----------------------------------------
 PAD_SEC = 5
 
-# -- Quality flag thresholds — SAME pipeline-wide SNR gate as 03c/03d/06b/06c
-# (see plan_detection_algorithm memory, resolved 2026-07-20; informational only,
-# 06b/06c always recompute this explicitly rather than trusting the column) ---
+# -- Quality flag thresholds — SAME SNR gate as 03c/03d/06b/06c) -----------
 SNR_MIN             = 1.70
 SNR_FULL_MEDIAN_MIN = 1.99
 
@@ -187,9 +176,7 @@ rng = np.random.default_rng(RANDOM_SEED)
 # =============================================================================
 
 print(f"\n[SETUP] Fetching inventory for lat[{LAT_MIN},{LAT_MAX}] lon[{LON_MIN},{LON_MAX}] ...")
-inventory = fetch_inventory(client_fdsn, T_START, T_END,
-                            lat_min=LAT_MIN, lat_max=LAT_MAX,
-                            lon_min=LON_MIN, lon_max=LON_MAX)
+inventory = fetch_inventory(client_fdsn, T_START, T_END,lat_min=LAT_MIN, lat_max=LAT_MAX, lon_min=LON_MIN, lon_max=LON_MAX)
 if inventory is None:
     print("[ERROR] Could not fetch inventory. Exiting.")
     sys.exit(1)
@@ -203,7 +190,7 @@ _t0_cfg, _t1_cfg = UTCDateTime(T_START), UTCDateTime(T_END)
 
 
 def _operational_periods(net, sta, loc, chan):
-    """ List of (UTCDateTime, UTCDateTime) epochs this exact channel was live, clipped to [T_START, T_END]. """
+    """ List of (UTCDateTime, UTCDateTime) epochs this exact channel was live, clipped to [T_START, T_END] """
     periods = []
     for network in inventory:
         if network.code != net:
@@ -246,7 +233,7 @@ print(f"[OK] {len(station_keys)} station(s) resolved in the bounding box.")
 
 
 def _station_live(net, sta, t):
-    """ True if this station's channel was operational at time t. """
+    """ True if this station's channel was operational at time t """
     for p0, p1 in station_periods.get((net, sta), []):
         if p0 <= t <= p1:
             return True
@@ -273,10 +260,7 @@ regional_events = query_catalog_by_distance_chunked(
 )
 
 if not regional_events:
-    print(f"\n[ERROR] No regional events found. If this is unexpected, check that "
-          f"{CATALOG_URL} covers this distance/magnitude range (try CATALOG_URL="
-          f"'USGS' instead, or back to 'https://api.franceseisme.fr' — see the "
-          f"docstring for why EMSC replaced it). Exiting.")
+    print(f"\n[ERROR] No regional events found.")
     sys.exit(1)
 
 print(f"[OK] {len(regional_events)} candidate regional event(s) found "
@@ -296,9 +280,7 @@ if len(regional_events) > N_EVENTS_CAP:
 
 def predicted_arrival(origin_time, event_lat, event_lon, event_depth_km, sta_lat, sta_lon):
     """
-    Predicted first P-type arrival at a station, from ray theory.
-    See docstring caveat: regional (Pg/Pn) predictions are less reliable
-    than teleseismic ones, because iasp91's crustal model is coarse.
+    Predicted first P-type arrival at a station, from ray theory
 
     Returns
     -------
@@ -380,10 +362,6 @@ for i, ev in enumerate(regional_events):
         if t_pred is None:
             n_rej_noarrival += 1
             continue
-        # Safety guard — should not trigger given the catalog's own
-        # minradius/maxradius filter, but a single station could in
-        # principle sit outside the band even when the massif centroid
-        # doesn't (negligible given the massif is a ~50 km box).
         if dist_km < DIST_MIN_KM or (DIST_MAX_KM is not None and dist_km > DIST_MAX_KM):
             continue
 
@@ -407,10 +385,6 @@ for i, ev in enumerate(regional_events):
             continue
         st_raw.merge(method=1, fill_value="interpolate")
 
-        # preprocess_day() (pre_filt-tapered) kept as the safe default,
-        # inherited from the teleseismic-era design — it only tapers content
-        # below 0.01 Hz / above 0.95x Nyquist, so it doesn't touch the 1-20 Hz
-        # regional detection band either way. See docstring.
         tr_vel = preprocess_day(st_raw[0], inventory)
         if tr_vel is None:
             n_rej_response += 1
@@ -459,8 +433,7 @@ for i, ev in enumerate(regional_events):
                 detected = True
 
         if not detected:
-            # Fallback: fixed window anchored on the theoretical prediction —
-            # kept for inspection, not assumed to be good training data.
+            # Fallback: fixed window anchored on the theoretical prediction (kept for inspection, not assumed to be good training data)
             t_on  = t_pred - FALLBACK_PRE_S
             t_off = t_pred + FALLBACK_POST_S
             t_on  = max(t_on,  tr_vel.stats.starttime)
@@ -556,8 +529,6 @@ for i, ev in enumerate(regional_events):
             "trigger_on_cft"    : round(trig_on_cft, 4)  if not np.isnan(trig_on_cft)  else np.nan,
             "trigger_off_cft"   : round(trig_off_cft, 4) if not np.isnan(trig_off_cft) else np.nan,
             "detected"          : detected,
-            # Quality flags — reuse 04a's column names: "origin"=theoretical
-            # arrival (no true pick exists for regional phases at these stations)
             "origin_inside_det" : arrival_inside_det,
             "origin_lag_s"      : arrival_lag_s,
             "pick_inside_det"   : None,

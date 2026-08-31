@@ -1,7 +1,7 @@
 """
 EVENT DETECTION — SPECTROGRAM-BASED STA/LTA
 =======================================================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : April 2026
 
@@ -27,7 +27,7 @@ Key differences from Groult et al.
 -----------------------------------
   - Data loaded from ISTerre SDS archive (not pre-downloaded mseed files)
   - Station list derived from FDSN inventory (not a fixed text file)
-  - Output: CSV per day, columns compatible with script 03
+  - Output: CSV per day
 
 Data sources
 ------------
@@ -37,7 +37,6 @@ Data sources
 Output
 ------
   detections_YYYYMMDD.csv: one row per (detection × station) metadata + 5 SNR cols + 99 feature cols
-  run.log: full console output of the run
 """
 
 

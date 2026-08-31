@@ -1,7 +1,7 @@
 """
 DYNAMIC STATION SELECTION FROM CATALOG PICKS
 =============================================
-ISTerre internship — Environmental seismology in glaciology
+ISTerre internship
 Author : Elsa Louis
 Date   : April 2026
 
