@@ -64,7 +64,7 @@ Third-party code, **not modified** by this project:
 
 ## The pipeline
 
-Two classification methods are trained and validated in parallel, but they share the same upstream data-preparation stage:
+Two classification methods are trained and validated in parallel, but they share the same data-preparation stage:
 
 ```
                      ┌─ Stage 1: event windowing & feature extraction (04a/04c/04d, + 03c/03d rescue)  ─┐
