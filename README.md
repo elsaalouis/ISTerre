@@ -42,6 +42,7 @@ Every script follows the same internal structure:
 - a module docstring (goal, data sources, pipeline steps, output files)
 - a `SECTION 1 — CONFIGURATION` block at the top with every parameter need to change
 - then the processing code
+
 **To run a script, open it, edit the `CONFIGURATION` section, and run it directly** (`python3 04a_sta_lta_catalog_windowing.py`)
 
 ## Shared modules (not run directly)
