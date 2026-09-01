@@ -26,7 +26,7 @@ The conda environment used for all is defined in `environment.yml` (env name `is
 
 ```bash
 conda env create -f src/environment.yml
-conda activate glacier-seismo
+conda activate isterre-seismo
 ```
 
 Most scripts need two data sources, reachable only from the ISTerre cluster / OSUG VPN:
