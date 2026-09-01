@@ -5,10 +5,7 @@ ISTerre internship
 Author : Elsa Louis
 Date   : July 2026
 
-Shared helpers for invoking DeepDenoiser's predict.py (Zhu et al., 2019) from any
-pipeline script that needs to run inference on a folder of .npz windows —
-currently used by 03c_denoiser_event_data.py (rescue targets) and
-03e_denoiser_good_signal_test.py (already-good-SNR sample, for comparison).
+Shared helpers for invoking DeepDenoiser's predict.py (Zhu et al., 2019) from any pipeline script that needs to run inference on a folder of .npz windows 
 
 Functions
 ---------

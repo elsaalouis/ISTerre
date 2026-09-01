@@ -122,7 +122,7 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from run_setup import create_run_dir, setup_logging, connect_sds, set_matplotlib_defaults
 from preprocessing import load_3component
-from denoiser_utils import run_deepdenoiser_predict   # shared with 03e_denoiser_good_signal_test.py
+from denoiser_utils import run_deepdenoiser_predict   
 
 
 if MODEL_DIR is not None and EXISTING_RUN_DIR is not None:
