@@ -117,7 +117,7 @@ Each of 09a/09b runs in two phases (extraction on the cluster, classification wh
 13. **`09b_continuous_tabular_classification.py`:** Branch A end-to-end test
      - Phase 1 extracts features from a continuous scan
      - Phase 2 classifies with the saved `06c` model bundle
-14. **`09c_hgb_review_gallery.py`** — visual review of borderline/marginal predictions from either branch (`PIPELINE = "HGB"` or `"CNN"`), to check a class isn't over-triggering.
+14. **`09c_hgb_review_gallery.py`:** visual review of borderline/marginal predictions from either branch (`PIPELINE = "HGB"` or `"CNN"`), to check a class isn't over-triggering.
 
 /!\ There is no ground truth at this stage: the output is for visual/plausibility review, not scoring.
 
