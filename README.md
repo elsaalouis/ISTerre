@@ -22,7 +22,7 @@ Author: Elsa Louis — Supervisors: J. Kokowski, E. Larose (ISTerre)
 
 ## Setup
 
-The conda environment used for all cluster-side scripts is defined in `src/environment.yml` (env name `glacier-seismo`):
+The conda environment used for all cluster-side scripts is defined in `src/environment.yml` (env name `isterre-seismo`):
 
 ```bash
 conda env create -f src/environment.yml
