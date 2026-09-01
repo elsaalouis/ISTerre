@@ -97,15 +97,15 @@ Both branches consume the CSVs from Stage 1.
 
 **Branch A — tabular features (Random Forest / HistGradientBoosting):**
 
-6. `06a_train_RF_classifier.py`: baseline Random Forest.
-7. `06b_compare_classifiers.py`: benchmarks RF / HGB / KNN / SVM / MLP on the same split.
-8. `06c_train_HGB_classifier.py`: final model -> HGB trained on the original + DeepDenoiser-rescued data, with an A/B/C ablation to check whether the rescue gain comes from the denoiser itself or just from more training data. **Produces the `.joblib` model used by `09b`.**
+6. **`06a_train_RF_classifier.py`:** baseline Random Forest.
+7. **`06b_compare_classifiers.py`:** benchmarks RF / HGB / KNN / SVM / MLP on the same split.
+8. **`06c_train_HGB_classifier.py`:** final model -> HGB trained on the original + DeepDenoiser-rescued data, with an A/B/C ablation to check whether the rescue gain comes from the denoiser itself or just from more training data. **Produces the `.joblib` model used by `09b`.**
 
 **Branch B — spectrogram images (CNN):**
 
-9. `07a_spectrogram_dataset_build.py`: builds a fixed-size 3-component spectrogram image per sample from the Stage 1 windows.
-10. `07b_consolidate_for_colab.py`: packs the many small `.npz` images into a few large archives for upload to Google Drive.
-11. `07c_train_cnn_classifier_colab.ipynb`: trains the CNN on Google Colab. **Produces the `.keras` model + normalization stats used by `09a`.**
+9. **`07a_spectrogram_dataset_build.py`:** builds a fixed-size 3-component spectrogram image per sample from the Stage 1 windows.
+10. **`07b_consolidate_for_colab.py`:** packs the many small `.npz` images into a few large archives for upload to Google Drive.
+11. **`07c_train_cnn_classifier_colab.ipynb`:** trains the CNN on Google Colab. **Produces the `.keras` model + normalization stats used by `09a`.**
 
 ### Stage 3 — Operational validation on continuous data
 
